@@ -2,6 +2,7 @@
 import { api } from '../api.js';
 import { el, fill } from '../util.js';
 import { store } from '../store.js';
+import { brandLockup } from '../brand.js';
 
 export function renderLogin(root, onSuccess) {
   const error = el('div', {
@@ -43,8 +44,7 @@ export function renderLogin(root, onSuccess) {
 
   fill(root, el('div', { class: 'login-page' },
     el('div', { class: 'card login-card' },
-      el('div', { class: 'brand' },
-        el('span', { class: 'brand-mark', text: '✓' }), store.ui.app_name || 'タスク管理'),
+      brandLockup('lg'),
       el('p', { class: 'page-sub', text: 'アカウント情報を入力してください。' }),
       form)));
   email.focus();

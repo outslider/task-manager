@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 168 32" width="168" height="32"
+     role="img" aria-label="タスク管理">
+  <defs>
+    <linearGradient id="tm-logo" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b8cff"/>
+      <stop offset="1" stop-color="#7c5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="10" fill="url(#tm-logo)"/>
+  <rect x="7" y="8.6" width="11" height="3" rx="1.5" fill="#fff" opacity=".95"/>
+  <rect x="7" y="13.6" width="6.5" height="3" rx="1.5" fill="#fff" opacity=".55"/>
+  <path d="M12.4 20.6l3.4 3.4L25 14.8" stroke="#fff" stroke-width="3.4" fill="none"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="42" y="22" font-family="system-ui, -apple-system, 'Hiragino Sans', 'Noto Sans JP', sans-serif"
+        font-size="17" font-weight="700" letter-spacing=".5" fill="#1b2028">タスク管理</text>
+</svg>

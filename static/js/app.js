@@ -3,6 +3,7 @@ import { api } from './api.js';
 import { store } from './store.js';
 import { clear, closeAllOverlays, el, fill, toast } from './util.js';
 import { initTheme } from './theme.js';
+import { brandLockup } from './brand.js';
 
 const root = document.getElementById('app');
 
@@ -93,8 +94,7 @@ function renderSidebar() {
   const active = (location.hash || '#/daily');
   const projects = store.projects.filter((p) => !p.archived).slice(0, 12);
   fill(shell.sidebar, 
-    el('div', { class: 'brand' },
-      el('span', { class: 'brand-mark', text: '✓' }), store.ui.app_name || 'タスク管理'),
+    brandLockup('md'),
     el('div', { class: 'sidebar-section' },
       ...NAV.map((item) => navItem(item, active.startsWith(item.hash)))),
     el('div', { class: 'sidebar-section' },

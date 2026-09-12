@@ -93,6 +93,11 @@ export function applyAccent(hex) {
     root.setProperty('--accent-hover', hsl(h, s, base - 9));
     root.setProperty('--accent-soft', hsl(h, Math.min(s, 85), 94));
   }
+  // ロゴやグラデーションで使う第2色。色相を少しずらして深みを出す。
+  const hue2 = (h + 26) % 360;
+  root.setProperty('--accent-2', dark
+    ? hsl(hue2, Math.min(s, 88), Math.max(l, 58) + 4)
+    : hsl(hue2, Math.min(s + 6, 92), Math.min(l, 60) + 4));
   root.setProperty('--accent-contrast', luminance(rgb) > 0.55 ? '#1b2028' : '#ffffff');
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', hex);
