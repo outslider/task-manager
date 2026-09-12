@@ -55,6 +55,10 @@ export function openTaskForm({ project, task = null, parentId = null, tasks = []
       fields.start.value = task?.start_date || '';
       fields.due = el('input', { class: 'input', type: 'date' });
       fields.due.value = task?.due_date || '';
+      fields.estimate = el('input', {
+        class: 'input', type: 'number', min: 0, step: 0.5, placeholder: '任意',
+      });
+      fields.estimate.value = task?.estimate_hours ?? '';
       fields.progress = el('input', {
         class: 'input', type: 'number', min: 0, max: 100, step: 5,
       });
@@ -72,7 +76,8 @@ export function openTaskForm({ project, task = null, parentId = null, tasks = []
           el('div', { class: 'field' }, el('label', { text: '担当者' }), fields.assignee)),
         el('div', { class: 'row' },
           el('div', { class: 'field' }, el('label', { text: '開始日' }), fields.start),
-          el('div', { class: 'field' }, el('label', { text: '期限' }), fields.due)),
+          el('div', { class: 'field' }, el('label', { text: '期限' }), fields.due),
+          el('div', { class: 'field' }, el('label', { text: '見積 (h)' }), fields.estimate)),
         el('div', { class: 'row' },
           el('div', { class: 'field' }, el('label', { text: '状態' }), fields.status),
           el('div', { class: 'field' }, el('label', { text: '重要度' }), fields.priority),
@@ -103,6 +108,7 @@ export function openTaskForm({ project, task = null, parentId = null, tasks = []
             due_date: fields.due.value || null,
             progress: Number(fields.progress.value || 0),
             is_milestone: fields.milestone.checked,
+            estimate_hours: fields.estimate.value === '' ? null : Number(fields.estimate.value),
             parent_id: fields.parent.value ? Number(fields.parent.value) : null,
             depends_on: depPicker.ids(),
           };

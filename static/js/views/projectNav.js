@@ -5,6 +5,7 @@ import { store } from '../store.js';
 const TABS = [
   { key: 'tasks', label: 'タスク', icon: '☰' },
   { key: 'gantt', label: 'ガント', icon: '📊' },
+  { key: 'workload', label: '負荷', icon: '📈' },
   { key: 'bottlenecks', label: 'ボトルネック', icon: '⛔' },
   { key: 'issues', label: '課題', icon: '📌' },
 ];

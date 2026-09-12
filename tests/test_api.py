@@ -1082,6 +1082,196 @@ class TestNaturalLanguage(ApiTestCase):
         self.assertEqual(db.get_setting("llm_api_key"), "sk-ant-secret")
 
 
+class TestEffortAndWorkload(ApiTestCase):
+    def test_estimate_is_optional(self):
+        project = self.make_project()
+        task = self.make_task(project["id"], "工数なし")
+        self.assertIsNone(task["estimate_hours"])
+        self.assertEqual(float(task["actual_hours"]), 0.0)
+
+    def test_estimate_round_trip(self):
+        project = self.make_project()
+        task = self.make_task(project["id"], "見積あり", estimate_hours=7.5)
+        self.assertEqual(float(task["estimate_hours"]), 7.5)
+        data = self.admin.patch("/api/tasks/{}".format(task["id"]),
+                                {"estimate_hours": 12, "actual_hours": 3})[1]
+        self.assertEqual(float(data["task"]["estimate_hours"]), 12.0)
+        self.assertEqual(float(data["task"]["actual_hours"]), 3.0)
+
+    def test_estimate_can_be_cleared(self):
+        project = self.make_project()
+        task = self.make_task(project["id"], "消す", estimate_hours=5)
+        data = self.admin.patch("/api/tasks/{}".format(task["id"]),
+                                {"estimate_hours": None})[1]
+        self.assertIsNone(data["task"]["estimate_hours"])
+
+    def test_invalid_hours_are_rejected(self):
+        project = self.make_project()
+        status, _ = self.admin.post("/api/tasks", {
+            "project_id": project["id"], "title": "x", "estimate_hours": "たくさん"})
+        self.assertEqual(status, 400)
+        status, _ = self.admin.post("/api/tasks", {
+            "project_id": project["id"], "title": "y", "estimate_hours": -3})
+        self.assertEqual(status, 400)
+
+    def test_effort_change_is_recorded_in_the_history(self):
+        project = self.make_project()
+        task = self.make_task(project["id"], "履歴", estimate_hours=4)
+        self.admin.patch("/api/tasks/{}".format(task["id"]), {"estimate_hours": 8})
+        detail = self.admin.get("/api/tasks/{}".format(task["id"]))[1]
+        self.assertTrue(any(c["kind"] == "system" and "見積工数" in c["body"]
+                            for c in detail["comments"]))
+
+    def test_daily_update_accumulates_actual_hours(self):
+        project = self.make_project()
+        admin_id = self.admin.get("/api/auth/me")[1]["user"]["id"]
+        task = self.make_task(project["id"], "実績", assignee_id=admin_id)
+        self.admin.post("/api/daily/update",
+                        {"updates": [{"task_id": task["id"], "hours": 2.5}]})
+        self.admin.post("/api/daily/update",
+                        {"updates": [{"task_id": task["id"], "hours": 1.5}]})
+        detail = self.admin.get("/api/tasks/{}".format(task["id"]))[1]
+        self.assertEqual(float(detail["task"]["actual_hours"]), 4.0)
+
+    def test_workload_reports_hours_per_week(self):
+        project = self.make_project()
+        user, _ = self.make_user("負荷テスト")
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "editor"}]})
+        self.make_task(project["id"], "来週の作業", assignee_id=user["id"],
+                       start_date="2026-09-14", due_date="2026-09-18", estimate_hours=40)
+        data = self.admin.get("/api/workload?project_id={}&weeks=12".format(project["id"]))[1]
+        self.assertTrue(data["weeks"])
+        row = next(r for r in data["rows"] if r["user_id"] == user["id"])
+        self.assertEqual(row["total_hours"], 40.0)
+        self.assertEqual(data["capacity_per_week"], 40.0)
+
+    def test_workload_requires_project_access(self):
+        project = self.make_project()
+        _, email = self.make_user("負荷部外者")
+        status, _ = self.client_for(email).get(
+            "/api/workload?project_id={}".format(project["id"]))
+        self.assertEqual(status, 403)
+
+    def test_workload_without_a_project_covers_everything_visible(self):
+        project = self.make_project()
+        self.make_task(project["id"], "横断", start_date="2026-09-14", due_date="2026-09-18")
+        data = self.admin.get("/api/workload")[1]
+        self.assertIn("effort", data)
+        self.assertTrue(any(p["id"] == project["id"] for p in data["projects"]))
+
+
+class TestRecurrenceApi(ApiTestCase):
+    def make_rule(self, project_id, **kwargs):
+        payload = {"title": "週次定例", "freq": "weekly", "weekdays": "0",
+                   "next_on": "2026-09-14", "lead_days": 3}
+        payload.update(kwargs)
+        status, data = self.admin.post(
+            "/api/projects/{}/recurrences".format(project_id), payload)
+        self.assertEqual(status, 201, data)
+        return data["recurrence"]
+
+    def test_create_and_list(self):
+        project = self.make_project()
+        rule = self.make_rule(project["id"])
+        self.assertEqual(rule["summary"], "毎週 月曜")
+        rows = self.admin.get(
+            "/api/projects/{}/recurrences".format(project["id"]))[1]["recurrences"]
+        self.assertEqual([r["id"] for r in rows], [rule["id"]])
+
+    def test_weekly_requires_a_weekday(self):
+        project = self.make_project()
+        status, data = self.admin.post("/api/projects/{}/recurrences".format(project["id"]), {
+            "title": "曜日なし", "freq": "weekly", "weekdays": "", "next_on": "2026-09-14"})
+        self.assertEqual(status, 400, data)
+
+    def test_monthly_requires_a_day(self):
+        project = self.make_project()
+        status, _ = self.admin.post("/api/projects/{}/recurrences".format(project["id"]), {
+            "title": "日なし", "freq": "monthly", "next_on": "2026-09-25"})
+        self.assertEqual(status, 400)
+
+    def test_run_now_creates_a_task_and_advances(self):
+        project = self.make_project()
+        rule = self.make_rule(project["id"])
+        status, data = self.admin.post("/api/recurrences/{}/run".format(rule["id"]), {})
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["task"]["title"], "週次定例")
+        self.assertEqual(data["task"]["due_date"], "2026-09-14")
+        rows = self.admin.get(
+            "/api/projects/{}/recurrences".format(project["id"]))[1]["recurrences"]
+        self.assertEqual(rows[0]["next_on"], "2026-09-21")
+
+    def test_generated_task_carries_the_template_values(self):
+        project = self.make_project()
+        user, _ = self.make_user("定例担当")
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "editor"}]})
+        rule = self.make_rule(project["id"], assignee_id=user["id"], category="meeting",
+                              estimate_hours=1.5, priority=2)
+        task = self.admin.post("/api/recurrences/{}/run".format(rule["id"]), {})[1]["task"]
+        self.assertEqual(task["assignee_id"], user["id"])
+        self.assertEqual(task["category"], "meeting")
+        self.assertEqual(float(task["estimate_hours"]), 1.5)
+        self.assertEqual(task["priority"], 2)
+
+    def test_update_and_deactivate(self):
+        project = self.make_project()
+        rule = self.make_rule(project["id"])
+        data = self.admin.patch("/api/recurrences/{}".format(rule["id"]),
+                                {"active": False, "title": "停止した定例"})[1]
+        self.assertEqual(data["recurrence"]["active"], 0)
+        self.assertEqual(data["recurrence"]["title"], "停止した定例")
+
+    def test_delete(self):
+        project = self.make_project()
+        rule = self.make_rule(project["id"])
+        self.assertEqual(self.admin.delete("/api/recurrences/{}".format(rule["id"]))[0], 200)
+        self.assertEqual(self.admin.get(
+            "/api/projects/{}/recurrences".format(project["id"]))[1]["recurrences"], [])
+
+    def test_requires_edit_rights(self):
+        project = self.make_project()
+        user, email = self.make_user("定例閲覧のみ")
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "viewer"}]})
+        status, _ = self.client_for(email).post(
+            "/api/projects/{}/recurrences".format(project["id"]),
+            {"title": "x", "freq": "daily", "next_on": "2026-09-20"})
+        self.assertEqual(status, 403)
+
+
+class TestSlackSettings(ApiTestCase):
+    def test_webhook_url_is_validated(self):
+        project = self.make_project()
+        status, data = self.admin.patch("/api/projects/{}".format(project["id"]),
+                                        {"slack_webhook_url": "http://evil.example.com/hook"})
+        self.assertEqual(status, 400, data)
+        status, _ = self.admin.patch("/api/projects/{}".format(project["id"]), {
+            "slack_webhook_url": "https://hooks.slack.com/services/T/B/x"})
+        self.assertEqual(status, 200)
+
+    def test_webhook_can_be_cleared(self):
+        project = self.make_project()
+        self.admin.patch("/api/projects/{}".format(project["id"]),
+                         {"slack_webhook_url": "https://hooks.slack.com/services/T/B/x"})
+        self.admin.patch("/api/projects/{}".format(project["id"]), {"slack_webhook_url": ""})
+        detail = self.admin.get("/api/projects/{}".format(project["id"]))[1]
+        self.assertEqual(detail["project"]["slack_webhook_url"], "")
+
+    def test_slack_is_off_until_configured(self):
+        data = self.admin.get("/api/settings")[1]
+        self.assertFalse(data["slack_ready"])
+
+    def test_test_send_fails_cleanly_without_a_url(self):
+        status, data = self.admin.post("/api/settings/test-slack", {})
+        self.assertEqual(status, 400)
+        self.assertIn("設定", data["message"])
+
+
 class TestSubdirectory(unittest.TestCase):
     """サブディレクトリ配下（/tasks）で公開したときの挙動。"""
 

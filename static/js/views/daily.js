@@ -175,6 +175,18 @@ export async function render(container) {
     }, ...Object.entries(STATUS_LABEL).map(([value, label]) =>
       el('option', { value, selected: (change.status || task.status) === value ? true : null }, label)));
 
+    const hoursBox = el('input', {
+      class: 'input qhours', type: 'number', min: 0, step: 0.5, placeholder: '実績h',
+      title: '今日かけた時間（任意）。保存すると実績工数に足されます',
+      onInput: (event) => {
+        const entry = pending.get(task.id) || {};
+        const value = event.target.value;
+        if (value === '') delete entry.hours; else entry.hours = Number(value);
+        if (Object.keys(entry).length) pending.set(task.id, entry); else pending.delete(task.id);
+        markChanged();
+      },
+    });
+
     const noteBox = el('textarea', {
       class: 'textarea', hidden: true, placeholder: 'ひとことメモ（タスクのコメントとして残ります）',
       style: { minHeight: '54px', marginTop: '6px' },
@@ -209,7 +221,7 @@ export async function render(container) {
           task.updated_at ? ` · 最終更新 ${formatDateTime(task.updated_at)}` : ''),
         noteBox),
       el('div', { class: 'daily-controls' },
-        ...quick, progressLabel, statusSelect,
+        ...quick, progressLabel, statusSelect, hoursBox,
         el('button', {
           class: 'qbtn', title: 'メモを書く',
           onClick: (event) => {

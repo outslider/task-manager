@@ -101,6 +101,10 @@ export async function render(container) {
     color.value = project?.color || '#4f8cff';
     const archived = el('input', { type: 'checkbox' });
     archived.checked = Boolean(project?.archived);
+    const slack = el('input', {
+      class: 'input', placeholder: 'https://hooks.slack.com/services/…（任意）',
+    });
+    slack.value = project?.slack_webhook_url || '';
     const ownerSelect = el('select', { class: 'select' },
       ...store.users.map((u) => el('option', {
         value: u.id, selected: (project?.owner_id ?? store.user.id) === u.id ? true : null,
@@ -114,6 +118,10 @@ export async function render(container) {
         el('div', { class: 'row' },
           el('div', { class: 'field' }, el('label', { text: '色' }), color),
           el('div', { class: 'field' }, el('label', { text: 'オーナー' }), ownerSelect)),
+        el('div', { class: 'field' },
+          el('label', { text: 'Slack の通知先' }), slack,
+          el('div', { class: 'hint',
+            text: '空欄なら全体設定のチャンネルに送られます。' })),
         project
           ? el('div', { class: 'field' },
             el('label', { class: 'check' }, archived,
@@ -142,6 +150,7 @@ export async function render(container) {
               description: description.value,
               color: color.value,
               owner_id: Number(ownerSelect.value),
+              slack_webhook_url: slack.value.trim(),
             };
             if (project) payload.archived = archived.checked;
             if (!payload.name) { toast('プロジェクト名を入力してください', 'error'); return; }

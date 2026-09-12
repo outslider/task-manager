@@ -326,6 +326,41 @@ async function renderSettings(container) {
               event.currentTarget.disabled = false;
             },
           }, '今すぐ日次サマリを送る')))),
+    el('div', { class: 'grid cols-2', style: { marginTop: '14px' } },
+      el('div', { class: 'card' },
+        el('div', { class: 'card-head' }, el('h2', {}, 'Slack 通知（任意）'),
+          el('span', {
+            class: `badge ${data.slack_ready ? 'done' : 'todo'}`,
+            text: data.slack_ready ? '有効' : '無効',
+          })),
+        el('div', { class: 'card-body' },
+          el('div', { class: 'page-sub',
+            text: '期限超過・本日期限のまとめと、影響度の高い課題の起票を Slack に流します。'
+              + 'こちらから送るだけなので、インターネットへの公開は不要です。' }),
+          toggle('slack_enabled', 'Slack 通知を使う'),
+          input('slack_webhook_url', 'Incoming Webhook URL',
+            { placeholder: 'https://hooks.slack.com/services/...' }),
+          el('div', { class: 'hint',
+            text: 'プロジェクトごとに別のチャンネルへ送りたい場合は、プロジェクト設定で個別に指定できます。' }),
+          el('button', {
+            class: 'btn', style: { marginTop: '10px' },
+            onClick: async (event) => {
+              event.currentTarget.disabled = true;
+              try {
+                await save();
+                const result = await api.post('/api/settings/test-slack', {});
+                toast(result.message, 'ok');
+              } catch (error) { toast(error.message, 'error'); }
+              event.currentTarget.disabled = false;
+            },
+          }, 'テスト送信'))),
+      el('div', { class: 'card' },
+        el('div', { class: 'card-head' }, el('h2', {}, '稼働時間')),
+        el('div', { class: 'card-body' },
+          el('div', { class: 'page-sub',
+            text: '負荷ビューで「1人が週にどれだけ持てるか」の基準に使います。' }),
+          input('work_hours_per_day', '1日の稼働時間 (h)', { type: 'number' }),
+          el('div', { class: 'hint', text: '土日を除いた5日分が1週間の上限になります（既定 8h → 40h/週）。' })))),
     el('div', { class: 'card', style: { marginTop: '14px' } },
       el('div', { class: 'card-head' }, el('h2', {}, 'Claude 連携（任意）'),
         el('span', {

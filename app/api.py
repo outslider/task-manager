@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import pymysql
 
-from . import auth, db, graph, llm, nlp, notify
+from . import auth, db, graph, llm, nlp, notify, recurrence, slack, workload
 from .config import MAX_UPLOAD_BYTES, UPLOAD_DIR
 from .http_util import (HttpError, as_bool, as_date, as_int, bad_request, forbidden,
                         json_response, not_found, require, unauthorized, Response)
@@ -612,6 +612,12 @@ def update_project(ctx, project_id):
     user = me(ctx)
     project_or_404(user, project_id, "owner")
     fields, params = [], []
+    if "slack_webhook_url" in ctx.body:
+        url = str(ctx.body["slack_webhook_url"] or "").strip()
+        if url and not url.startswith("https://hooks.slack.com/"):
+            raise bad_request("Slack の Webhook URL は https://hooks.slack.com/ で始まります")
+        fields.append("slack_webhook_url=%s")
+        params.append(url[:300])
     for key, column in (("name", "name"), ("description", "description"),
                         ("color", "color")):
         if key in ctx.body:
@@ -799,6 +805,23 @@ def normalize_color(value, default=""):
     return value.lower()
 
 
+def as_hours(value, maximum=9999):
+    """工数（時間）。空なら None。"""
+    if value in (None, "", "null"):
+        return None
+    try:
+        hours = round(float(value), 1)
+    except (TypeError, ValueError):
+        raise bad_request("工数は数値で入力してください")
+    if hours < 0:
+        raise bad_request("工数は0以上で入力してください")
+    return min(hours, maximum)
+
+
+def _hours_label(value):
+    return "未設定" if value in (None, "") else "{:g}h".format(float(value))
+
+
 def normalize_category(value, current=""):
     if value is None:
         return current
@@ -887,14 +910,14 @@ def create_task(ctx):
     now = db.now()
     task_id = db.insert(
         "INSERT INTO tasks(project_id, parent_id, title, description, category, status, "
-        "priority, assignee_id, start_date, due_date, progress, is_milestone, sort_order, "
-        "created_by, created_at, updated_at, completed_at) "
-        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "priority, assignee_id, start_date, due_date, progress, estimate_hours, is_milestone, "
+        "sort_order, created_by, created_at, updated_at, completed_at) "
+        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (project_id, parent_id, title, ctx.body.get("description", ""),
          normalize_category(ctx.body.get("category")), status,
          as_int(ctx.body.get("priority"), 1, 0, 3), assignee_id, start_date, due_date,
-         progress, is_milestone, sort_order, user["id"], now, now,
-         now if status == "done" else None))
+         progress, as_hours(ctx.body.get("estimate_hours")), is_milestone, sort_order,
+         user["id"], now, now, now if status == "done" else None))
     if "depends_on" in ctx.body:
         set_task_deps(task_id, project_id, ctx.body["depends_on"])
     if assignee_id and assignee_id != user["id"]:
@@ -998,6 +1021,16 @@ def update_task(ctx, task_id):
     if "is_milestone" in body:
         fields.append("is_milestone=%s")
         params.append(1 if as_bool(body["is_milestone"]) else 0)
+    for key, label in (("estimate_hours", "見積工数"), ("actual_hours", "実績工数")):
+        if key in body:
+            hours = as_hours(body[key])
+            current_hours = current[key]
+            if (hours is None) != (current_hours is None) or (
+                    hours is not None and float(hours) != float(current_hours)):
+                notes.append("{}: {} → {}".format(
+                    label, _hours_label(current_hours), _hours_label(hours)))
+            fields.append(key + "=%s")
+            params.append(hours if key == "estimate_hours" else (hours or 0))
 
     if "status" in body or "progress" in body:
         status, progress = _apply_status_progress(body, current)
@@ -1489,6 +1522,11 @@ def daily_update(ctx):
                 params.append(patch["due_date"])
             params.append(task_id)
             db.execute("UPDATE tasks SET {} WHERE id=%s".format(", ".join(fields)), params)
+        hours = as_hours(item.get("hours"))
+        if hours:
+            db.execute("UPDATE tasks SET actual_hours = actual_hours + %s WHERE id=%s",
+                       (hours, task_id))
+            notes.append("実績 +{:g}h".format(hours))
         note = (item.get("note") or "").strip()
         if note:
             db.insert(
@@ -1527,6 +1565,7 @@ def get_settings(ctx):
         "llm_ready": llm.available(),
         "llm_sdk": llm.sdk_installed(),
         "llm_models": llm.MODELS,
+        "slack_ready": slack.available(),
     })
 
 
@@ -1774,6 +1813,14 @@ def create_issue(ctx):
     owner_id = as_int(ctx.body.get("owner_id"))
     if owner_id and owner_id != user["id"]:
         _notify_issue_owner(issue_id, title, owner_id, user)
+    severity = as_int(ctx.body.get("severity"), 1, 0, 3)
+    if severity >= 2:
+        base = db.get_setting("app_base_url", "").rstrip("/")
+        slack.post_async(
+            "📌 課題が起票されました（影響度 {}）\n*{}*\n起票: {}{}".format(
+                SEVERITY_LABEL.get(severity, "-"), title, user["name"],
+                "\n{}/#/issue/{}".format(base, issue_id) if base else ""),
+            project_id=project_id)
     return json_response({"issue": db.query_one(ISSUE_SELECT + " WHERE i.id=%s", (issue_id,))}, 201)
 
 
@@ -2112,4 +2159,194 @@ def create_subtasks(ctx, task_id):
 def test_llm(ctx):
     admin_only(ctx)
     ok, message = llm.check()
+    return json_response({"ok": ok, "message": message}, 200 if ok else 400)
+
+
+# --------------------------------------------------------------------------
+# 負荷ビューと工数
+# --------------------------------------------------------------------------
+
+@route("GET", r"/api/workload")
+def workload_view(ctx):
+    """担当者ごとの週別負荷。project_id を省くと参加中の全プロジェクトが対象。"""
+    user = me(ctx)
+    project_id = as_int(ctx.query.get("project_id"))
+    if project_id:
+        project_or_404(user, project_id)
+        project_ids = [project_id]
+    else:
+        project_ids = auth.visible_project_ids(user)
+    if not project_ids:
+        return json_response({"weeks": [], "rows": [], "unscheduled": [],
+                              "effort": workload.effort_summary([]), "projects": []})
+
+    tasks = db.query(
+        "SELECT t.id, t.title, t.status, t.assignee_id, t.start_date, t.due_date, t.progress, "
+        "t.estimate_hours, t.actual_hours, t.project_id "
+        "FROM tasks t JOIN projects p ON p.id = t.project_id "
+        "WHERE t.project_id IN %s AND p.archived = 0", (tuple(project_ids),))
+    users = db.query("SELECT id, name, avatar_color FROM users WHERE is_active=1")
+    weeks = as_int(ctx.query.get("weeks"), 8, 2, 26)
+    hours_per_day = float(db.get_setting("work_hours_per_day", "8") or 8)
+
+    result = workload.build(tasks, users, weeks=weeks, hours_per_day=hours_per_day)
+    result["effort"] = workload.effort_summary(tasks)
+    result["projects"] = db.query(
+        "SELECT id, name FROM projects WHERE id IN %s AND archived=0 ORDER BY name",
+        (tuple(project_ids),))
+    result["project_id"] = project_id
+    return json_response(result)
+
+
+# --------------------------------------------------------------------------
+# 繰り返し（定例タスク）
+# --------------------------------------------------------------------------
+
+RECURRENCE_SELECT = """
+    SELECT r.*, u.name AS assignee_name, p.name AS project_name
+      FROM recurrences r
+      LEFT JOIN users u ON u.id = r.assignee_id
+      JOIN projects p ON p.id = r.project_id
+"""
+
+
+def _recurrence_body(ctx, current=None):
+    body = ctx.body
+    freq = body.get("freq", current["freq"] if current else "weekly")
+    if freq not in ("daily", "weekly", "monthly"):
+        raise bad_request("繰り返しの種類が不正です")
+    weekdays = body.get("weekdays", current["weekdays"] if current else "")
+    if isinstance(weekdays, list):
+        weekdays = ",".join(str(as_int(d, 0, 0, 6)) for d in weekdays)
+    weekdays = ",".join(str(d) for d in recurrence.parse_weekdays(weekdays))
+    if freq == "weekly" and not weekdays:
+        raise bad_request("曜日を1つ以上選んでください")
+    month_day = as_int(body.get("month_day"), current["month_day"] if current else None, 1, 31)
+    if freq == "monthly" and not month_day:
+        raise bad_request("何日に作るかを指定してください")
+    next_on = as_date(body.get("next_on")) or (
+        current["next_on"].isoformat() if current else None)
+    if not next_on:
+        raise bad_request("次回の期限日を指定してください")
+    return {
+        "title": require(body, "title", "タスク名") if "title" in body or not current
+        else current["title"],
+        "description": body.get("description", current["description"] if current else "") or "",
+        "category": normalize_category(body.get("category"),
+                                       current["category"] if current else ""),
+        "priority": as_int(body.get("priority"), current["priority"] if current else 1, 0, 3),
+        "assignee_id": as_int(body.get("assignee_id"),
+                              current["assignee_id"] if current else None),
+        "estimate_hours": as_hours(body.get("estimate_hours")) if "estimate_hours" in body
+        else (current["estimate_hours"] if current else None),
+        "parent_id": as_int(body.get("parent_id"), current["parent_id"] if current else None),
+        "freq": freq,
+        "interval_n": as_int(body.get("interval_n"),
+                             current["interval_n"] if current else 1, 1, 99),
+        "weekdays": weekdays,
+        "month_day": month_day,
+        "lead_days": as_int(body.get("lead_days"),
+                            current["lead_days"] if current else 3, 0, 60),
+        "next_on": next_on,
+        "active": 1 if as_bool(body.get("active", True)) else 0,
+    }
+
+
+@route("GET", r"/api/projects/(\d+)/recurrences")
+def list_recurrences(ctx, project_id):
+    user = me(ctx)
+    project_or_404(user, project_id)
+    rows = db.query(RECURRENCE_SELECT + " WHERE r.project_id=%s ORDER BY r.active DESC, r.next_on",
+                    (project_id,))
+    for row in rows:
+        row["summary"] = recurrence.describe(row)
+    return json_response({"recurrences": rows})
+
+
+@route("POST", r"/api/projects/(\d+)/recurrences")
+def create_recurrence(ctx, project_id):
+    user = me(ctx)
+    project_or_404(user, project_id, "editor")
+    values = _recurrence_body(ctx)
+    if values["parent_id"] and auth.task_project_id(values["parent_id"]) != project_id:
+        raise bad_request("親タスクが同じプロジェクトにありません")
+    now = db.now()
+    rule_id = db.insert(
+        "INSERT INTO recurrences(project_id, title, description, category, priority, assignee_id, "
+        "estimate_hours, parent_id, freq, interval_n, weekdays, month_day, lead_days, next_on, "
+        "active, created_by, created_at, updated_at) "
+        "VALUES(%(project_id)s,%(title)s,%(description)s,%(category)s,%(priority)s,%(assignee_id)s,"
+        "%(estimate_hours)s,%(parent_id)s,%(freq)s,%(interval_n)s,%(weekdays)s,%(month_day)s,"
+        "%(lead_days)s,%(next_on)s,%(active)s,%(created_by)s,%(now)s,%(now)s)",
+        dict(values, project_id=project_id, created_by=user["id"], now=now))
+    row = db.query_one(RECURRENCE_SELECT + " WHERE r.id=%s", (rule_id,))
+    row["summary"] = recurrence.describe(row)
+    return json_response({"recurrence": row}, 201)
+
+
+@route("PATCH", r"/api/recurrences/(\d+)")
+def update_recurrence(ctx, rule_id):
+    user = me(ctx)
+    current = db.query_one("SELECT * FROM recurrences WHERE id=%s", (rule_id,))
+    if not current:
+        raise not_found("繰り返し設定が見つかりません")
+    project_or_404(user, current["project_id"], "editor")
+    values = _recurrence_body(ctx, current)
+    db.execute(
+        "UPDATE recurrences SET title=%(title)s, description=%(description)s, "
+        "category=%(category)s, priority=%(priority)s, assignee_id=%(assignee_id)s, "
+        "estimate_hours=%(estimate_hours)s, parent_id=%(parent_id)s, freq=%(freq)s, "
+        "interval_n=%(interval_n)s, weekdays=%(weekdays)s, month_day=%(month_day)s, "
+        "lead_days=%(lead_days)s, next_on=%(next_on)s, active=%(active)s, updated_at=%(now)s "
+        "WHERE id=%(id)s", dict(values, id=rule_id, now=db.now()))
+    row = db.query_one(RECURRENCE_SELECT + " WHERE r.id=%s", (rule_id,))
+    row["summary"] = recurrence.describe(row)
+    return json_response({"recurrence": row})
+
+
+@route("DELETE", r"/api/recurrences/(\d+)")
+def delete_recurrence(ctx, rule_id):
+    user = me(ctx)
+    current = db.query_one("SELECT project_id FROM recurrences WHERE id=%s", (rule_id,))
+    if not current:
+        raise not_found("繰り返し設定が見つかりません")
+    project_or_404(user, current["project_id"], "editor")
+    db.execute("DELETE FROM recurrences WHERE id=%s", (rule_id,))
+    return json_response({"ok": True})
+
+
+@route("POST", r"/api/recurrences/(\d+)/run")
+def run_recurrence_now(ctx, rule_id):
+    """次回分を今すぐ作る。"""
+    user = me(ctx)
+    rule = db.query_one("SELECT * FROM recurrences WHERE id=%s", (rule_id,))
+    if not rule:
+        raise not_found("繰り返し設定が見つかりません")
+    project_or_404(user, rule["project_id"], "editor")
+    today = db.today()
+    task_id = recurrence._create_task(rule, today)
+    nxt = recurrence.next_date(rule, rule["next_on"])
+    db.execute("UPDATE recurrences SET next_on=%s, last_created_on=%s, updated_at=%s WHERE id=%s",
+               (nxt, today, db.now(), rule_id))
+    return json_response({"task": db.query_one(TASK_SELECT + " WHERE t.id=%s", (task_id,))}, 201)
+
+
+@route("POST", r"/api/admin/run-recurrences")
+def run_recurrences(ctx):
+    admin_only(ctx)
+    return json_response({"created": recurrence.run()})
+
+
+# --------------------------------------------------------------------------
+# Slack
+# --------------------------------------------------------------------------
+
+@route("POST", r"/api/settings/test-slack")
+def test_slack(ctx):
+    admin_only(ctx)
+    project_id = as_int(ctx.body.get("project_id"))
+    url = (ctx.body.get("webhook_url") or "").strip()
+    if not url and project_id:
+        url = slack.webhook_for(project_id)
+    ok, message = slack.check(url or None)
     return json_response({"ok": ok, "message": message}, 200 if ok else 400)

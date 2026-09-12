@@ -224,16 +224,16 @@ def seed_demo():
                "VALUES(%s,'group',%s,'editor')", (project_id, group_id))
 
     def add(title, parent, start, due, assignee, status, progress,
-            milestone=0, order=0, category="", priority=1):
+            milestone=0, order=0, category="", priority=1, hours=None, actual=0):
         return db.insert(
             "INSERT INTO tasks(project_id, parent_id, title, description, category, status, "
-            "priority, assignee_id, start_date, due_date, progress, is_milestone, sort_order, "
-            "created_by, created_at, updated_at) "
-            "VALUES(%s,%s,%s,'',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "priority, assignee_id, start_date, due_date, progress, estimate_hours, actual_hours, "
+            "is_milestone, sort_order, created_by, created_at, updated_at) "
+            "VALUES(%s,%s,%s,'',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (project_id, parent, title, category, status, priority, assignee,
              today + timedelta(days=start) if start is not None else None,
              today + timedelta(days=due) if due is not None else None,
-             progress, milestone, order, admin_id, db.now(), db.now()))
+             progress, hours, actual, milestone, order, admin_id, db.now(), db.now()))
 
     def depends(task_id, *predecessors):
         for pred in predecessors:
@@ -242,35 +242,52 @@ def seed_demo():
 
     plan = add("企画フェーズ", None, -30, -10, admin_id, "done", 100, 0, 10, "design", 2)
     research = add("市場調査", plan, -30, -22, ids["sato@example.com"], "done", 100, 0, 20,
-                   "research")
+                   "research", hours=24, actual=30)
     spec = add("要件定義書の作成", plan, -21, -10, ids["suzuki@example.com"], "done", 100, 0, 30,
-               "docs", 2)
+               "docs", 2, hours=32, actual=38)
     dev = add("開発フェーズ", None, -9, 20, admin_id, "doing", 45, 0, 40, "build", 2)
     be = add("バックエンド実装", dev, -9, 10, ids["suzuki@example.com"], "doing", 60, 0, 50,
              "build")
     api_design = add("API 設計", be, -9, -3, ids["suzuki@example.com"], "done", 100, 0, 60,
                      "design")
     schema = add("DB スキーマ実装", be, -3, 4, ids["suzuki@example.com"], "doing", 50, 0, 70,
-                 "build", 3)
+                 "build", 3, hours=40, actual=22)
     authz = add("認証・権限まわり", be, 2, 10, ids["takahashi@example.com"], "todo", 0, 0, 80,
-                "build", 2)
+                "build", 2, hours=48)
     fe = add("フロントエンド実装", dev, -5, 18, ids["sato@example.com"], "doing", 30, 0, 90,
              "build")
     design = add("画面デザイン", fe, -5, -1, ids["sato@example.com"], "done", 100, 0, 100,
                  "design")
     gantt = add("ガントチャート画面", fe, 0, 12, ids["sato@example.com"], "doing", 40, 0, 110,
-                "build")
-    mobile = add("スマホ対応", fe, 8, 18, ids["takahashi@example.com"], "todo", 0, 0, 120, "build")
+                "build", hours=56, actual=20)
+    mobile = add("スマホ対応", fe, 8, 18, ids["takahashi@example.com"], "todo", 0, 0, 120, "build",
+                 hours=40)
     test = add("結合テスト", None, 18, 28, ids["takahashi@example.com"], "todo", 0, 0, 130,
-               "build", 2)
+               "build", 2, hours=32)
     review = add("社内レビュー完了", None, None, 5, admin_id, "todo", 0, 1, 135, "meeting", 2)
     release = add("リリース", None, None, 30, admin_id, "todo", 0, 1, 140, "admin", 3)
     overdue = add("旧システムのデータ移行", None, -14, -2, ids["sato@example.com"], "doing", 70,
-                  0, 150, "build", 3)
+                  0, 150, "build", 3, hours=60, actual=52)
     add("キックオフ会議", None, -32, -32, admin_id, "done", 100, 0, 5, "meeting")
     add("サーバー障害の一次対応", None, -6, -5, ids["suzuki@example.com"], "done", 100, 0, 155,
         "incident", 3)
     add("経費稟議書の提出", None, 3, 9, admin_id, "todo", 0, 0, 160, "admin")
+
+    # 定例タスク（繰り返し）の例
+    db.insert(
+        "INSERT INTO recurrences(project_id, title, description, category, priority, assignee_id, "
+        "estimate_hours, freq, interval_n, weekdays, lead_days, next_on, created_by, "
+        "created_at, updated_at) VALUES(%s,%s,%s,'meeting',1,%s,1,'weekly',1,'0',3,%s,%s,%s,%s)",
+        (project_id, "週次定例の議事録作成", "前週の進捗と決定事項をまとめる", admin_id,
+         today + timedelta(days=(7 - today.weekday()) % 7 or 7), admin_id, db.now(), db.now()))
+    db.insert(
+        "INSERT INTO recurrences(project_id, title, description, category, priority, assignee_id, "
+        "estimate_hours, freq, interval_n, month_day, lead_days, next_on, created_by, "
+        "created_at, updated_at) VALUES(%s,%s,%s,'admin',2,%s,2,'monthly',1,25,5,%s,%s,%s,%s)",
+        (project_id, "月次の稼働報告書の提出", "前月分の稼働実績をまとめて提出する",
+         ids["sato@example.com"], today.replace(day=25) if today.day < 25 else
+         (today.replace(day=1) + timedelta(days=40)).replace(day=25),
+         admin_id, db.now(), db.now()))
 
     # 依存関係（先行タスク → 後続タスク）
     depends(spec, research)

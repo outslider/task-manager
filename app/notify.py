@@ -9,7 +9,7 @@ from email.utils import formataddr
 
 import pymysql
 
-from . import db
+from . import db, slack
 
 log = logging.getLogger("tm.notify")
 
@@ -221,7 +221,10 @@ def run_daily_digest(force=False):
     if not force and db.get_setting("daily_digest_enabled", "1") != "1":
         return {"sent": 0, "skipped": "digest disabled"}
     today = db.today().isoformat()
+    from . import recurrence          # 循環 import を避けるため遅延読み込み
+    recurring = recurrence.run()
     scanned = scan_due_tasks()
+    slack_posts = slack_daily_summary()
     sent = 0
     for user in db.query("SELECT id, name, email, email_notify FROM users WHERE is_active=1"):
         buckets = daily_summary_for(user["id"])
@@ -233,7 +236,49 @@ def run_daily_digest(force=False):
         if create(user["id"], "digest", title, digest_text(user, buckets),
                   dedupe_key="digest:{}".format(today), email=True):
             sent += 1
-    return {"sent": sent, "due_notifications": scanned}
+    return {"sent": sent, "due_notifications": scanned,
+            "recurring_tasks": recurring, "slack_posts": slack_posts}
+
+
+def slack_daily_summary():
+    """プロジェクトごとの状況を Slack に流す。宛先がなければ何もしない。"""
+    if not slack.available():
+        return 0
+    today = db.today()
+    rows = db.query(
+        """
+        SELECT p.id, p.name, p.slack_webhook_url,
+               SUM(t.status IN %s AND t.due_date IS NOT NULL AND t.due_date < %s) AS overdue,
+               SUM(t.status IN %s AND t.due_date = %s) AS due_today,
+               SUM(t.status IN %s) AS open_tasks
+          FROM projects p LEFT JOIN tasks t ON t.project_id = p.id
+         WHERE p.archived = 0
+         GROUP BY p.id
+        """,
+        (OPEN_STATUSES, today, OPEN_STATUSES, today, OPEN_STATUSES))
+    base = db.get_setting("app_base_url", "").rstrip("/")
+    posted = 0
+    combined = []
+    for row in rows:
+        overdue, due_today = int(row["overdue"] or 0), int(row["due_today"] or 0)
+        issues = db.scalar(
+            "SELECT COUNT(*) AS c FROM issues WHERE project_id=%s AND status IN %s "
+            "AND severity >= 2", (row["id"], ("open", "doing", "pending")), default=0)
+        if not (overdue or due_today or issues):
+            continue
+        line = "*{}* — 期限超過 {} / 本日期限 {} / 重要な未解決課題 {}".format(
+            row["name"], overdue, due_today, issues)
+        link = "{}/#/p/{}/tasks".format(base, row["id"]) if base else ""
+        if row["slack_webhook_url"].strip():
+            ok, _ = slack.post("📋 本日の状況\n{}\n{}".format(line, link),
+                               webhook_url=row["slack_webhook_url"].strip())
+            posted += 1 if ok else 0
+        else:
+            combined.append(line + ("\n{}".format(link) if link else ""))
+    if combined:
+        ok, _ = slack.post("📋 本日の状況\n" + "\n".join(combined))
+        posted += 1 if ok else 0
+    return posted
 
 
 # --------------------------------------------------------------------------

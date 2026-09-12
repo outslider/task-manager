@@ -55,6 +55,7 @@ DDL = [
         color       VARCHAR(20)   NOT NULL DEFAULT '#4f8cff',
         owner_id    INT NULL,
         archived    TINYINT(1)    NOT NULL DEFAULT 0,
+        slack_webhook_url VARCHAR(300) NOT NULL DEFAULT '',  -- 空なら全体設定を使う
         created_at  DATETIME      NOT NULL,
         CONSTRAINT fk_proj_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -83,6 +84,8 @@ DDL = [
         start_date   DATE NULL,
         due_date     DATE NULL,
         progress     INT          NOT NULL DEFAULT 0,
+        estimate_hours DECIMAL(6,1) NULL,              -- 見積工数（任意）
+        actual_hours   DECIMAL(6,1) NOT NULL DEFAULT 0, -- 実績工数（日次更新で積み上がる）
         is_milestone TINYINT(1)   NOT NULL DEFAULT 0,
         sort_order   INT          NOT NULL DEFAULT 0,
         created_by   INT NULL,
@@ -145,6 +148,36 @@ DDL = [
         KEY idx_issue_tasks_task (task_id),
         CONSTRAINT fk_it_issue FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
         CONSTRAINT fk_it_task  FOREIGN KEY (task_id)  REFERENCES tasks(id)  ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS recurrences (
+        id             INT AUTO_INCREMENT PRIMARY KEY,
+        project_id     INT NOT NULL,
+        title          VARCHAR(300) NOT NULL,
+        description    TEXT,
+        category       VARCHAR(20)  NOT NULL DEFAULT '',
+        priority       TINYINT      NOT NULL DEFAULT 1,
+        assignee_id    INT NULL,
+        estimate_hours DECIMAL(6,1) NULL,
+        parent_id      INT NULL,                        -- 生成先の親タスク（任意）
+        freq           VARCHAR(10)  NOT NULL,           -- daily | weekly | monthly
+        interval_n     INT          NOT NULL DEFAULT 1,
+        weekdays       VARCHAR(20)  NOT NULL DEFAULT '', -- weekly のとき '0,2,4'（月=0）
+        month_day      TINYINT      NULL,               -- monthly のとき 1-31
+        lead_days      INT          NOT NULL DEFAULT 3, -- 期限の何日前に作るか
+        next_on        DATE         NOT NULL,           -- 次に作るタスクの期限
+        last_created_on DATE        NULL,
+        active         TINYINT(1)   NOT NULL DEFAULT 1,
+        created_by     INT NULL,
+        created_at     DATETIME     NOT NULL,
+        updated_at     DATETIME     NOT NULL,
+        KEY idx_recurrence_project (project_id),
+        KEY idx_recurrence_next (active, next_on),
+        CONSTRAINT fk_rec_project  FOREIGN KEY (project_id)  REFERENCES projects(id) ON DELETE CASCADE,
+        CONSTRAINT fk_rec_assignee FOREIGN KEY (assignee_id) REFERENCES users(id)    ON DELETE SET NULL,
+        CONSTRAINT fk_rec_parent   FOREIGN KEY (parent_id)   REFERENCES tasks(id)    ON DELETE SET NULL,
+        CONSTRAINT fk_rec_creator  FOREIGN KEY (created_by)  REFERENCES users(id)    ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
@@ -245,6 +278,9 @@ DEFAULT_SETTINGS = {
     "llm_enabled": "0",
     "llm_api_key": "",
     "llm_model": "claude-opus-5",
+    "slack_enabled": "0",
+    "slack_webhook_url": "",
+    "work_hours_per_day": "8",
     "app_name": "タスク管理",
 }
 
@@ -390,6 +426,12 @@ MIGRATIONS = [
      "ALTER TABLE users ADD COLUMN ui_theme VARCHAR(10) NOT NULL DEFAULT 'auto'"),
     ("users", "ui_accent",
      "ALTER TABLE users ADD COLUMN ui_accent VARCHAR(20) NOT NULL DEFAULT ''"),
+    ("tasks", "estimate_hours",
+     "ALTER TABLE tasks ADD COLUMN estimate_hours DECIMAL(6,1) NULL AFTER progress"),
+    ("tasks", "actual_hours",
+     "ALTER TABLE tasks ADD COLUMN actual_hours DECIMAL(6,1) NOT NULL DEFAULT 0 AFTER estimate_hours"),
+    ("projects", "slack_webhook_url",
+     "ALTER TABLE projects ADD COLUMN slack_webhook_url VARCHAR(300) NOT NULL DEFAULT ''"),
     ("comments", "issue_id", "ALTER TABLE comments ADD COLUMN issue_id INT NULL AFTER task_id"),
     ("attachments", "issue_id",
      "ALTER TABLE attachments ADD COLUMN issue_id INT NULL AFTER task_id"),

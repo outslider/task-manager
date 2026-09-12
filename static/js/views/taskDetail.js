@@ -125,13 +125,26 @@ async function renderDetail(instance, taskId, onChange) {
   categoryInput.addEventListener('change', (event) =>
     patch({ category: event.target.value }));
 
+  const hoursInput = (key, value) => {
+    const node = el('input', {
+      class: 'input', type: 'number', min: 0, step: 0.5, placeholder: '任意',
+      value: value ?? '', disabled: !canEdit,
+      onChange: (event) => patch({ [key]: event.target.value === '' ? null : Number(event.target.value) }),
+    });
+    return node;
+  };
+
   body.append(warnings(task, metrics, conflicts));
   body.append(el('div', { class: 'detail-grid' },
     el('div', {}, el('span', { class: 'label', text: '状態' }), statusSelect),
     el('div', {}, el('span', { class: 'label', text: 'カテゴリ' }), categoryInput),
     el('div', {}, el('span', { class: 'label', text: '担当者' }), assignee),
     el('div', {}, el('span', { class: 'label', text: '開始日' }), startInput),
-    el('div', {}, el('span', { class: 'label', text: '期限' }), dueInput)));
+    el('div', {}, el('span', { class: 'label', text: '期限' }), dueInput),
+    el('div', {}, el('span', { class: 'label', text: '見積 (h)' }),
+      hoursInput('estimate_hours', task.estimate_hours)),
+    el('div', {}, el('span', { class: 'label', text: '実績 (h)' }),
+      hoursInput('actual_hours', Number(task.actual_hours) || null))));
 
   const overdueLabel = dueLabel(task.due_date, task.status);
   body.append(el('div', { style: { marginTop: '12px' } },

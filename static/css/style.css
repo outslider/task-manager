@@ -307,6 +307,55 @@ button, input, select, textarea { font: inherit; color: inherit; }
   :root:not([data-theme="light"]) .badge.review { background: #2e2444; color: #b794f6; }
 }
 
+/* ---------- recurrence ---------- */
+.rec-row {
+  display: flex; gap: 12px; align-items: center; justify-content: space-between;
+  padding: 11px 0; border-bottom: 1px solid var(--border);
+}
+.rec-row:last-child { border-bottom: none; }
+.rec-row.off { opacity: .55; }
+.wd-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.wd-btn {
+  width: 36px; height: 34px; border-radius: var(--radius-sm); cursor: pointer;
+  border: 1px solid var(--border-strong); background: var(--surface);
+  font-weight: 620; color: var(--text-muted);
+}
+.wd-btn.active { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast, #fff); }
+
+/* ---------- workload ---------- */
+.wl-wrap { overflow-x: auto; }
+.wl-table { width: 100%; border-collapse: collapse; min-width: 640px; }
+.wl-table th {
+  font-size: 11px; font-weight: 700; color: var(--text-faint); letter-spacing: .06em;
+  padding: 9px 6px; border-bottom: 1px solid var(--border); text-align: center;
+  background: var(--surface); white-space: nowrap;
+}
+.wl-table th.wl-name, .wl-table td.wl-name {
+  text-align: left; width: 176px; padding-left: 15px; white-space: nowrap;
+}
+.wl-table th.wl-week.current { color: var(--accent); }
+.wl-now { display: block; font-size: 9.5px; font-weight: 700; color: var(--accent); }
+.wl-table td { border-bottom: 1px solid var(--border); padding: 7px 6px; }
+.wl-table tr:last-child td { border-bottom: none; }
+.wl-cell {
+  position: relative; text-align: center; font-size: 12.5px; font-variant-numeric: tabular-nums;
+  min-width: 62px; height: 42px; vertical-align: middle;
+}
+.wl-value { position: relative; z-index: 1; font-weight: 620; }
+.wl-bar {
+  position: absolute; left: 6px; right: 6px; bottom: 6px; height: 4px; border-radius: 3px;
+  background: currentColor; opacity: .55; width: 0;
+}
+.wl-cell.idle { color: var(--text-faint); }
+.wl-cell.ok { color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.wl-cell.high { color: var(--warn); background: var(--warn-soft); }
+.wl-cell.over { color: var(--danger); background: var(--danger-soft); font-weight: 700; }
+.wl-cell:hover { outline: 2px solid var(--border-strong); outline-offset: -2px; }
+.wl-total {
+  text-align: right; padding-right: 15px; font-weight: 700; white-space: nowrap;
+  font-variant-numeric: tabular-nums; color: var(--text-muted);
+}
+
 /* ---------- quick add / suggestions ---------- */
 .qa-button {
   gap: 6px; background: var(--accent-soft); color: var(--accent);
@@ -671,6 +720,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   justify-content: flex-end;
 }
 .daily-controls .select { max-width: 104px; }
+.qhours { max-width: 74px; text-align: right; font-variant-numeric: tabular-nums; }
 .daily-item { padding: 12px 16px; align-items: center; }
 .qbtn {
   border: 1px solid var(--border-strong); background: var(--surface); border-radius: 7px;

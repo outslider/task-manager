@@ -135,6 +135,15 @@ export async function render(container, route) {
   const toolbar = el('div', { class: 'toolbar' },
     searchInput, assigneeFilter, statusFilter, categoryFilter, attentionToggle,
     el('div', { class: 'spacer' }),
+    canEdit
+      ? el('button', {
+        class: 'btn btn-sm', title: '定例タスクの設定',
+        onClick: async () => {
+          const { openRecurrenceManager } = await import('./recurrence.js');
+          if (await openRecurrenceManager(project)) reload();
+        },
+      }, '🔁 定例')
+      : null,
     el('button', {
       class: 'btn btn-sm', title: 'すべて展開',
       onClick: () => { collapsed.clear(); saveCollapsed(projectId, collapsed); draw(); },
@@ -442,6 +451,12 @@ export async function render(container, route) {
     menuItem('✏️ 編集', async () => {
       const saved = await openTaskForm({ project, task, tasks: data.tasks, deps: data.deps });
       if (saved) reload();
+    }),
+    menuItem('🔁 定例にする', async () => {
+      const { openRecurrenceForm } = await import('./recurrence.js');
+      if (await openRecurrenceForm(project, null, task)) {
+        toast('定例タスクとして登録しました', 'ok');
+      }
     }),
     menuItem(task.status === 'done' ? '↩︎ 未完了に戻す' : '✓ 完了にする', async () => {
       await api.patch(`/api/tasks/${task.id}`, { status: task.status === 'done' ? 'doing' : 'done' });
