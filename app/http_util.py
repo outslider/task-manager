@@ -4,6 +4,7 @@ import re
 from http import cookies as http_cookies
 
 from . import db
+from .config import COOKIE_PATH
 
 
 class HttpError(Exception):
@@ -39,7 +40,8 @@ class Response:
         self.headers = headers or []
 
     def add_cookie(self, name, value, max_age=None, secure=False, http_only=True,
-                   same_site="Lax", path="/"):
+                   same_site="Lax", path=None):
+        path = path or COOKIE_PATH
         parts = ["{}={}".format(name, value), "Path=" + path]
         if max_age is not None:
             parts.append("Max-Age={}".format(max_age))
@@ -50,6 +52,10 @@ class Response:
         parts.append("SameSite=" + same_site)
         self.headers.append(("Set-Cookie", "; ".join(parts)))
         return self
+
+
+def redirect(location, status=302):
+    return Response(status, b"", "text/plain; charset=utf-8", [("Location", location)])
 
 
 def json_response(data, status=200):

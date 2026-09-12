@@ -29,7 +29,7 @@ os.environ.setdefault("TM_SECURE_COOKIE", "0")
 os.environ.setdefault("TM_ADMIN_EMAIL", "admin@test.local")
 os.environ.setdefault("TM_ADMIN_PASSWORD", "admin-test-pw")
 
-from app import auth, db, notify  # noqa: E402
+from app import auth, config, db, http_util, notify  # noqa: E402
 import server as server_module  # noqa: E402
 
 ADMIN = ("admin@test.local", "admin-test-pw")
@@ -59,8 +59,9 @@ class Client:
 
     def __init__(self, base):
         self.base = base
+        self.jar = CookieJar()
         self.opener = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(CookieJar()))
+            urllib.request.HTTPCookieProcessor(self.jar))
 
     def request(self, method, path, body=None, raw_body=None, content_type=None):
         url = self.base + urllib.parse.quote(path, safe="/?&=%")
@@ -974,6 +975,93 @@ class TestAppearance(ApiTestCase):
         data = Client(self.base).get("/api/auth/me")[1]
         self.assertIsNone(data["user"])
         self.assertEqual(data["ui"]["app_name"], "課題管理")
+
+
+class TestSubdirectory(unittest.TestCase):
+    """サブディレクトリ配下（/tasks）で公開したときの挙動。"""
+
+    BASE_PATH = "/tasks"
+
+    @classmethod
+    def setUpClass(cls):
+        db.init_db()
+        reset_database()
+        cls._saved = (server_module.BASE_PATH, http_util.COOKIE_PATH)
+        server_module.BASE_PATH = cls.BASE_PATH
+        http_util.COOKIE_PATH = cls.BASE_PATH
+        port = free_port()
+        cls.base = "http://127.0.0.1:{}".format(port)
+        cls.server = server_module.Server(("127.0.0.1", port), server_module.Handler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=5)
+        server_module.BASE_PATH, http_util.COOKIE_PATH = cls._saved
+
+    def setUp(self):
+        self.client = Client(self.base)
+
+    def test_index_is_served_under_the_prefix(self):
+        status, body = self.client.get("/tasks/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"<!doctype html>", body.lower())
+
+    def test_assets_are_served_under_the_prefix(self):
+        self.assertEqual(self.client.get("/tasks/css/style.css")[0], 200)
+        self.assertEqual(self.client.get("/tasks/js/app.js")[0], 200)
+
+    def test_html_references_assets_relatively(self):
+        body = self.client.get("/tasks/")[1].decode()
+        self.assertIn('href="css/style.css"', body)
+        self.assertNotIn('href="/css/style.css"', body)
+
+    def test_missing_trailing_slash_redirects(self):
+        request = urllib.request.Request(self.base + "/tasks", method="GET")
+        opener = urllib.request.build_opener(NoRedirect())
+        try:
+            with opener.open(request, timeout=10) as response:
+                status, location = response.status, response.headers.get("Location")
+        except urllib.error.HTTPError as error:
+            status, location = error.code, error.headers.get("Location")
+        self.assertEqual(status, 302)
+        self.assertEqual(location, "/tasks/")
+
+    def test_api_works_under_the_prefix(self):
+        status, data = self.client.get("/tasks/api/meta")
+        self.assertEqual(status, 200)
+        self.assertIn("statuses", data)
+
+    def test_paths_outside_the_prefix_are_not_served(self):
+        self.assertEqual(self.client.get("/")[0], 404)
+        self.assertEqual(self.client.get("/api/meta")[0], 404)
+        self.assertEqual(self.client.get("/css/style.css")[0], 404)
+
+    def test_login_cookie_is_scoped_to_the_prefix(self):
+        status, _ = self.client.post("/tasks/api/auth/login",
+                                     {"email": ADMIN[0], "password": ADMIN[1]})
+        self.assertEqual(status, 200)
+        cookie = next(iter(self.client.jar))
+        self.assertEqual(cookie.path, self.BASE_PATH)
+        # 同じセッションでそのまま API を呼べること
+        self.assertEqual(self.client.get("/tasks/api/projects")[0], 200)
+
+    def test_base_path_normalisation(self):
+        normalize = config._normalize_base_path
+        self.assertEqual(normalize(""), "")
+        self.assertEqual(normalize("/"), "")
+        self.assertEqual(normalize("tasks"), "/tasks")
+        self.assertEqual(normalize("/tasks"), "/tasks")
+        self.assertEqual(normalize("/tasks/"), "/tasks")
+        self.assertEqual(normalize("  /tools/tasks/  "), "/tools/tasks")
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
 
 
 class TestSettings(ApiTestCase):

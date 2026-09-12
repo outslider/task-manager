@@ -1,5 +1,5 @@
 /* Issue detail drawer: status, linked tasks, history and attachments. */
-import { api } from '../api.js';
+import { api, url } from '../api.js';
 import {
   store, ISSUE_STATUS_LABEL, SEVERITY_LABEL, STATUS_LABEL, issueCategory,
 } from '../store.js';
@@ -257,7 +257,7 @@ function attachmentRow(att, canEdit, reload) {
   return el('div', { class: 'att-item' },
     el('span', { text: isFile ? '📎' : '🔗' }),
     el('a', {
-      class: 'name', href: isFile ? `/api/attachments/${att.id}/download` : att.url,
+      class: 'name', href: isFile ? url(`/api/attachments/${att.id}/download`) : att.url,
       target: '_blank', rel: 'noopener noreferrer', text: att.name,
     }),
     isFile ? el('span', { class: 'size', text: formatBytes(att.size) }) : null,

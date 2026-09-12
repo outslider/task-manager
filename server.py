@@ -16,9 +16,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from app import api, auth, db, notify
-from app.config import DB, MAX_UPLOAD_BYTES, SECURE_COOKIE, SERVER, STATIC_DIR
+from app.config import (BASE_PATH, DB, MAX_UPLOAD_BYTES, SECURE_COOKIE, SERVER,
+                        STATIC_DIR)
 from app.http_util import (HttpError, Response, error_response, parse_cookies,
-                           parse_json_body, parse_multipart)
+                           parse_json_body, parse_multipart, redirect)
 
 log = logging.getLogger("tm")
 
@@ -106,6 +107,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             parsed = urlparse(self.path)
             path = unquote(parsed.path)
+            if BASE_PATH:
+                if path == BASE_PATH:
+                    # 末尾のスラッシュがないと相対パスの解決先がずれるため揃える
+                    self._send(redirect(BASE_PATH + "/"))
+                    return
+                if path.startswith(BASE_PATH + "/"):
+                    path = path[len(BASE_PATH):]
+                else:
+                    raise HttpError(404, "ページが見つかりません")
             if path.startswith("/api/"):
                 self._send(self._handle_api(path, parsed.query))
             else:
@@ -361,8 +371,8 @@ def main():
         notify.start_scheduler()
 
     httpd = Server((args.host, args.port), Handler)
-    print("タスク管理システムを起動しました: http://{}:{}/".format(
-        "localhost" if args.host in ("0.0.0.0", "") else args.host, args.port))
+    print("タスク管理システムを起動しました: http://{}:{}{}/".format(
+        "localhost" if args.host in ("0.0.0.0", "") else args.host, args.port, BASE_PATH))
     print("DB: {user}@{host}:{port}/{database} ({version})".format(
         version=db.server_version(), **DB))
     try:

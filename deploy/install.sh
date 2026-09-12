@@ -14,6 +14,7 @@ APP_USER=taskmgr
 SERVICE=task-manager
 PORT=8080
 BIND=127.0.0.1
+BASE_PATH=
 DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_NAME=task_manager
@@ -33,6 +34,7 @@ usage() {
   --service NAME        systemd サービス名        (既定 task-manager)
   --bind ADDR           待ち受けアドレス          (既定 127.0.0.1)
   --port N              待ち受けポート            (既定 8080)
+  --base-path PATH      サブディレクトリ公開       (例 /tasks、既定は空＝ルート)
   --db-host HOST        DB ホスト                 (既定 127.0.0.1)
   --db-port N           DB ポート                 (既定 3306)
   --db-name NAME        DB 名                     (既定 task_manager)
@@ -52,6 +54,7 @@ while [ $# -gt 0 ]; do
         --service) SERVICE=$2; shift 2 ;;
         --bind) BIND=$2; shift 2 ;;
         --port) PORT=$2; shift 2 ;;
+        --base-path) BASE_PATH=$2; shift 2 ;;
         --db-host) DB_HOST=$2; shift 2 ;;
         --db-port) DB_PORT=$2; shift 2 ;;
         --db-name) DB_NAME=$2; shift 2 ;;
@@ -135,6 +138,7 @@ if [ -f "$APP_DIR/config.ini" ]; then
     DB_NAME=$(conf_value name); DB_USER=$(conf_value user)
     BIND=$(sed -n '/^\[server\]/,$p' "$APP_DIR/config.ini" \
         | sed -n 's/^[[:space:]]*host[[:space:]]*=[[:space:]]*//p' | head -1)
+    BASE_PATH=$(sed -n 's/^[[:space:]]*base_path[[:space:]]*=[[:space:]]*//p' "$APP_DIR/config.ini" | head -1)
     PORT=$(sed -n '/^\[server\]/,$p' "$APP_DIR/config.ini" \
         | sed -n 's/^[[:space:]]*port[[:space:]]*=[[:space:]]*//p' | head -1)
 else
@@ -152,6 +156,8 @@ password = $DB_PASSWORD
 [server]
 host = $BIND
 port = $PORT
+; サブディレクトリ配下で公開する場合のみ設定します（例 /tasks）
+base_path = $BASE_PATH
 max_upload_bytes = 26214400
 ; HTTPS で公開する場合は 1 にしてください
 secure_cookie = 0
@@ -207,7 +213,7 @@ cat <<DONE
 
   インストール先 : $APP_DIR
   実行ユーザー   : $APP_USER
-  待ち受け       : http://$BIND:$PORT/
+  待ち受け       : http://$BIND:$PORT${BASE_PATH}/
   データベース   : $DB_USER@$DB_HOST:$DB_PORT/$DB_NAME
 DONE
 if [ "$WITH_SERVICE" = 1 ]; then

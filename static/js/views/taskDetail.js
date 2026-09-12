@@ -1,5 +1,5 @@
 /* Task detail drawer: inline editing, subtasks, links/files, comments. */
-import { api } from '../api.js';
+import { api, url } from '../api.js';
 import {
   store, STATUS_LABEL, IMPORTANCE_LABEL, ISSUE_STATUS_LABEL, SEVERITY_LABEL,
 } from '../store.js';
@@ -356,7 +356,7 @@ function commentRow(comment, reload) {
 function attachmentRow(att, canEdit, reload) {
   const isFile = att.kind === 'file';
   const label = el('a', {
-    class: 'name', href: isFile ? `/api/attachments/${att.id}/download` : att.url,
+    class: 'name', href: isFile ? url(`/api/attachments/${att.id}/download`) : att.url,
     target: '_blank', rel: 'noopener noreferrer', text: att.name,
   });
   return el('div', { class: 'att-item' },

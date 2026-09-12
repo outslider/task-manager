@@ -1,5 +1,21 @@
 /* Thin wrapper around fetch for the JSON API. */
 
+/**
+ * Path the app is served from, e.g. "/" or "/tasks/".
+ * Routing is hash based, so location.pathname always points at the app itself.
+ * Everything the client requests is built on top of this, which is what lets the
+ * app live in a subdirectory without any build-time configuration.
+ */
+export const BASE = (() => {
+  const path = window.location.pathname.replace(/[^/]*$/, '');
+  return path.endsWith('/') ? path : `${path}/`;
+})();
+
+/** Absolute URL for an app path, e.g. url('/api/meta') -> '/tasks/api/meta'. */
+export function url(path) {
+  return BASE + String(path).replace(/^\/+/, '');
+}
+
 class ApiError extends Error {
   constructor(status, message, detail) {
     super(message);
@@ -9,14 +25,14 @@ class ApiError extends Error {
 }
 
 async function request(method, path, { body, query, raw } = {}) {
-  let url = path;
+  let target = url(path);
   if (query) {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined && value !== null && value !== '') params.set(key, value);
     }
     const qs = params.toString();
-    if (qs) url += `?${qs}`;
+    if (qs) target += `?${qs}`;
   }
   const options = { method, headers: {}, credentials: 'same-origin' };
   if (body instanceof FormData) {
@@ -25,7 +41,7 @@ async function request(method, path, { body, query, raw } = {}) {
     options.headers['Content-Type'] = 'application/json';
     options.body = JSON.stringify(body);
   }
-  const response = await fetch(url, options);
+  const response = await fetch(target, options);
   if (raw) {
     if (!response.ok) throw new ApiError(response.status, 'ダウンロードに失敗しました');
     return response;

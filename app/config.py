@@ -40,6 +40,21 @@ SERVER = {
     "port": int(_get("server", "port", "TM_PORT", "8080")),
 }
 
+def _normalize_base_path(value):
+    """'' | '/tasks' — leading slash, no trailing slash."""
+    value = (value or "").strip().strip("/")
+    return "/" + value if value else ""
+
+
+# サブディレクトリ配下で公開する場合のパス（例 /tasks）。
+# リバースプロキシがプレフィックスを削らない構成のときに指定します。
+BASE_PATH = _normalize_base_path(_get("server", "base_path", "TM_BASE_PATH", ""))
+
+# 通常は base_path と同じ。プロキシ側がプレフィックスを削る構成（アプリはルートで動くが、
+# ブラウザからはサブディレクトリに見える）のときだけ、ここでクッキーの範囲を絞れます。
+COOKIE_PATH = (_normalize_base_path(_get("server", "cookie_path", "TM_COOKIE_PATH", ""))
+               or BASE_PATH or "/")
+
 # 25 MB per uploaded file by default.
 MAX_UPLOAD_BYTES = int(_get("server", "max_upload_bytes", "TM_MAX_UPLOAD", str(25 * 1024 * 1024)))
 SECURE_COOKIE = _get("server", "secure_cookie", "TM_SECURE_COOKIE", "0") == "1"

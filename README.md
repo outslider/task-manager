@@ -104,6 +104,7 @@ vi config.ini          # DB 接続情報とポートを記入
 | `TM_DB_HOST` / `TM_DB_PORT` | `127.0.0.1` / `3306` | DB 接続先 |
 | `TM_DB_NAME` / `TM_DB_USER` / `TM_DB_PASSWORD` | `task_manager` / `tmapp` / — | DB 認証情報 |
 | `TM_HOST` / `TM_PORT` | `0.0.0.0` / `8080` | 待ち受けアドレス |
+| `TM_BASE_PATH` | （空） | サブディレクトリ公開時のパス（例 `/tasks`） |
 | `TM_MAX_UPLOAD` | `26214400` | 添付ファイル上限（バイト） |
 | `TM_SECURE_COOKIE` | `0` | HTTPS 公開時は `1` |
 | `TM_ADMIN_EMAIL` / `TM_ADMIN_PASSWORD` | `admin@example.com` / 自動生成 | 初期管理者 |
@@ -320,6 +321,65 @@ BOM 付き UTF-8）。
 
 ## 本番運用
 
+### サブディレクトリ配下で公開する
+
+`https://example.co.jp/tasks/` のように、既存サイトのサブディレクトリで動かせます。
+1 つのドメインに複数のアプリを相乗りさせたい場合に使ってください。**ビルドし直しは不要です。**
+
+前段のプロキシが「プレフィックスを削るかどうか」で設定が変わります。どちらでも動きます。
+
+#### パターンA: プロキシがプレフィックスを削らない（nginx など）
+
+アプリ側にパスを教えます。
+
+```ini
+; config.ini
+[server]
+base_path = /tasks
+```
+
+インストーラなら `sudo ./deploy/install.sh --base-path /tasks` で設定されます。
+nginx 側は `proxy_pass` の**末尾にスラッシュを付けない**のがポイントです。
+
+```nginx
+location /tasks/ {
+    proxy_pass       http://127.0.0.1:8080;   # 末尾に / を付けない
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+この構成ではセッション Cookie の `Path` も `/tasks` に限定されます。
+
+#### パターンB: プロキシがプレフィックスを削る（Tailscale serve など）
+
+アプリはルートで動いたまま、ブラウザからはサブディレクトリに見える構成です。
+`base_path` は**空のまま**にしてください。
+
+```bash
+sudo tailscale serve --bg --set-path /tasks http://127.0.0.1:8080
+```
+
+nginx で同じことをする場合は `proxy_pass http://127.0.0.1:8080/;`（末尾に `/` を付ける）です。
+
+この構成ではアプリが外側のパスを知らないため Cookie の `Path` が `/` になります。
+同じドメインの他アプリにも Cookie が送られるのが気になる場合だけ、次を設定してください。
+
+```ini
+[server]
+cookie_path = /tasks
+```
+
+#### 共通の設定
+
+「管理 > システム設定 > アプリの URL」を `https://example.co.jp/tasks` にしてください
+（通知メール内のリンクに使われます）。
+
+> **仕組み**: 画面側は `location.pathname` を基準に URL を組み立てます。ハッシュルーティング
+> なのでパスは常にアプリ自身を指し、どの階層に置いても正しく解決されます。サーバー側は
+> `base_path` が設定されていれば受け取ったパスからそれを取り除いてから通常どおり処理し、
+> 末尾スラッシュなしの `/tasks` は `/tasks/` にリダイレクトします。
+
 ### 別のサーバーへデプロイする
 
 移すものは **アプリ本体・データベース・添付ファイル（`data/uploads/`）** の3つだけです。
@@ -534,7 +594,7 @@ task_manager/
 │       ├── theme.js       配色（ライト/ダーク・アクセントカラー生成）
 │       └── views/         画面ごとのモジュール（issues.js / bottlenecks.js など）
 ├── tests/
-│   ├── test_api.py        API 統合テスト（89 ケース）
+│   ├── test_api.py        API 統合テスト（97 ケース）
 │   └── test_graph.py      依存グラフ解析の単体テスト（18 ケース）
 ├── docs/schema.sql        スキーマ定義（参照用）
 ├── deploy/
