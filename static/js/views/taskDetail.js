@@ -166,17 +166,27 @@ async function renderDetail(instance, taskId, onChange) {
   /* ---- subtasks ---- */
   body.append(sectionTitle(`子タスク (${children.length})`,
     canEdit
-      ? el('button', {
-        class: 'btn btn-sm',
-        onClick: async () => {
-          const projectTasks = await api.projectTasks(task.project_id);
-          const saved = await openTaskForm({
-            project: { id: task.project_id }, parentId: task.id,
-            tasks: projectTasks.tasks, deps: projectTasks.deps,
-          });
-          if (saved) reload();
-        },
-      }, '＋ 追加')
+      ? el('span', { style: { display: 'flex', gap: '6px' } },
+        el('button', {
+          class: 'btn btn-sm',
+          title: '内容から子タスクの候補を作ります',
+          onClick: async () => {
+            const { openSubtaskSuggestions } = await import('./decompose.js');
+            const added = await openSubtaskSuggestions(task);
+            if (added) reload();
+          },
+        }, '✨ 分解を提案'),
+        el('button', {
+          class: 'btn btn-sm',
+          onClick: async () => {
+            const projectTasks = await api.projectTasks(task.project_id);
+            const saved = await openTaskForm({
+              project: { id: task.project_id }, parentId: task.id,
+              tasks: projectTasks.tasks, deps: projectTasks.deps,
+            });
+            if (saved) reload();
+          },
+        }, '＋ 追加'))
       : null));
   if (children.length === 0) {
     body.append(el('div', { class: 'hint', text: '子タスクはありません' }));

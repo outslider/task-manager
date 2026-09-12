@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import pymysql
 
-from . import auth, db, graph, notify
+from . import auth, db, graph, llm, nlp, notify
 from .config import MAX_UPLOAD_BYTES, UPLOAD_DIR
 from .http_util import (HttpError, as_bool, as_date, as_int, bad_request, forbidden,
                         json_response, not_found, require, unauthorized, Response)
@@ -1512,7 +1512,7 @@ def daily_update(ctx):
 # settings / admin
 # --------------------------------------------------------------------------
 
-SECRET_SETTINGS = ("smtp_password",)
+SECRET_SETTINGS = ("smtp_password", "llm_api_key")
 
 
 @route("GET", r"/api/settings")
@@ -1521,7 +1521,13 @@ def get_settings(ctx):
     settings = db.all_settings()
     for key in SECRET_SETTINGS:
         settings[key] = "********" if settings.get(key) else ""
-    return json_response({"settings": settings, "email_ready": notify.email_configured()})
+    return json_response({
+        "settings": settings,
+        "email_ready": notify.email_configured(),
+        "llm_ready": llm.available(),
+        "llm_sdk": llm.sdk_installed(),
+        "llm_models": llm.MODELS,
+    })
 
 
 @route("PUT", r"/api/settings")
@@ -1572,6 +1578,7 @@ def meta(ctx):
                              for v, label, color in ISSUE_CATEGORIES],
         "severity": [{"value": k, "label": v}
                      for k, v in sorted(SEVERITY_LABEL.items(), reverse=True)],
+        "llm_available": llm.available(),
         "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
         "max_depth": MAX_TASK_DEPTH,
     })
@@ -1952,3 +1959,157 @@ def add_issue_attachment(ctx, issue_id):
     user = me(ctx)
     issue_or_404(user, issue_id, "editor")
     return _store_attachments(ctx, user, {"issue_id": issue_id})
+
+
+# --------------------------------------------------------------------------
+# 自然言語入力とタスク分解
+# --------------------------------------------------------------------------
+
+def _nl_context(user):
+    """解析に渡す担当者候補とプロジェクト候補。"""
+    users = db.query("SELECT id, name FROM users WHERE is_active=1")
+    ids = auth.visible_project_ids(user)
+    projects = db.query(
+        "SELECT id, name FROM projects WHERE id IN %s AND archived=0", (tuple(ids),)
+    ) if ids else []
+    return users, projects
+
+
+@route("POST", r"/api/nl/parse")
+def nl_parse(ctx):
+    """一文からタスクの下書きを作る。DB には書き込まない。"""
+    user = me(ctx)
+    text = require(ctx.body, "text", "入力")
+    users, projects = _nl_context(user)
+    default_project = as_int(ctx.body.get("project_id"))
+
+    draft, warning = None, None
+    if llm.available() and not as_bool(ctx.body.get("force_rule")):
+        try:
+            draft = llm.parse(text, users=users, projects=projects)
+        except llm.LlmError as error:
+            warning = "{}（簡易解析で代替しました）".format(error)
+        except Exception as error:  # noqa: BLE001 - 解析失敗で登録を止めない
+            warning = "解析に失敗しました（簡易解析で代替しました）"
+            log_llm_failure(error)
+    if draft is None:
+        draft = nlp.parse(text, users=users, projects=projects,
+                          default_project_id=default_project)
+    if not draft.get("project_id"):
+        draft["project_id"] = default_project or _default_project_id(user)
+    if not draft.get("title"):
+        raise bad_request("タスク名を読み取れませんでした")
+
+    # 権限のないプロジェクトを指してしまった場合は既定に戻す
+    if draft["project_id"] and not auth.has_project_access(user, draft["project_id"], "editor"):
+        draft["project_id"] = _default_project_id(user)
+    return json_response({"draft": draft, "warning": warning, "source": text})
+
+
+def log_llm_failure(error):
+    import logging
+    logging.getLogger("tm.api").warning("LLM parse failed: %s", error)
+
+
+def _default_project_id(user):
+    """編集できるプロジェクトのうち、直近に更新されたもの。"""
+    ids = auth.visible_project_ids(user)
+    for row in db.query(
+            "SELECT p.id FROM projects p WHERE p.id IN %s AND p.archived=0 "
+            "ORDER BY (SELECT MAX(t.updated_at) FROM tasks t WHERE t.project_id=p.id) DESC, "
+            "p.id DESC", (tuple(ids),)) if ids else []:
+        if auth.has_project_access(user, row["id"], "editor"):
+            return row["id"]
+    return None
+
+
+@route("POST", r"/api/nl/decompose")
+def nl_decompose(ctx):
+    """大きなタスクを子タスク候補に分解する。DB には書き込まない。"""
+    user = me(ctx)
+    title = require(ctx.body, "title", "タスク名")
+    project_id = as_int(ctx.body.get("project_id"))
+    if project_id:
+        project_or_404(user, project_id, "editor")
+    start_date = as_date(ctx.body.get("start_date"))
+    due_date = as_date(ctx.body.get("due_date"))
+    description = ctx.body.get("description", "")
+
+    warning, result = None, None
+    if llm.available() and not as_bool(ctx.body.get("force_rule")):
+        try:
+            steps = llm.decompose(title, description, start_date, due_date)
+            if steps:
+                result = _steps_to_items(steps, start_date, due_date)
+                result.update(template="Claude", matched=True, engine="llm")
+        except llm.LlmError as error:
+            warning = "{}（定型テンプレートで代替しました）".format(error)
+        except Exception as error:  # noqa: BLE001
+            warning = "分解に失敗しました（定型テンプレートで代替しました）"
+            log_llm_failure(error)
+    if result is None:
+        result = nlp.decompose(title, start_date, due_date,
+                               normalize_category(ctx.body.get("category"), ""))
+    result["warning"] = warning
+    return json_response(result)
+
+
+def _steps_to_items(steps, start_date, due_date):
+    """(名前, 区分, 重み) の並びに日程を按分して子タスク候補にする。"""
+    spread = nlp._spread(steps, nlp._parse_iso(start_date), nlp._parse_iso(due_date))
+    items = []
+    for index, ((title, category, _weight), dates) in enumerate(zip(steps, spread)):
+        items.append({
+            "title": title,
+            "category": category if category in CATEGORY_VALUES else "",
+            "start_date": dates[0].isoformat() if dates[0] else None,
+            "due_date": dates[1].isoformat() if dates[1] else None,
+            "sort_order": (index + 1) * 10,
+        })
+    return {"items": items}
+
+
+@route("POST", r"/api/tasks/(\d+)/subtasks")
+def create_subtasks(ctx, task_id):
+    """提案された子タスクをまとめて登録する。"""
+    user = me(ctx)
+    parent = task_or_404(user, task_id, "editor")
+    items = ctx.body.get("items")
+    if not isinstance(items, list) or not items:
+        raise bad_request("追加する子タスクがありません")
+    if task_depth(task_id) >= MAX_TASK_DEPTH:
+        raise bad_request("階層が深すぎます（最大 {} 階層）".format(MAX_TASK_DEPTH))
+
+    base_order = (db.scalar(
+        "SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE parent_id=%s",
+        (task_id,), default=0) or parent["sort_order"]) or 0
+    now = db.now()
+    created = []
+    for index, item in enumerate(items):
+        title = (item.get("title") or "").strip()
+        if not title:
+            continue
+        created.append(db.insert(
+            "INSERT INTO tasks(project_id, parent_id, title, description, category, status, "
+            "priority, assignee_id, start_date, due_date, progress, is_milestone, sort_order, "
+            "created_by, created_at, updated_at) "
+            "VALUES(%s,%s,%s,%s,%s,'todo',%s,%s,%s,%s,0,0,%s,%s,%s,%s)",
+            (parent["project_id"], task_id, title, item.get("description", ""),
+             normalize_category(item.get("category"), ""),
+             as_int(item.get("priority"), parent["priority"], 0, 3),
+             as_int(item.get("assignee_id")) or parent["assignee_id"],
+             as_date(item.get("start_date")), as_date(item.get("due_date")),
+             base_order + (index + 1) * 10, user["id"], now, now)))
+    if not created:
+        raise bad_request("追加する子タスクがありません")
+    system_comment(task_id, user["id"], "子タスクを {} 件追加".format(len(created)))
+    touch_task(task_id)
+    rows = db.query(TASK_SELECT + " WHERE t.id IN %s ORDER BY t.sort_order", (tuple(created),))
+    return json_response({"tasks": rows, "created": len(created)}, 201)
+
+
+@route("POST", r"/api/settings/test-llm")
+def test_llm(ctx):
+    admin_only(ctx)
+    ok, message = llm.check()
+    return json_response({"ok": ok, "message": message}, 200 if ok else 400)

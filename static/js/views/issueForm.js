@@ -1,7 +1,7 @@
 /* Create / edit dialog for an issue. */
 import { api } from '../api.js';
 import { ISSUE_STATUS_LABEL, SEVERITY_LABEL } from '../store.js';
-import { el, openModal, toast, toISO, today } from '../util.js';
+import { el, openModal, toISO, toast, today } from '../util.js';
 import { chipPicker, issueCategorySelect, option, userSelect } from './pickers.js';
 
 export function taskPicker(tasks, selectedIds = []) {

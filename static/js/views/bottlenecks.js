@@ -2,7 +2,7 @@
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { STATUS_LABEL, category } from '../store.js';
-import { el, fill, formatDate, dueClass } from '../util.js';
+import { dueClass, el, fill, formatDate } from '../util.js';
 import { openTaskDetail } from './taskDetail.js';
 import { categoryChip } from './pickers.js';
 import { projectTabs } from './projectNav.js';

@@ -31,6 +31,10 @@ function buildShell() {
     onClick: () => toggleSidebar(false) });
   const title = el('h1', { text: '' });
   const topActions = el('div', { class: 'topbar-actions' });
+  const quickAdd = el('button', {
+    class: 'btn btn-primary qa-button', title: 'クイック追加（n キー）',
+    onClick: () => openQuickAddDialog(),
+  }, el('span', { text: '⚡' }), el('span', { class: 'qa-label', text: 'クイック追加' }));
   const bell = el('button', {
     class: 'icon-btn', title: '通知', onClick: () => { location.hash = '#/notifications'; },
   }, '🔔');
@@ -48,7 +52,7 @@ function buildShell() {
     menuButton,
     title,
     el('div', { class: 'topbar-spacer' }),
-    topActions, bell);
+    topActions, quickAdd, bell);
 
   const content = el('main', { class: 'content', id: 'content' });
   const mobileNav = el('nav', { class: 'mobile-nav' });
@@ -161,6 +165,16 @@ export function setHeader(title, actions = []) {
 
 export function contentEl() {
   return shell.content;
+}
+
+/** どの画面からでも開けるクイック追加。現在のプロジェクトを初期値にする。 */
+export async function openQuickAddDialog() {
+  const { openQuickAdd } = await import('./views/quickAdd.js');
+  const match = (location.hash || '').match(/^#\/p\/(\d+)\//);
+  await openQuickAdd({
+    projectId: match ? Number(match[1]) : null,
+    onCreated: () => renderRoute(),
+  });
 }
 
 async function doLogout() {
@@ -293,6 +307,14 @@ async function boot() {
   await store.loadBase();
   updateBell();
   window.addEventListener('hashchange', renderRoute);
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'n' || event.metaKey || event.ctrlKey || event.altKey) return;
+    const active = document.activeElement;
+    if (active && active.matches('input, textarea, select, [contenteditable]')) return;
+    if (document.querySelector('.overlay')) return;
+    event.preventDefault();
+    openQuickAddDialog();
+  });
   await renderRoute();
   primeNotifiedCursor();
   setInterval(pollNotifications, 120000);

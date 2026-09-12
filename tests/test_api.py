@@ -977,6 +977,111 @@ class TestAppearance(ApiTestCase):
         self.assertEqual(data["ui"]["app_name"], "課題管理")
 
 
+class TestNaturalLanguage(ApiTestCase):
+    def test_parse_returns_a_draft_without_writing(self):
+        project = self.make_project()
+        before = self.admin.get("/api/projects/{}/tasks".format(project["id"]))[1]["tasks"]
+        status, data = self.admin.post("/api/nl/parse", {
+            "text": "明日までに至急 移行手順書を作成", "project_id": project["id"]})
+        self.assertEqual(status, 200, data)
+        draft = data["draft"]
+        self.assertIn("移行手順書", draft["title"])
+        self.assertEqual(draft["priority"], 3)
+        self.assertIsNotNone(draft["due_date"])
+        after = self.admin.get("/api/projects/{}/tasks".format(project["id"]))[1]["tasks"]
+        self.assertEqual(len(before), len(after), "解析だけでタスクを作ってはいけない")
+
+    def test_parse_assigns_a_known_user(self):
+        project = self.make_project()
+        user, _ = self.make_user("田中 太郎")
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "editor"}]})
+        data = self.admin.post("/api/nl/parse", {
+            "text": "田中 太郎さんが週次レポートを作成", "project_id": project["id"]})[1]
+        self.assertEqual(data["draft"]["assignee_id"], user["id"])
+
+    def test_parse_requires_text(self):
+        self.assertEqual(self.admin.post("/api/nl/parse", {"text": "  "})[0], 400)
+
+    def test_parse_falls_back_to_an_editable_project(self):
+        project = self.make_project()
+        data = self.admin.post("/api/nl/parse", {"text": "資料をまとめる"})[1]
+        self.assertIsNotNone(data["draft"]["project_id"])
+
+    def test_decompose_suggests_ordered_steps(self):
+        project = self.make_project()
+        status, data = self.admin.post("/api/nl/decompose", {
+            "title": "サーバ移行", "project_id": project["id"],
+            "start_date": "2026-10-01", "due_date": "2026-10-20"})
+        self.assertEqual(status, 200, data)
+        titles = " ".join(item["title"] for item in data["items"])
+        self.assertIn("バックアップ", titles)
+        self.assertIn("疎通確認", titles)
+        self.assertEqual(data["items"][0]["start_date"], "2026-10-01")
+        self.assertEqual(data["items"][-1]["due_date"], "2026-10-20")
+
+    def test_decompose_requires_project_edit_rights(self):
+        project = self.make_project()
+        _, email = self.make_user("分解部外者")
+        status, _ = self.client_for(email).post("/api/nl/decompose", {
+            "title": "サーバ移行", "project_id": project["id"]})
+        self.assertEqual(status, 403)
+
+    def test_subtasks_are_created_in_order(self):
+        project = self.make_project()
+        parent = self.make_task(project["id"], "親タスク", priority=2)
+        status, data = self.admin.post("/api/tasks/{}/subtasks".format(parent["id"]), {
+            "items": [
+                {"title": "事前バックアップ", "category": "build", "due_date": "2026-10-05"},
+                {"title": "疎通確認", "category": "build"},
+            ]})
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["created"], 2)
+        detail = self.admin.get("/api/tasks/{}".format(parent["id"]))[1]
+        self.assertEqual([c["title"] for c in detail["children"]],
+                         ["事前バックアップ", "疎通確認"])
+        # 重要度は親から引き継ぐ
+        self.assertEqual(detail["children"][0]["priority"], 2)
+
+    def test_subtasks_record_history(self):
+        project = self.make_project()
+        parent = self.make_task(project["id"], "親")
+        self.admin.post("/api/tasks/{}/subtasks".format(parent["id"]),
+                        {"items": [{"title": "子1"}]})
+        detail = self.admin.get("/api/tasks/{}".format(parent["id"]))[1]
+        self.assertTrue(any(c["kind"] == "system" and "子タスク" in c["body"]
+                            for c in detail["comments"]))
+
+    def test_subtasks_reject_empty_input(self):
+        project = self.make_project()
+        parent = self.make_task(project["id"])
+        self.assertEqual(self.admin.post(
+            "/api/tasks/{}/subtasks".format(parent["id"]), {"items": []})[0], 400)
+        self.assertEqual(self.admin.post(
+            "/api/tasks/{}/subtasks".format(parent["id"]),
+            {"items": [{"title": "   "}]})[0], 400)
+
+    def test_subtasks_require_edit_rights(self):
+        project = self.make_project()
+        parent = self.make_task(project["id"])
+        user, email = self.make_user("閲覧だけ")
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "viewer"}]})
+        status, _ = self.client_for(email).post(
+            "/api/tasks/{}/subtasks".format(parent["id"]), {"items": [{"title": "x"}]})
+        self.assertEqual(status, 403)
+
+    def test_llm_key_is_masked_in_settings(self):
+        self.admin.put("/api/settings", {"settings": {"llm_api_key": "sk-ant-secret"}})
+        data = self.admin.get("/api/settings")[1]
+        self.assertEqual(data["settings"]["llm_api_key"], "********")
+        self.assertIn("llm_models", data)
+        self.admin.put("/api/settings", {"settings": {"llm_api_key": "********"}})
+        self.assertEqual(db.get_setting("llm_api_key"), "sk-ant-secret")
+
+
 class TestSubdirectory(unittest.TestCase):
     """サブディレクトリ配下（/tasks）で公開したときの挙動。"""
 

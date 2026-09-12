@@ -327,6 +327,38 @@ async function renderSettings(container) {
             },
           }, '今すぐ日次サマリを送る')))),
     el('div', { class: 'card', style: { marginTop: '14px' } },
+      el('div', { class: 'card-head' }, el('h2', {}, 'Claude 連携（任意）'),
+        el('span', {
+          class: `badge ${data.llm_ready ? 'done' : 'todo'}`,
+          text: data.llm_ready ? '有効' : '無効',
+        })),
+      el('div', { class: 'card-body' },
+        el('div', { class: 'page-sub',
+          text: '自然言語からのタスク登録と、タスクの自動分解に Claude を使います。'
+            + '未設定でもキーワードと定型テンプレートによる簡易解析で動作します。' }),
+        data.llm_sdk
+          ? null
+          : el('div', { class: 'warn-box',
+            text: 'サーバーに anthropic パッケージが入っていません。'
+              + '有効にするには pip install anthropic を実行してください。' }),
+        toggle('llm_enabled', 'Claude API を使う'),
+        input('llm_api_key', 'API キー', { type: 'password', placeholder: 'sk-ant-...' }),
+        modelField(),
+        el('div', { class: 'hint',
+          text: 'タスクの文面が Anthropic に送信されます。社内規程を確認のうえ有効にしてください。' }),
+        el('button', {
+          class: 'btn', style: { marginTop: '10px' },
+          onClick: async (event) => {
+            event.currentTarget.disabled = true;
+            try {
+              await save();
+              const result = await api.post('/api/settings/test-llm', {});
+              toast(result.message, 'ok');
+            } catch (error) { toast(error.message, 'error'); }
+            event.currentTarget.disabled = false;
+          },
+        }, '接続をテスト'))),
+    el('div', { class: 'card', style: { marginTop: '14px' } },
       el('div', { class: 'card-head' }, el('h2', {}, '見た目（組織の既定）')),
       el('div', { class: 'card-body' },
         el('div', { class: 'page-sub',
@@ -345,6 +377,14 @@ async function renderSettings(container) {
           event.currentTarget.disabled = false;
         },
       }, '設定を保存')));
+
+  function modelField() {
+    const node = el('select', { class: 'select' },
+      ...(data.llm_models || []).map(([value, label]) =>
+        el('option', { value, selected: s.llm_model === value ? true : null }, label)));
+    fields.llm_model = () => node.value;
+    return el('div', { class: 'field' }, el('label', { text: 'モデル' }), node);
+  }
 
   function accentField() {
     const state = { value: s.ui_accent_default || '#3b6ef5' };

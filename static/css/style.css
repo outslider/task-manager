@@ -270,6 +270,34 @@ button, input, select, textarea { font: inherit; color: inherit; }
   :root:not([data-theme="light"]) .badge.review { background: #2e2444; color: #b794f6; }
 }
 
+/* ---------- quick add / suggestions ---------- */
+.qa-button { gap: 6px; }
+.qa-input { font-size: 15px; min-height: 58px; }
+.qa-examples { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 12px; }
+.qa-chip {
+  border: 1px dashed var(--border-strong); background: var(--surface-2); cursor: pointer;
+  border-radius: 20px; padding: 3px 10px; font-size: 12px; color: var(--text-muted);
+}
+.qa-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.qa-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+
+.suggest-row {
+  display: grid; grid-template-columns: 44px 1fr 250px 34px; gap: 8px; align-items: center;
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+}
+.suggest-row:last-child { border-bottom: none; }
+.suggest-check { display: flex; align-items: center; gap: 6px; }
+.suggest-check input { width: 16px; height: 16px; accent-color: var(--accent); }
+.suggest-no { font-size: 12px; font-weight: 700; color: var(--text-faint); }
+.suggest-side { display: flex; gap: 6px; }
+.suggest-side > * { min-width: 0; }
+
+@media (max-width: 900px) {
+  .qa-label { display: none; }
+  .suggest-row { grid-template-columns: 32px 1fr 34px; }
+  .suggest-side { grid-column: 2 / 3; }
+}
+
 /* ---------- accent picker ---------- */
 .swatches { display: flex; gap: 6px; flex-wrap: wrap; }
 .swatch {

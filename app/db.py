@@ -242,6 +242,9 @@ DEFAULT_SETTINGS = {
     "due_soon_days": "3",
     "email_enabled": "0",
     "ui_accent_default": "#3b6ef5",
+    "llm_enabled": "0",
+    "llm_api_key": "",
+    "llm_model": "claude-opus-5",
     "app_name": "タスク管理",
 }
 
