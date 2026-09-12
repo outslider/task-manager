@@ -1,0 +1,23 @@
+# /etc/systemd/system/task-manager.service
+# sudo systemctl daemon-reload && sudo systemctl enable --now task-manager
+[Unit]
+Description=Task Manager
+After=network.target mariadb.service
+Wants=mariadb.service
+
+[Service]
+Type=simple
+User=taskmgr
+Group=taskmgr
+WorkingDirectory=/opt/task_manager
+ExecStart=/opt/task_manager/.venv/bin/python /opt/task_manager/server.py
+Restart=always
+RestartSec=5
+# 設定は config.ini でも環境変数でも指定できます
+Environment=TM_PORT=8080
+# Environment=TM_DB_PASSWORD=...
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

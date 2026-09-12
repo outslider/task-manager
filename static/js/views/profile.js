@@ -1,0 +1,153 @@
+/* Personal settings: display name, colour, notification preference, password. */
+import { api } from '../api.js';
+import { setHeader } from '../app.js';
+import { store } from '../store.js';
+import { el, fill, toast } from '../util.js';
+import { ACCENT_PRESETS, applyAccent, applyTheme } from '../theme.js';
+
+export async function render(container) {
+  setHeader('プロフィール設定');
+  const user = store.user;
+
+  const name = el('input', { class: 'input' });
+  name.value = user.name;
+  const color = el('input', { type: 'color', class: 'input', style: { height: '38px', padding: '2px' } });
+  color.value = user.avatar_color || '#4f8cff';
+  const emailNotify = el('input', { type: 'checkbox' });
+  emailNotify.checked = Boolean(user.email_notify);
+
+  const current = el('input', { class: 'input', type: 'password', autocomplete: 'current-password' });
+  const next = el('input', { class: 'input', type: 'password', autocomplete: 'new-password' });
+  const confirm = el('input', { class: 'input', type: 'password', autocomplete: 'new-password' });
+
+  const themeSelect = el('select', { class: 'select' },
+    el('option', { value: 'auto' }, '端末の設定に合わせる'),
+    el('option', { value: 'light' }, 'ライト'),
+    el('option', { value: 'dark' }, 'ダーク'));
+  themeSelect.value = user.ui_theme || 'auto';
+  themeSelect.addEventListener('change', () => applyTheme(themeSelect.value));
+
+  const accentState = { value: store.accent() };
+  const swatches = el('div', { class: 'swatches' });
+  const customInput = el('input', {
+    type: 'color', class: 'input', style: { height: '38px', padding: '2px', maxWidth: '80px' },
+  });
+  customInput.value = accentState.value;
+  const drawSwatches = () => {
+    fill(swatches, ...ACCENT_PRESETS.map((preset) => el('button', {
+      type: 'button',
+      class: `swatch${preset.value === accentState.value ? ' active' : ''}`,
+      style: { background: preset.value },
+      title: preset.label,
+      onClick: () => pick(preset.value),
+    })));
+  };
+  const pick = (value) => {
+    accentState.value = value;
+    customInput.value = value;
+    applyAccent(value);
+    drawSwatches();
+  };
+  customInput.addEventListener('input', () => pick(customInput.value));
+  drawSwatches();
+
+  fill(container, 
+    el('div', { class: 'grid cols-2' },
+      el('div', { class: 'card' },
+        el('div', { class: 'card-head' }, el('h2', {}, '基本情報')),
+        el('div', { class: 'card-body' },
+          el('div', { class: 'field' }, el('label', { text: '氏名' }), name),
+          el('div', { class: 'field' }, el('label', { text: 'メールアドレス' }),
+            el('input', { class: 'input', value: user.email, disabled: true }),
+            el('div', { class: 'hint', text: '変更は管理者に依頼してください' })),
+          el('div', { class: 'row' },
+            el('div', { class: 'field' }, el('label', { text: 'アイコンの色' }), color),
+            el('div', { class: 'field' }, el('label', { text: '画面テーマ' }), themeSelect)),
+          el('div', { class: 'field' },
+            el('label', { text: '全体の色合い（アクセントカラー）' }),
+            el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center',
+              flexWrap: 'wrap' } }, swatches, customInput,
+            el('button', {
+              class: 'btn btn-sm', type: 'button',
+              onClick: () => pick(store.ui.accent_default || '#3b6ef5'),
+            }, '既定に戻す')),
+            el('div', { class: 'hint',
+              text: '選ぶとすぐ画面に反映されます。「保存」で次回以降も引き継がれます。' })),
+          el('div', { class: 'field' },
+            el('label', { class: 'check' }, emailNotify,
+              el('span', { text: '通知をメールでも受け取る' }))),
+          el('div', { class: 'field' },
+            el('label', { text: 'ブラウザ通知（期限アラーム）' }),
+            browserNotifyControl()),
+          el('button', {
+            class: 'btn btn-primary',
+            onClick: async (event) => {
+              event.currentTarget.disabled = true;
+              try {
+                const result = await api.patch('/api/auth/profile', {
+                  name: name.value.trim(),
+                  avatar_color: color.value,
+                  email_notify: emailNotify.checked,
+                  ui_theme: themeSelect.value,
+                  ui_accent: accentState.value,
+                });
+                store.user = result.user;
+                store.emit();
+                toast('保存しました', 'ok');
+              } catch (error) { toast(error.message, 'error'); }
+              event.currentTarget.disabled = false;
+            },
+          }, '保存'))),
+      el('div', { class: 'card' },
+        el('div', { class: 'card-head' }, el('h2', {}, 'パスワード変更')),
+        el('div', { class: 'card-body' },
+          el('div', { class: 'field' }, el('label', { text: '現在のパスワード' }), current),
+          el('div', { class: 'field' }, el('label', { text: '新しいパスワード（8文字以上）' }), next),
+          el('div', { class: 'field' }, el('label', { text: '新しいパスワード（確認）' }), confirm),
+          el('button', {
+            class: 'btn btn-primary',
+            onClick: async (event) => {
+              if (next.value !== confirm.value) {
+                toast('新しいパスワードが一致しません', 'error');
+                return;
+              }
+              event.currentTarget.disabled = true;
+              try {
+                await api.post('/api/auth/password', {
+                  current_password: current.value, new_password: next.value,
+                });
+                current.value = ''; next.value = ''; confirm.value = '';
+                toast('パスワードを変更しました', 'ok');
+              } catch (error) { toast(error.message, 'error'); }
+              event.currentTarget.disabled = false;
+            },
+          }, 'パスワードを変更')))));
+}
+
+function browserNotifyControl() {
+  const status = el('div', { class: 'hint' });
+  const button = el('button', { class: 'btn' }, 'ブラウザ通知を有効にする');
+  const sync = () => {
+    if (!('Notification' in window)) {
+      button.disabled = true;
+      status.textContent = 'このブラウザは通知に対応していません。';
+      return;
+    }
+    if (Notification.permission === 'granted') {
+      button.disabled = true;
+      button.textContent = '有効になっています';
+      status.textContent = '期限超過や新しいコメントをデスクトップ通知でお知らせします。';
+    } else if (Notification.permission === 'denied') {
+      button.disabled = true;
+      status.textContent = 'ブラウザ側でブロックされています。サイトの通知設定を変更してください。';
+    } else {
+      status.textContent = '許可すると、通知をデスクトップに表示します。';
+    }
+  };
+  button.addEventListener('click', async () => {
+    await Notification.requestPermission();
+    sync();
+  });
+  sync();
+  return el('div', {}, button, status);
+}

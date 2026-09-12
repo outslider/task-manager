@@ -1,0 +1,590 @@
+# タスク管理システム
+
+社内向けのプロジェクト／タスク管理 Web アプリです。
+バックエンドは Python 標準ライブラリ + PyMySQL、データベースは **MariaDB / MySQL**、
+フロントエンドはビルド不要の素の JavaScript（ES Modules）で構成しています。
+
+- 依存パッケージは **PyMySQL 1 つだけ**。Node.js もビルドツールも不要です。
+- 画面は PC・タブレット・スマートフォンに対応（レスポンシブ、ダークモード対応）。
+- ガントチャートは **PowerPoint のスライドサイズで PNG / SVG 書き出し**ができます。
+
+---
+
+## 目次
+
+1. [機能一覧](#機能一覧)
+2. [動作環境](#動作環境)
+3. [セットアップ](#セットアップ)
+4. [起動と初期ログイン](#起動と初期ログイン)
+5. [使い方](#使い方)
+6. [画面の色合いを変える](#画面の色合いを変える)
+7. [権限モデル](#権限モデル)
+8. [メール通知と日次サマリ](#メール通知と日次サマリ)
+9. [本番運用](#本番運用)
+10. [バックアップ](#バックアップ)
+11. [開発者向け情報](#開発者向け情報)
+
+---
+
+## 機能一覧
+
+| 要件 | 実装 |
+|---|---|
+| タスクリスト（新規・編集・削除） | プロジェクトごとのツリー表示。行のドラッグで並べ替え・階層移動、`⋯` メニューから複製操作 |
+| 階層化（子・孫…） | 親子関係を最大 8 階層まで。子の進捗は親に自動集計（加重平均）、期間も自動で親に反映 |
+| ガントチャート | 日／週／月スケール、依存線、マイルストーン◆、本日ライン、タスク名列は横スクロールしても固定 |
+| PowerPoint 用エクスポート | 16:9・4:3・A4横などのプリセットで PNG / SVG 出力。スライド幅に合わせて目盛り幅を自動調整 |
+| ユーザー・グループ・権限管理 | 管理者／メンバーの全体ロール＋プロジェクト単位の 4 段階権限。グループ単位の権限付与も可能 |
+| スマホ対応 | 下部タブナビ、1 行 2 段のコンパクト表示、ドロワー全画面化 |
+| プロジェクト管理 | プロジェクト単位のタスク・メンバー・色・アーカイブ |
+| メモ・コメントで進捗共有 | タスクごとのコメント欄。状態／進捗／担当／期限の変更は自動で履歴として残ります |
+| リンク・ファイル添付 | ドラッグ＆ドロップのファイル添付（既定 25MB/件）と URL リンクの登録 |
+| 期限アラーム・メール通知 | 期限超過／本日期限／期限間近をアプリ内通知＋メールで送信（重複送信なし） |
+| 日次の進捗確認 | 「今日の確認」画面で担当タスクを一覧し、`0/25/50/75/100%` ボタンとメモでまとめて更新 |
+| 担当者設定 | タスクごとの担当者、担当者変更時の自動通知 |
+| マイルストーン | マイルストーンフラグ。ガント上は◆で表示 |
+| タスクのカテゴライズ | 7分類（調査・リサーチ／設計・企画／実装・構築／ドキュメント作成／会議・打ち合わせ／事務・申請系／トラブル対応・障害対応）。一覧の絞り込みとガントの色分けに対応 |
+| 重要度 | 低／中／高／最重要の4段階。一覧では高以上に `!` `!!` を表示。ガントの色分けにも使用 |
+| 依存関係とボトルネック | 先行タスクを設定すると依存グラフを解析し、**影響波及数・クリティカルパス・日程の矛盾**を自動抽出。専用の分析画面あり |
+| 課題管理表 | タスクとは別建ての課題ログ。No.／区分／影響度／状態／対応者／発生日／期限／解決日／対応方針を管理し、**課題とタスクを相互に紐づけ**られます。CSV 出力対応 |
+| 画面の色合い | アクセントカラーをプリセット8色＋任意の色から選択。ライト／ダーク／端末設定に追随。組織の既定色を管理者が設定し、各自が上書き可能 |
+
+その他: 全文検索、担当者／状態／カテゴリ／プロジェクトでの絞り込み、
+チェックイン連続日数、通知インボックス、ダークモード。
+
+> 重要度と緊急度について: 緊急度は期限から自動的に決まるため、手で設定するのは**重要度**だけです。
+> 「重要度 × 期限 × 依存関係」の3つから、日次画面とボトルネック画面が「いま何をやるべきか」を組み立てます。
+
+---
+
+## 動作環境
+
+| | 要件 |
+|---|---|
+| OS | Linux（Amazon Linux 2023 / RHEL 系 / Ubuntu で確認）、Windows Server でも動作可 |
+| Python | 3.8 以上（3.9 で動作確認） |
+| データベース | MariaDB 10.4 以上、または MySQL 5.7 / 8.0 以上 |
+| ブラウザ | Chrome / Edge / Safari / Firefox の最新版、iOS Safari、Android Chrome |
+
+---
+
+## セットアップ
+
+### 1. データベースを作る
+
+```bash
+sudo mysql -e "
+CREATE DATABASE task_manager CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'tmapp'@'localhost' IDENTIFIED BY '安全なパスワード';
+GRANT ALL PRIVILEGES ON task_manager.* TO 'tmapp'@'localhost';
+FLUSH PRIVILEGES;"
+```
+
+文字コードは必ず `utf8mb4`（絵文字・機種依存文字対応）にしてください。
+
+### 2. アプリを配置して依存パッケージを入れる
+
+```bash
+cd /opt/task_manager
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+### 3. 設定ファイルを用意する
+
+```bash
+cp config.ini.example config.ini
+vi config.ini          # DB 接続情報とポートを記入
+```
+
+環境変数でも指定できます（環境変数が優先）。
+
+| 環境変数 | 既定値 | 説明 |
+|---|---|---|
+| `TM_DB_HOST` / `TM_DB_PORT` | `127.0.0.1` / `3306` | DB 接続先 |
+| `TM_DB_NAME` / `TM_DB_USER` / `TM_DB_PASSWORD` | `task_manager` / `tmapp` / — | DB 認証情報 |
+| `TM_HOST` / `TM_PORT` | `0.0.0.0` / `8080` | 待ち受けアドレス |
+| `TM_MAX_UPLOAD` | `26214400` | 添付ファイル上限（バイト） |
+| `TM_SECURE_COOKIE` | `0` | HTTPS 公開時は `1` |
+| `TM_ADMIN_EMAIL` / `TM_ADMIN_PASSWORD` | `admin@example.com` / 自動生成 | 初期管理者 |
+
+### 4. スキーマを作成する
+
+```bash
+.venv/bin/python server.py --init-db
+```
+
+テーブルは起動時にも自動作成されるため、通常この手順は省略できます。
+スキーマの内容は [`docs/schema.sql`](docs/schema.sql) を参照してください。
+
+---
+
+## 起動と初期ログイン
+
+```bash
+.venv/bin/python server.py
+```
+
+```
+==============================================================
+ 初期管理者アカウントを作成しました
+   メール    : admin@example.com
+   パスワード: xxxxxxxxxxxx
+ ログイン後に必ずパスワードを変更してください。
+==============================================================
+タスク管理システムを起動しました: http://localhost:8080/
+```
+
+初回起動時のみ管理者アカウントが作られ、パスワードが標準出力に表示されます。
+**この表示は一度きり**なので必ず控えてください（忘れた場合は
+`.venv/bin/python -c "from app import db, auth; db.execute('UPDATE users SET password_hash=%s WHERE email=%s', (auth.hash_password('新しいパスワード'), 'admin@example.com'))"`
+で再設定できます）。
+
+### 動作確認用のデモデータ
+
+```bash
+.venv/bin/python server.py --seed-demo
+```
+
+サンプルのプロジェクト・階層タスク・マイルストーン・メンバー（パスワードは `password123`）が入ります。
+本番環境では実行しないでください。
+
+### コマンドラインオプション
+
+| オプション | 内容 |
+|---|---|
+| `--host` / `--port` | 待ち受けアドレスの指定 |
+| `--init-db` | スキーマ作成のみ行って終了 |
+| `--seed-demo` | デモデータを投入 |
+| `--run-digest` | 日次サマリを 1 回送信して終了（cron 運用向け） |
+| `--no-scheduler` | アプリ内の日次バッチを起動しない |
+
+---
+
+## 使い方
+
+### 今日の確認（日次アップデート）
+
+ログイン直後の画面です。担当タスクが
+**期限超過 / 本日期限 / まもなく期限 / 期限未設定 / 1週間動きのないタスク** に分類されます。
+
+1. 各行の `0% 25% 50% 75% 100%` ボタンで進捗を指定（100% を押すと自動で「完了」になります）
+2. 状態を変えたい場合はプルダウンから選択
+3. `💬` ボタンでひとことメモ（タスクのコメントとして記録されます）
+4. 画面下部に出る **「まとめて更新」** で一括保存
+
+保存すると変更内容が自動的にタスク履歴に残り、関係者に通知が飛びます。
+チェックインした日は連続日数としてカウントされます。
+
+### タスクリスト
+
+- 行をクリック → 詳細ドロワー（メモ・子タスク・先行タスク・添付・コメント）
+- 行をドラッグ → 並べ替え。**行の中央にドロップすると子タスクになります**（上端／下端は同階層で前後移動）
+- `⋯` メニュー → 子タスク追加・編集・完了切替・削除
+- 検索、担当者、状態で絞り込み。絞り込み時も親階層は表示され続けます
+
+### ボトルネック分析
+
+タスクリスト右上の **「⛔ ボトルネック」** から開きます。先行タスクの設定をたどって、
+次の3つを自動で計算します。
+
+| 見出し | 内容 |
+|---|---|
+| ボトルネック（影響の大きい順） | そのタスクが終わらないと着手できない後続タスクを、**間接的な依存も含めて**数えてランキングします。ランキングの根拠（「後続 6 件が待機」「クリティカルパス上」「期限 3 日超過」など）を必ず併記します |
+| クリティカルパス | 依存関係と各タスクの期間から最長経路を求めます。ここが1日遅れると、プロジェクト全体の完了が1日遅れます |
+| 依存関係と日程の矛盾 | 「先行タスクの期限」が「後続タスクの開始日」より後になっている組み合わせを検出します。日程を引き直す目安になります |
+
+タスクリストとガントにも同じ情報が出ます。
+
+- `⛔ 6` … このタスクの後続6件が待っている
+- `⏳ 待ち` … 先行タスクが未完了で、まだ着手できない
+- `CP` と行の赤い縦線 … クリティカルパス上のタスク
+- ガントの**赤枠のバー**＝クリティカルパス、**赤い実線の矢印**＝日程が矛盾している依存
+
+タスク詳細では「このタスクが遅れると影響する範囲」に、直後だけでなく間接的に影響する
+タスクまで一覧表示します。
+
+### 課題管理表
+
+プロジェクトの **「課題」** タブ、またはサイドバーの **「課題」**（全プロジェクト横断）から開きます。
+タスク（やること）とは別に、**判断・調整が必要な事柄**を記録して追跡するための一覧です。
+
+| 項目 | 内容 |
+|---|---|
+| No. | プロジェクトごとの通し番号。自動採番されます |
+| 区分 | 仕様・要件／技術・実装／スケジュール／体制・リソース／コスト・予算／品質・不具合／外部・他部門／その他 |
+| 影響度 | 低・中・重要度と同じ4段階（低／中／高／重大）。重大は行の左に赤線が付きます |
+| 状態 | 未対応／対応中／保留／解決済／クローズ。解決済・クローズにすると**解決日が自動で入ります** |
+| 対応者・起票者 | 対応者を設定すると本人に通知が飛びます |
+| 発生日・対応期限・解決日 | 期限が近い／超過している課題は色で警告します |
+| 内容・背景／対応方針・結果 | それぞれ自由記述。詳細画面から直接編集できます |
+| 関連タスク | この課題に関係するタスクを複数紐づけられます |
+| 経緯・コメント | 状態や対応者の変更は自動で履歴に残り、追記もできます。ファイルや URL の添付も可能 |
+
+**タスクとの紐づけ**は双方向に見えます。
+
+- 課題の詳細 → 「関連タスク」に、紐づいたタスクの状態と進捗が並びます
+- タスクの詳細 → 「関連する課題」に、そのタスクが関わる課題が並びます
+- 未完了タスクが残っている課題には「この課題に紐づく未完了タスクが N 件あります」と表示されます
+
+右上の **「⬇ CSV」** で、表示中の一覧をそのまま CSV に落とせます（Excel でそのまま開ける
+BOM 付き UTF-8）。
+
+### ガントチャート
+
+- 表示単位（日／週／月）と期間を切り替え。「自分の担当のみ」で絞り込み
+- **色分け**を「状態 / カテゴリ / 重要度」から選択（凡例も連動します）
+- 親タスクは細いサマリーバー、マイルストーンは◆、依存関係は破線矢印で表示
+- バーやタスク名をクリックすると詳細が開きます
+
+#### PowerPoint への貼り付け
+
+1. ガント画面右上の **「⬇ エクスポート」**
+2. 出力サイズを選ぶ（既定は **PowerPoint 16:9 = 1280×720px**、高精細にしたい場合は「2倍」）
+3. 形式を選ぶ
+   - **PNG**（推奨）… そのままスライドに貼り付け。スライド全面にぴったり収まります
+   - **SVG** … 拡大しても劣化しないベクター形式。PowerPoint の「挿入 > 画像」から取り込め、
+     図形に変換して個別編集もできます
+4. 「スライド幅いっぱいに広げる」を有効にすると、期間の長さに応じて目盛り幅を自動調整し、
+   余白の少ない図になります
+
+---
+
+## 画面の色合いを変える
+
+- **各自の設定**: 「プロフィール設定 > 全体の色合い」でアクセントカラーを選びます。
+  プリセット8色（ブルー／インディゴ／パープル／ティール／グリーン／アンバー／ローズ／スレート）
+  のほか、カラーピッカーで任意の色を指定できます。選んだ瞬間に画面へ反映され、「保存」で次回以降も
+  引き継がれます。同じ画面でライト／ダーク／端末設定への追随も選べます。
+- **組織の既定**: 「管理 > システム設定 > 見た目（組織の既定）」で全員の既定色とアプリ名を設定できます。
+  個人が色を選んでいない場合はこの色が使われます。
+
+指定した1色から、ホバー色・淡い背景色・文字色（コントラスト確保のため自動で白／黒を選択）を
+自動生成しているため、どの色を選んでもライト／ダーク両方で破綻しません。
+
+## 権限モデル
+
+### 全体ロール
+
+| ロール | 権限 |
+|---|---|
+| 管理者 (admin) | 全プロジェクトにオーナーとしてアクセス。ユーザー・グループ・システム設定を管理 |
+| メンバー (member) | 参加しているプロジェクトのみアクセス。プロジェクトの新規作成は可能 |
+
+### プロジェクト単位の権限
+
+| 権限 | 閲覧 | コメント | タスク編集 | 設定変更・削除 |
+|---|:-:|:-:|:-:|:-:|
+| オーナー | ○ | ○ | ○ | ○ |
+| 編集者 | ○ | ○ | ○ | — |
+| コメント可 | ○ | ○ | — | — |
+| 閲覧のみ | ○ | — | — | — |
+
+- ユーザー個別とグループの両方で設定でき、**強い方の権限**が適用されます
+- グループは「管理 > グループ」で作成し、部署やチーム単位でまとめて権限を付与できます
+
+---
+
+## メール通知と日次サマリ
+
+「管理 > システム設定」で設定します。
+
+1. **メール送信を有効にする** をオンにする
+2. SMTP ホスト／ポート／認証情報／送信元アドレスを入力
+   （ポート 465 は SSL、それ以外で STARTTLS を使う場合はチェックを入れる）
+3. **アプリの URL** を入力（通知メール内のリンクに使われます）
+4. 「テストメールを送る」で疎通確認
+
+### 通知が飛ぶタイミング
+
+| 種類 | 契機 |
+|---|---|
+| 担当者に設定 | 他の人からタスクを割り当てられたとき |
+| コメント | 担当タスク・自分が作成したタスク・自分がコメントしたタスクに新しいコメントが付いたとき |
+| 期限間近 / 本日期限 / 期限超過 | 日次バッチ実行時（同じタスク・同じ日の重複通知はしません） |
+| 日次サマリ | 設定した時刻に、対応が必要なタスクがある人だけに送信 |
+
+### 日次バッチの実行方法
+
+アプリ内スケジューラが既定で動作します（「日次サマリを自動送信する」＋送信時刻を設定）。
+アプリを複数プロセスで動かす場合や、cron で管理したい場合は `--no-scheduler` で起動し、
+次のように cron から実行してください。
+
+```cron
+0 9 * * 1-5 cd /opt/task_manager && .venv/bin/python server.py --run-digest >> /var/log/task-manager-digest.log 2>&1
+```
+
+ユーザー個人がメール受信を止めたい場合は「プロフィール設定 > 通知をメールでも受け取る」をオフにします。
+
+---
+
+## 本番運用
+
+### 別のサーバーへデプロイする
+
+移すものは **アプリ本体・データベース・添付ファイル（`data/uploads/`）** の3つだけです。
+`deploy/install.sh` が、ユーザー作成から systemd 登録までをまとめて行います。
+
+#### 1. 移設先サーバーの準備
+
+必要なのは Python 3.8 以上と MariaDB / MySQL だけです。
+
+```bash
+# RHEL 系
+sudo dnf install -y python3 mariadb105-server
+sudo systemctl enable --now mariadb
+# Debian / Ubuntu 系
+sudo apt install -y python3 python3-venv mariadb-server
+sudo systemctl enable --now mariadb
+```
+
+#### 2. アプリを転送する
+
+```bash
+# 移設元で（.venv・data・config.ini は含めない）
+tar czf task-manager-app.tar.gz \
+    --exclude='.venv' --exclude='data' --exclude='config.ini' \
+    --exclude='__pycache__' --exclude='*.pyc' \
+    server.py requirements.txt README.md app static docs deploy config.ini.example
+
+scp task-manager-app.tar.gz 新サーバー:/tmp/
+```
+
+```bash
+# 移設先で
+mkdir -p ~/tm-src && tar xzf /tmp/task-manager-app.tar.gz -C ~/tm-src
+cd ~/tm-src
+sudo ./deploy/install.sh --create-db
+```
+
+`--create-db` を付けるとデータベースとアプリ用ユーザーを自動で作り、パスワードを生成して
+`config.ini` に書き込みます。完了時に **初期管理者のパスワードが1度だけ表示される**ので控えてください。
+
+主なオプション（既定値のままなら指定不要です）:
+
+| オプション | 既定 | 用途 |
+|---|---|---|
+| `--dir PATH` | `/opt/task-manager` | インストール先 |
+| `--user NAME` | `taskmgr` | 実行ユーザー |
+| `--port N` / `--bind ADDR` | `8080` / `127.0.0.1` | 待ち受け |
+| `--db-name` / `--db-user` / `--db-password` | `task_manager` / `tmapp` / 自動生成 | 接続先 |
+| `--db-host` / `--db-port` | `127.0.0.1` / `3306` | 外部 DB を使う場合 |
+| `--service NAME` | `task-manager` | systemd サービス名 |
+| `--no-service` | — | systemd に登録しない |
+
+#### 3. 既存データを移行する
+
+移設元でアーカイブを作り、移設先で流し込みます。
+
+```bash
+# 移設元
+./deploy/backup.sh /tmp                       # /tmp/task-manager-YYYYmmdd-HHMM.tar.gz
+scp /tmp/task-manager-*.tar.gz 新サーバー:/tmp/
+```
+
+```bash
+# 移設先
+tar xzf /tmp/task-manager-*.tar.gz -C /tmp
+BUNDLE=$(ls -d /tmp/task-manager-2*)
+
+sudo systemctl stop task-manager
+sudo mysql task_manager < $BUNDLE/database.sql
+sudo cp -a $BUNDLE/uploads/. /opt/task-manager/data/uploads/
+sudo chown -R taskmgr:taskmgr /opt/task-manager/data
+sudo systemctl start task-manager
+```
+
+ユーザーのパスワードやセッションもそのまま引き継がれます。移行後は
+「管理 > システム設定」の **アプリの URL** を新しいホスト名に変更してください
+（通知メール内のリンクに使われます）。
+
+#### 4. HTTPS で公開する
+
+社内だけなら Tailscale（下記）、社外に出すなら nginx + Let's Encrypt が簡単です。
+どちらの場合も `config.ini` の `secure_cookie = 1` を忘れずに設定してください。
+
+#### 5. バージョンアップ
+
+同じコマンドをもう一度実行するだけです。`config.ini` と `data/` は保持され、
+データベースのスキーマ変更（マイグレーション）も自動で適用されます。
+
+```bash
+cd ~/tm-src && tar xzf /tmp/task-manager-app.tar.gz    # 新しいアーカイブを展開
+sudo ./deploy/install.sh                               # サービス停止 → 更新 → 再起動
+```
+
+> **オフライン環境の場合**: 依存は PyMySQL 1つだけです。インターネットに出られない場合は
+> `pip download PyMySQL -d wheels` で取得した wheel を持ち込み、
+> `sudo /opt/task-manager/.venv/bin/pip install wheels/PyMySQL-*.whl` を実行してから
+> `--no-service` なしで再度 install.sh を流してください。
+
+### systemd で常駐させる
+
+[`deploy/task-manager.service`](deploy/task-manager.service) を
+`/etc/systemd/system/` にコピーして編集し、
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now task-manager
+sudo systemctl status task-manager
+```
+
+### Tailscale 経由で HTTPS 公開する（この環境の現行構成）
+
+Tailscale を入れているサーバーなら、証明書の準備なしで HTTPS 公開できます
+（Tailscale が Let's Encrypt から自動取得・自動更新します）。443 番が別のアプリで
+埋まっている場合は、次のように別ポートに載せられます。
+
+```bash
+# アプリは 127.0.0.1:8080 のみで待ち受け（config.ini の host = 127.0.0.1）
+# tailnet からは tailscale serve 経由の HTTPS だけで到達できる
+sudo tailscale serve --bg --https=8443 http://127.0.0.1:8080
+```
+
+アクセス先: **https://＜ノード名＞.＜テールネット名＞.ts.net:8443/**
+（`tailscale status` や `tailscale cert --help` で自分のノードの FQDN を確認できます）
+
+- `--bg` で登録しているため、設定は tailscaled に保存され再起動後も有効です
+- Funnel（インターネット公開）は**有効にしていません**。tailnet 内からのみアクセスできます
+- 併せて `config.ini` に `secure_cookie = 1` を設定し、セッション Cookie に `Secure` 属性を付けています
+- 通知メール内のリンク用に、システム設定の「アプリの URL」を上記の URL に設定してください
+
+解除する場合:
+
+```bash
+sudo tailscale serve --https=8443 off
+```
+
+サーバー本体は systemd で常駐させています。
+
+```bash
+sudo systemctl status task-manager     # 状態確認
+sudo journalctl -u task-manager -f     # ログ
+sudo systemctl restart task-manager    # 再起動
+```
+
+> 参考: 443 番の既存設定はフォアグラウンド実行（`tailscale serve` を `--bg` なしで起動）のため、
+> そのプロセスが終了すると 443 の公開も止まります。恒久化するなら同様に `--bg` での登録が確実です。
+
+### 一般的な HTTPS 公開（リバースプロキシ）
+
+社外からアクセスする場合は必ず HTTPS 化してください。
+[`deploy/nginx.conf.example`](deploy/nginx.conf.example) を参考にリバースプロキシを立て、
+`config.ini` の `secure_cookie = 1` を設定します（セッション Cookie に `Secure` 属性が付きます）。
+
+### セキュリティ上の実装
+
+- パスワードは PBKDF2-HMAC-SHA256（20万回ストレッチ）で保存
+- セッションは HttpOnly・SameSite=Lax の Cookie（既定 14 日）
+- 更新系リクエストは Origin ヘッダーを検証（CSRF 対策）
+- SQL は全てプレースホルダ経由。画面描画も DOM API で組み立てており HTML インジェクションを防止
+- 添付ファイルはランダムなファイル名で保存し、ダウンロード時に権限を再確認
+
+---
+
+## バックアップ
+
+対象は **データベース** と **添付ファイル（`data/uploads/`）** の 2 つです。
+
+付属のスクリプトが両方まとめて1つのアーカイブにします。
+
+```bash
+/opt/task-manager/deploy/backup.sh /backup      # /backup/task-manager-YYYYmmdd-HHMM.tar.gz
+```
+
+cron で日次実行し、古いものを削除する例:
+
+```cron
+30 2 * * * /opt/task-manager/deploy/backup.sh /backup >> /var/log/task-manager-backup.log 2>&1
+0  3 * * * find /backup -name 'task-manager-*.tar.gz' -mtime +30 -delete
+```
+
+個別に取る場合:
+
+```bash
+mysqldump --single-transaction -u tmapp -p task_manager | gzip > /backup/task_manager_$(date +%F).sql.gz
+tar czf /backup/uploads_$(date +%F).tar.gz -C /opt/task-manager data/uploads
+```
+
+---
+
+## 開発者向け情報
+
+### ディレクトリ構成
+
+```
+task_manager/
+├── server.py              HTTP サーバー・ルーティング・CLI
+├── app/
+│   ├── config.py          設定（config.ini / 環境変数）
+│   ├── db.py              MySQL 接続・スキーマ定義・設定テーブル
+│   ├── auth.py            パスワード・セッション・権限判定
+│   ├── api.py             REST API のハンドラ
+│   ├── http_util.py       リクエスト/レスポンス・multipart 解析
+│   ├── notify.py          通知・メール送信・日次バッチ
+│   └── graph.py           依存グラフ解析（ボトルネック・クリティカルパス）
+├── static/
+│   ├── index.html
+│   ├── css/style.css      デザインシステム（ライト/ダーク）
+│   └── js/
+│       ├── app.js         シェル・ルーター
+│       ├── api.js         fetch ラッパー
+│       ├── store.js       共有ステート
+│       ├── util.js        DOM/日付/ダイアログ ヘルパー
+│       ├── theme.js       配色（ライト/ダーク・アクセントカラー生成）
+│       └── views/         画面ごとのモジュール（issues.js / bottlenecks.js など）
+├── tests/
+│   ├── test_api.py        API 統合テスト（89 ケース）
+│   └── test_graph.py      依存グラフ解析の単体テスト（18 ケース）
+├── docs/schema.sql        スキーマ定義（参照用）
+├── deploy/
+│   ├── install.sh         導入・更新スクリプト
+│   ├── backup.sh          DB と添付のバックアップ／移行用
+│   └── *.example          systemd / nginx の設定例
+└── data/uploads/          添付ファイルの実体
+```
+
+### テストの実行
+
+テスト用データベースを作ってから実行します（テストのたびに中身は初期化されます）。
+
+```bash
+sudo mysql -e "CREATE DATABASE task_manager_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+               GRANT ALL PRIVILEGES ON task_manager_test.* TO 'tmapp'@'localhost'; FLUSH PRIVILEGES;"
+
+TM_DB_PASSWORD='アプリ用ユーザーのパスワード' .venv/bin/python -m unittest discover -s tests -v
+```
+
+テストは `config.ini` を読まず、環境変数と既定値だけで動きます（`TM_DB_NAME`
+既定 `task_manager_test`、`TM_DB_USER` 既定 `tmapp`）。実行のたびにテスト用
+データベースの中身は作り直されるので、本番の DB 名を指定しないでください。
+
+### API の概要
+
+すべて `/api/` 以下の JSON API です。認証はセッション Cookie。
+
+| メソッド | パス | 説明 |
+|---|---|---|
+| POST | `/api/auth/login` `/api/auth/logout` | ログイン・ログアウト |
+| GET | `/api/auth/me` | ログイン中のユーザーと未読件数 |
+| GET/POST/PATCH/DELETE | `/api/users` `/api/users/{id}` | ユーザー管理（更新系は管理者のみ） |
+| GET/POST/PATCH/DELETE | `/api/groups` `/api/groups/{id}` | グループ管理 |
+| GET/POST/PATCH/DELETE | `/api/projects` `/api/projects/{id}` | プロジェクト管理 |
+| PUT | `/api/projects/{id}/members` | メンバーと権限の一括更新 |
+| GET | `/api/projects/{id}/tasks` | ツリー表示用のタスク一覧（進捗集計・依存解析込み） |
+| GET | `/api/projects/{id}/bottlenecks` | ボトルネック順位・クリティカルパス・日程矛盾 |
+| GET | `/api/tasks?scope=mine&status=open&category=build&blocked=1&q=…` | 横断検索 |
+| POST/PATCH/DELETE | `/api/tasks` `/api/tasks/{id}` | タスク CRUD |
+| POST | `/api/tasks/reorder` | 並べ替え・階層移動の一括反映 |
+| POST/DELETE | `/api/tasks/{id}/deps[/{dep}]` | 依存関係の個別追加・削除（`depends_on` で一括指定も可） |
+| POST | `/api/tasks/{id}/comments` | コメント投稿 |
+| POST | `/api/tasks/{id}/attachments` | ファイル（multipart）または URL の添付 |
+| GET | `/api/attachments/{id}/download` | 添付のダウンロード |
+| GET/POST | `/api/notifications` `/api/notifications/read` | 通知の取得・既読 |
+| GET/POST | `/api/daily` `/api/daily/update` | 日次確認とまとめて更新 |
+| GET | `/api/projects/{id}/issues` `/api/issues` | 課題管理表（プロジェクト単位／横断） |
+| POST/PATCH/DELETE | `/api/issues` `/api/issues/{id}` | 課題 CRUD |
+| PUT | `/api/issues/{id}/tasks` | 課題に紐づくタスクの一括更新 |
+| POST | `/api/issues/{id}/comments` `/api/issues/{id}/attachments` | 経緯の記録・添付 |
+| GET/PUT | `/api/settings` | システム設定（管理者のみ） |
+| POST | `/api/admin/run-digest` | 日次サマリの手動実行 |
