@@ -230,6 +230,32 @@ class TestUsersAndGroups(ApiTestCase):
         status, data = self.admin.patch("/api/users/{}".format(admin_id), {"is_active": False})
         self.assertEqual(status, 400, data)
 
+    def test_deleting_a_user_removes_its_project_memberships(self):
+        """principal_id は外部キーを張れないので、消し忘れると権限行が残る。"""
+        project = self.make_project()
+        user, _ = self.make_user("消えるメンバー")
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "editor"}]})
+        self.assertEqual(self.admin.delete("/api/users/{}".format(user["id"]))[0], 200)
+        left = db.query(
+            "SELECT 1 AS x FROM project_members WHERE principal_type='user' AND principal_id=%s",
+            (user["id"],))
+        self.assertEqual(list(left), [], "削除したユーザーの権限行が残っている")
+
+    def test_deleting_a_group_removes_its_project_memberships(self):
+        project = self.make_project()
+        group = self.admin.post("/api/groups", {
+            "name": "消えるG-{}".format(uuid.uuid4().hex[:6])})[1]["group"]
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "group", "principal_id": group["id"],
+                         "role": "editor"}]})
+        self.admin.delete("/api/groups/{}".format(group["id"]))
+        left = db.query(
+            "SELECT 1 AS x FROM project_members WHERE principal_type='group' AND principal_id=%s",
+            (group["id"],))
+        self.assertEqual(list(left), [])
+
     def test_group_membership_round_trip(self):
         user, _ = self.make_user("グループ員")
         status, data = self.admin.post("/api/groups", {

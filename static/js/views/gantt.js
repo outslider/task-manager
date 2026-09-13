@@ -60,6 +60,7 @@ export async function render(container, route) {
   const project = data.project;
 
   const compact = window.innerWidth < 760;
+  const canEdit = store.canEdit(project);
   const state = {
     scale: localStorage.getItem('tm.gantt.scale') || (compact ? 'week' : 'day'),
     colorBy: localStorage.getItem('tm.gantt.colorBy') || 'status',
@@ -122,6 +123,10 @@ export async function render(container, route) {
         onChange: (event) => { state.onlyMine = event.target.checked; draw(); },
       }), el('span', { text: '自分の担当のみ' })),
     el('div', { class: 'spacer' }),
+    canEdit
+      ? el('span', { class: 'hint', style: { marginRight: '4px' } },
+        'バーをドラッグで移動、端をドラッグで期間変更')
+      : null,
     el('button', {
       class: 'btn btn-sm',
       onClick: () => { state.fromISO = null; state.toISO = null; syncRangeInputs(); draw(); },
@@ -209,6 +214,7 @@ export async function render(container, route) {
       rows, range, scale: SCALES[state.scale], deps: data.deps,
       conflicts: data.conflicts, colorBy: state.colorBy,
       title: project.name, nameWidth: state.nameWidth, interactive: true,
+      editable: canEdit, onEdit: applyEdit, scroller: scroll,
     });
     drawLegend();
     fill(scroll, svg);
@@ -217,6 +223,22 @@ export async function render(container, route) {
       const stick = () => names.setAttribute('transform', `translate(${scroll.scrollLeft},0)`);
       scroll.onscroll = stick;
       stick();
+    }
+  }
+
+  /** バーをドラッグして確定した日程を保存する。 */
+  async function applyEdit(task, patch) {
+    const scrollLeft = scroll.scrollLeft;
+    try {
+      await api.patch(`/api/tasks/${task.id}`, patch);
+      data = await api.projectTasks(projectId);
+      draw();
+      scroll.scrollLeft = scrollLeft;     // 見ていた位置を保つ
+      toast(`${task.title}: ${patch.start_date || '—'} 〜 ${patch.due_date}`, 'ok');
+    } catch (error) {
+      toast(error.message, 'error');
+      draw();
+      scroll.scrollLeft = scrollLeft;
     }
   }
 
@@ -320,7 +342,7 @@ export async function render(container, route) {
  */
 export function buildGanttSvg({
   rows, range, scale, deps = [], conflicts = [], colorBy = 'status',
-  title = null, subtitle = null,
+  title = null, subtitle = null, editable = false, onEdit = null, scroller = null,
   nameWidth = NAME_W_DEFAULT, interactive = false, forExport = false,
 }) {
   const colorOf = (COLOR_MODES[colorBy] || COLOR_MODES.status).color;
@@ -464,6 +486,10 @@ export function buildGanttSvg({
   svg.appendChild(headerG);
 
   /* ---- rows ---- */
+  /** 子タスクを持つ行は子から集計した期間なので、直接は動かさない。 */
+  const canDrag = (task) => Boolean(
+    interactive && editable && onEdit && !task.child_count);
+
   const rowsG = svgEl('g');
   const namesG = svgEl('g', { class: 'gantt-names' });
   const barGeom = new Map();
@@ -536,11 +562,31 @@ export function buildGanttSvg({
         'stroke-width': critical ? 2 : 1,
       });
       node.appendChild(svgEl('title', { text: `${task.title} — ${dueISO}` }));
-      rowsG.appendChild(node);
-      rowsG.appendChild(svgEl('text', {
+      const label = svgEl('text', {
         x: cx + size + 5, y: cy + 4, 'font-size': 10.5, fill: colors.muted,
         text: truncate(task.title, 18),
-      }));
+      });
+      const group = svgEl('g', {}, node, label);
+      rowsG.appendChild(group);
+      if (interactive) {
+        group.style.cursor = 'pointer';
+        group.addEventListener('click', () => openTaskDetail(task.id));
+      }
+      if (canDrag(task)) {
+        attachDrag({
+          group, task, dayWidth, range, scroller, onEdit, interactive,
+          // マイルストーンは期限だけを持つので、移動のみ
+          setGeometry: (offsetX) => {
+            const px = cx + offsetX;
+            node.setAttribute('d',
+              `M ${px} ${cy - size} L ${px + size} ${cy} L ${px} ${cy + size} `
+              + `L ${px - size} ${cy} Z`);
+            label.setAttribute('x', px + size + 5);
+          },
+          modeAt: () => 'move',
+          dates: { start: null, due },
+        });
+      }
       barGeom.set(task.id, { x1: cx - size, x2: cx + size, y: cy });
       return;
     }
@@ -555,21 +601,23 @@ export function buildGanttSvg({
     const progress = hasChildren ? (task.rollup_progress ?? task.progress) : task.progress;
 
     const group = svgEl('g', { opacity: faded ? 0.45 : 1 });
-    group.appendChild(svgEl('rect', {
-      x: bx, y: by, width: bw, height: barH, rx: hasChildren ? 2 : 4,
+    const radius = hasChildren ? 2 : 4;
+    const bgRect = svgEl('rect', {
+      x: bx, y: by, width: bw, height: barH, rx: radius,
       fill: color, opacity: hasChildren ? 0.35 : 0.28,
-    }));
-    if (progress > 0) {
-      group.appendChild(svgEl('rect', {
-        x: bx, y: by, width: Math.max(2, (bw * progress) / 100), height: barH,
-        rx: hasChildren ? 2 : 4, fill: color,
-      }));
-    }
-    group.appendChild(svgEl('rect', {
-      x: bx, y: by, width: bw, height: barH, rx: hasChildren ? 2 : 4,
+    });
+    const fillRect = progress > 0 ? svgEl('rect', {
+      x: bx, y: by, width: Math.max(2, (bw * progress) / 100), height: barH,
+      rx: radius, fill: color,
+    }) : null;
+    const outlineRect = svgEl('rect', {
+      x: bx, y: by, width: bw, height: barH, rx: radius,
       fill: 'none', stroke: critical ? '#e14c4c' : color,
       'stroke-width': critical ? 2 : 1, opacity: critical ? 1 : 0.85,
-    }));
+    });
+    group.appendChild(bgRect);
+    if (fillRect) group.appendChild(fillRect);
+    group.appendChild(outlineRect);
     group.appendChild(svgEl('title', {
       text: `${task.title}\n${startISO || '?'} 〜 ${dueISO || '?'}  進捗 ${progress}%`
         + (task.assignee_name ? `\n担当: ${task.assignee_name}` : '')
@@ -585,11 +633,42 @@ export function buildGanttSvg({
     const labelParts = [];
     if (progress > 0 && progress < 100) labelParts.push(`${progress}%`);
     if (task.assignee_name) labelParts.push(task.assignee_name);
+    let sideLabel = null;
     if (labelParts.length && bx + bw + 6 < originX + chartW) {
-      rowsG.appendChild(svgEl('text', {
+      sideLabel = svgEl('text', {
         x: bx + bw + 6, y: y + ROW_H / 2 + 4, 'font-size': 10, fill: colors.muted,
         text: labelParts.join(' · '),
-      }));
+      });
+      group.appendChild(sideLabel);
+    }
+
+    if (canDrag(task)) {
+      attachDrag({
+        group, task, dayWidth, range, scroller, onEdit, interactive,
+        setGeometry: (offsetX, widthDelta) => {
+          const nx = bx + offsetX;
+          const nw = Math.max(dayWidth * 0.5, bw + widthDelta);
+          for (const rect of [bgRect, outlineRect]) {
+            rect.setAttribute('x', nx);
+            rect.setAttribute('width', nw);
+          }
+          if (fillRect) {
+            fillRect.setAttribute('x', nx);
+            fillRect.setAttribute('width', Math.max(2, (nw * progress) / 100));
+          }
+          if (sideLabel) sideLabel.setAttribute('x', nx + nw + 6);
+        },
+        // バーの端 7px だけがリサイズ。バーの外（横のラベルなど）は移動として扱う
+        modeAt: (px) => {
+          if (px < bx || px > bx + bw) return 'move';
+          const edge = Math.min(7, bw / 3);
+          if (px - bx <= edge) return 'resize-start';
+          if (bx + bw - px <= edge) return 'resize-end';
+          return 'move';
+        },
+        dates: { start, due },
+        bounds: () => ({ bx, bw }),
+      });
     }
     barGeom.set(task.id, { x1: bx, x2: bx + bw, y: by + barH / 2 });
   });
@@ -679,6 +758,136 @@ function fitScale(range, targetWidth, nameWidth) {
   const dayWidth = Math.min(40, Math.max(1.2, available / totalDays));
   const key = dayWidth >= 14 ? 'day' : dayWidth >= 5 ? 'week' : 'month';
   return { key, label: SCALES[key].label, dayWidth, minorEvery: SCALES[key].minorEvery };
+}
+
+/* ---------------------------------------------------------------- ドラッグ */
+
+const DRAG_THRESHOLD = 4;      // これ未満の移動はクリック扱い
+const AUTO_SCROLL_EDGE = 56;   // 端に近づいたら自動でスクロールする距離
+
+/** 画面座標を SVG の座標系に変換する。 */
+function svgPoint(node, event) {
+  const svg = node.ownerSVGElement || node;
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  return point.matrixTransform(svg.getScreenCTM().inverse());
+}
+
+function dragHint() {
+  let node = document.querySelector('.gantt-drag-hint');
+  if (!node) {
+    node = el('div', { class: 'gantt-drag-hint' });
+    document.body.appendChild(node);
+  }
+  return node;
+}
+
+/** ドラッグ結果の日付を求める。動かせない形になる場合は null。 */
+function shiftedDates({ start, due }, mode, days) {
+  const from = start || due;
+  const to = due || start;
+  if (mode === 'move') {
+    return {
+      start_date: start ? toISO(addDays(from, days)) : null,
+      due_date: toISO(addDays(to, days)),
+    };
+  }
+  if (mode === 'resize-start') {
+    const next = addDays(from, days);
+    if (next > to) return null;
+    return { start_date: toISO(next), due_date: toISO(to) };
+  }
+  const next = addDays(to, days);
+  if (next < from) return null;
+  return { start_date: start ? toISO(from) : null, due_date: toISO(next) };
+}
+
+/**
+ * バー／マイルストーンをドラッグで移動・期間変更できるようにする。
+ * setGeometry(offsetX, widthDelta) で見た目だけを先に動かし、
+ * 離した時点で onEdit に確定した日付を渡す。
+ */
+function attachDrag({ group, task, dayWidth, range, scroller, onEdit, setGeometry,
+                      modeAt, dates }) {
+  let drag = null;
+  group.style.touchAction = 'none';
+  group.style.cursor = 'grab';        // 動かせることが分かるようにしておく
+  const span = daysBetween(dates.start || dates.due, dates.due || dates.start) + 1;
+
+  const clampDays = (mode, days) => {
+    if (mode === 'resize-start') return Math.min(days, span - 1);
+    if (mode === 'resize-end') return Math.max(days, -(span - 1));
+    return days;
+  };
+
+  const onMove = (event) => {
+    const point = svgPoint(group, event);
+    if (!drag) {
+      group.style.cursor = modeAt(point.x) === 'move' ? 'grab' : 'ew-resize';
+      return;
+    }
+    const dx = point.x - drag.startX;
+    if (!drag.moved && Math.abs(dx) < DRAG_THRESHOLD) return;
+    drag.moved = true;
+    const days = clampDays(drag.mode, Math.round(dx / dayWidth));
+    drag.days = days;
+    const shift = days * dayWidth;
+    if (drag.mode === 'move') setGeometry(shift, 0);
+    else if (drag.mode === 'resize-start') setGeometry(shift, -shift);
+    else setGeometry(0, shift);
+
+    const preview = shiftedDates(dates, drag.mode, days);
+    const hint = dragHint();
+    hint.textContent = preview
+      ? `${preview.start_date || '—'} 〜 ${preview.due_date}`
+      : '動かせません';
+    hint.style.left = `${event.clientX + 14}px`;
+    hint.style.top = `${event.clientY - 34}px`;
+    hint.hidden = false;
+    autoScroll(event);
+  };
+
+  const autoScroll = (event) => {
+    if (!scroller) return;
+    const box = scroller.getBoundingClientRect();
+    if (event.clientX > box.right - AUTO_SCROLL_EDGE) scroller.scrollLeft += 12;
+    else if (event.clientX < box.left + AUTO_SCROLL_EDGE) scroller.scrollLeft -= 12;
+  };
+
+  const onUp = (event) => {
+    if (!drag) return;
+    const finished = drag;
+    drag = null;
+    group.releasePointerCapture?.(event.pointerId);
+    group.style.cursor = 'grab';
+    dragHint().hidden = true;
+    if (!finished.moved || finished.days === 0) {
+      setGeometry(0, 0);
+      return;                      // 動いていなければクリックとして扱う
+    }
+    // ドラッグ直後のクリックで詳細が開かないように 1 回だけ握りつぶす
+    group.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); },
+      { capture: true, once: true });
+    const patch = shiftedDates(dates, finished.mode, finished.days);
+    if (!patch) { setGeometry(0, 0); return; }
+    onEdit(task, patch);
+  };
+
+  group.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    const point = svgPoint(group, event);
+    drag = { startX: point.x, mode: modeAt(point.x), moved: false, days: 0 };
+    group.setPointerCapture?.(event.pointerId);
+    group.style.cursor = drag.mode === 'move' ? 'grabbing' : 'ew-resize';
+    event.stopPropagation();
+  });
+  group.addEventListener('pointermove', onMove);
+  group.addEventListener('pointerup', onUp);
+  group.addEventListener('pointercancel', onUp);
+  group.addEventListener('pointerleave', () => {
+    if (!drag) group.style.cursor = 'grab';
+  });
 }
 
 function truncate(text, max) {

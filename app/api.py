@@ -420,6 +420,10 @@ def delete_user(ctx, user_id):
         target = db.query_one("SELECT role FROM users WHERE id=%s", (user_id,))
         if target and target["role"] == "admin":
             raise bad_request("管理者が 0 人になる操作はできません")
+    # project_members.principal_id はユーザーとグループの兼用で外部キーを張れないため、
+    # ここで明示的に後始末する（グループ削除と同じ扱い）
+    db.execute("DELETE FROM project_members WHERE principal_type='user' AND principal_id=%s",
+               (user_id,))
     db.execute("DELETE FROM users WHERE id=%s", (user_id,))
     return json_response({"ok": True})
 
