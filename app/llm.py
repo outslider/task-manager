@@ -110,7 +110,7 @@ def _client():
     return anthropic.Anthropic(api_key=settings()["api_key"])
 
 
-def _ask(system, prompt, schema, effort="medium", max_tokens=4000):
+def _ask(system, prompt, schema, effort="medium", max_tokens=16000):
     """構造化出力で1往復だけ問い合わせる。戻り値は dict。"""
     import anthropic
 
@@ -135,10 +135,15 @@ def _ask(system, prompt, schema, effort="medium", max_tokens=4000):
 
     if response.stop_reason == "refusal":
         raise LlmError("リクエストが安全上の理由で処理されませんでした")
+    if response.stop_reason == "max_tokens":
+        raise LlmError("応答が長すぎて途中で切れました（入力を短くしてください）")
     text = next((block.text for block in response.content if block.type == "text"), "")
+    if not text.strip():
+        raise LlmError("応答が空でした")
     try:
         return json.loads(text)
     except ValueError:
+        log.warning("unparsable response: %s", text[:200])
         raise LlmError("応答を解釈できませんでした")
 
 
@@ -209,10 +214,13 @@ def _iso_or_none(value):
 def check():
     """管理画面の接続テスト用。(成否, メッセージ) を返す。"""
     if not sdk_installed():
-        return False, "anthropic パッケージが入っていません（pip install anthropic）"
+        return False, ("サーバーに anthropic パッケージが入っていません。"
+                       "サーバー上で .venv/bin/pip install anthropic を実行してください")
     config = settings()
     if not config["api_key"]:
-        return False, "API キーが未設定です"
+        return False, "API キーが未設定です（sk-ant- で始まるキーを入力して保存してください）"
+    if not config["api_key"].startswith("sk-ant-"):
+        return False, "API キーの形式が正しくありません（sk-ant- で始まります）"
     try:
         steps = decompose("サーバー移行")
     except LlmError as error:

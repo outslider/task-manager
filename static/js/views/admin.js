@@ -296,14 +296,15 @@ async function renderSettings(container) {
           el('button', {
             class: 'btn',
             onClick: async (event) => {
-              event.currentTarget.disabled = true;
+              const button = event.currentTarget;
+              button.disabled = true;
               try {
                 await save();
                 const result = await api.post('/api/settings/test-mail',
                   { to: testTo.value.trim() || store.user.email });
-                toast(result.message, 'ok');
+                toast(result.message, result.ok ? 'ok' : 'error');
               } catch (error) { toast(error.message, 'error'); }
-              event.currentTarget.disabled = false;
+              button.disabled = false;
             },
           }, 'テストメールを送る'))),
       el('div', { class: 'card' },
@@ -316,14 +317,15 @@ async function renderSettings(container) {
           el('button', {
             class: 'btn',
             onClick: async (event) => {
-              event.currentTarget.disabled = true;
+              const button = event.currentTarget;
+              button.disabled = true;
               try {
                 await save();
                 const result = await api.post('/api/admin/run-digest', {});
                 toast(`${result.sent} 名に通知しました（期限通知 ${result.due_notifications} 件）`, 'ok');
                 store.refreshUnread().catch(() => {});
               } catch (error) { toast(error.message, 'error'); }
-              event.currentTarget.disabled = false;
+              button.disabled = false;
             },
           }, '今すぐ日次サマリを送る')))),
     el('div', { class: 'grid cols-2', style: { marginTop: '14px' } },
@@ -345,13 +347,14 @@ async function renderSettings(container) {
           el('button', {
             class: 'btn', style: { marginTop: '10px' },
             onClick: async (event) => {
-              event.currentTarget.disabled = true;
+              const button = event.currentTarget;
+              button.disabled = true;
               try {
                 await save();
                 const result = await api.post('/api/settings/test-slack', {});
-                toast(result.message, 'ok');
+                toast(result.message, result.ok ? 'ok' : 'error');
               } catch (error) { toast(error.message, 'error'); }
-              event.currentTarget.disabled = false;
+              button.disabled = false;
             },
           }, 'テスト送信'))),
       el('div', { class: 'card' },
@@ -384,13 +387,14 @@ async function renderSettings(container) {
         el('button', {
           class: 'btn', style: { marginTop: '10px' },
           onClick: async (event) => {
-            event.currentTarget.disabled = true;
+            const button = event.currentTarget;
+            button.disabled = true;
             try {
               await save();
               const result = await api.post('/api/settings/test-llm', {});
-              toast(result.message, 'ok');
+              toast(result.message, result.ok ? 'ok' : 'error');
             } catch (error) { toast(error.message, 'error'); }
-            event.currentTarget.disabled = false;
+            button.disabled = false;
           },
         }, '接続をテスト'))),
     el('div', { class: 'card', style: { marginTop: '14px' } },
@@ -404,12 +408,13 @@ async function renderSettings(container) {
       el('button', {
         class: 'btn btn-primary',
         onClick: async (event) => {
-          event.currentTarget.disabled = true;
+          const button = event.currentTarget;
+          button.disabled = true;
           try {
             await save();
             toast('設定を保存しました', 'ok');
           } catch (error) { toast(error.message, 'error'); }
-          event.currentTarget.disabled = false;
+          button.disabled = false;
         },
       }, '設定を保存')));
 

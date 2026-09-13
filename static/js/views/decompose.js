@@ -112,14 +112,14 @@ export async function openSubtaskSuggestions(task, { onChange } = {}) {
         onClick: async (event) => {
           const chosen = state.items.filter((i) => i.checked && i.title.trim());
           if (!chosen.length) { toast('追加する子タスクを選んでください', 'error'); return; }
-          event.currentTarget.disabled = true;
+          button.disabled = true;
           try {
             const data = await api.post(`/api/tasks/${task.id}/subtasks`, { items: chosen });
             toast(`子タスクを ${data.created} 件追加しました`, 'ok');
             close(data.created);
           } catch (error) {
             toast(error.message, 'error');
-            event.currentTarget.disabled = false;
+            button.disabled = false;
           }
         },
       }, '選んだものを追加'),

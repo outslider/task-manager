@@ -82,7 +82,8 @@ export async function render(container) {
           el('button', {
             class: 'btn btn-primary',
             onClick: async (event) => {
-              event.currentTarget.disabled = true;
+              const button = event.currentTarget;
+              button.disabled = true;
               try {
                 const result = await api.patch('/api/auth/profile', {
                   name: name.value.trim(),
@@ -95,7 +96,7 @@ export async function render(container) {
                 store.emit();
                 toast('保存しました', 'ok');
               } catch (error) { toast(error.message, 'error'); }
-              event.currentTarget.disabled = false;
+              button.disabled = false;
             },
           }, '保存'))),
       el('div', { class: 'card' },
@@ -111,7 +112,7 @@ export async function render(container) {
                 toast('新しいパスワードが一致しません', 'error');
                 return;
               }
-              event.currentTarget.disabled = true;
+              button.disabled = true;
               try {
                 await api.post('/api/auth/password', {
                   current_password: current.value, new_password: next.value,
@@ -119,7 +120,7 @@ export async function render(container) {
                 current.value = ''; next.value = ''; confirm.value = '';
                 toast('パスワードを変更しました', 'ok');
               } catch (error) { toast(error.message, 'error'); }
-              event.currentTarget.disabled = false;
+              button.disabled = false;
             },
           }, 'パスワードを変更')))));
 }

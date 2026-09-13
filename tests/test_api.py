@@ -1267,8 +1267,10 @@ class TestSlackSettings(ApiTestCase):
         self.assertFalse(data["slack_ready"])
 
     def test_test_send_fails_cleanly_without_a_url(self):
+        # テスト自体は実行できているので 200。成否と理由は本文で返す
         status, data = self.admin.post("/api/settings/test-slack", {})
-        self.assertEqual(status, 400)
+        self.assertEqual(status, 200)
+        self.assertFalse(data["ok"])
         self.assertIn("設定", data["message"])
 
 
@@ -1375,6 +1377,29 @@ class TestSettings(ApiTestCase):
     def test_unknown_settings_are_ignored(self):
         self.admin.put("/api/settings", {"settings": {"evil_key": "x"}})
         self.assertNotIn("evil_key", self.admin.get("/api/settings")[1]["settings"])
+
+    def test_connection_tests_report_the_reason_not_a_bare_error(self):
+        """設定不足でも 200 で返し、理由を message に載せる（画面で理由を出すため）。"""
+        for endpoint in ("test-llm", "test-slack", "test-mail"):
+            status, data = self.admin.post("/api/settings/{}".format(endpoint), {})
+            self.assertEqual(status, 200, "{} は 200 で返すこと: {}".format(endpoint, data))
+            self.assertFalse(data["ok"])
+            self.assertTrue(data["message"].strip(),
+                            "{} の失敗理由が空になっている".format(endpoint))
+            self.assertNotIn("エラー (", data["message"])
+
+    def test_connection_tests_are_admin_only(self):
+        _, email = self.make_user("テスト実行者")
+        client = self.client_for(email)
+        for endpoint in ("test-llm", "test-slack", "test-mail"):
+            self.assertEqual(client.post("/api/settings/{}".format(endpoint), {})[0], 403)
+
+    def test_llm_check_explains_a_malformed_key(self):
+        self.admin.put("/api/settings", {"settings": {
+            "llm_enabled": "1", "llm_api_key": "not-a-real-key"}})
+        data = self.admin.post("/api/settings/test-llm", {})[1]
+        self.assertFalse(data["ok"])
+        self.assertIn("sk-ant-", data["message"])
 
     def test_meta_endpoint(self):
         data = self.admin.get("/api/meta")[1]

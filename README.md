@@ -235,7 +235,7 @@ vi config.ini          # DB 接続情報とポートを記入
 
 ```bash
 # サーバー側で一度だけ
-/opt/task-manager/.venv/bin/pip install anthropic
+/opt/task-manager/.venv/bin/pip install -r /opt/task-manager/requirements-optional.txt
 ```
 
 そのうえで「管理 > システム設定 > Claude 連携」で API キーを入れて有効にします。
@@ -244,6 +244,16 @@ vi config.ini          # DB 接続情報とポートを記入
 - **API がエラーになった場合は自動的にルールベースへ戻る**ので、登録が止まることはありません
 - タスクの文面が Anthropic に送信されます。社内規程を確認のうえ有効にしてください
 - 既定の依存関係は PyMySQL のみのままです。anthropic を入れなければこの機能は無効のままになります
+
+接続テストが失敗したときは、**失敗した理由がそのまま画面に表示されます**。よくある原因:
+
+| 表示 | 対処 |
+|---|---|
+| サーバーに anthropic パッケージが入っていません | 上の `pip install` を実行する |
+| API キーが未設定です / 形式が正しくありません | `sk-ant-` で始まるキーを入力して保存する |
+| APIキーが正しくありません | キーが失効・無効。Anthropic Console で再発行する |
+| Claude API エラー (400): … | メッセージ本文に原因が入っています。モデル名やアカウントの権限を確認してください |
+| Claude API に接続できませんでした | サーバーから api.anthropic.com への通信（HTTPS 443）が塞がれていないか確認 |
 
 ### 工数と負荷を見る
 

@@ -147,14 +147,14 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
           };
           if (!payload.title) { toast('タスク名を入力してください', 'error'); return; }
           if (!payload.project_id) { toast('プロジェクトを選んでください', 'error'); return; }
-          event.currentTarget.disabled = true;
+          button.disabled = true;
           try {
             const data = await api.post('/api/tasks', payload);
             toast('タスクを追加しました', 'ok');
             close({ task: data.task, decompose: decomposeCheck.checked });
           } catch (error) {
             toast(error.message, 'error');
-            event.currentTarget.disabled = false;
+            button.disabled = false;
           }
         },
       }, '登録');

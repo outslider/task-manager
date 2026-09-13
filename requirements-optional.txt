@@ -1,0 +1,4 @@
+# 任意機能の依存関係。入れなくても本体は動きます。
+# 自然言語解析とタスク分解に Claude を使う場合のみ必要:
+#   .venv/bin/pip install -r requirements-optional.txt
+anthropic>=0.125

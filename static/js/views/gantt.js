@@ -262,14 +262,15 @@ export async function render(container, route) {
         el('button', {
           class: 'btn btn-primary',
           onClick: async (event) => {
-            event.currentTarget.disabled = true;
+            const button = event.currentTarget;
+            button.disabled = true;
             try {
               await runExport(rows, range, preset.value, format.value,
                 includeTitle.value, fitWidth.value);
               close(true);
             } catch (error) {
               toast(error.message || 'エクスポートに失敗しました', 'error');
-              event.currentTarget.disabled = false;
+              button.disabled = false;
             }
           },
         }, '書き出す'),

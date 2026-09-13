@@ -1589,7 +1589,8 @@ def test_mail(ctx):
     ok, message = notify.send_email(
         to, "[テスト] タスク管理システムのメール設定",
         "このメールが届いていれば SMTP 設定は正しく動作しています。", user["name"])
-    return json_response({"ok": ok, "message": message}, 200 if ok else 400)
+    # テスト自体は実行できているので 200 を返し、成否は本文で伝える
+    return json_response({"ok": ok, "message": message})
 
 
 @route("POST", r"/api/admin/run-digest")
@@ -2159,7 +2160,7 @@ def create_subtasks(ctx, task_id):
 def test_llm(ctx):
     admin_only(ctx)
     ok, message = llm.check()
-    return json_response({"ok": ok, "message": message}, 200 if ok else 400)
+    return json_response({"ok": ok, "message": message})
 
 
 # --------------------------------------------------------------------------
@@ -2349,4 +2350,4 @@ def test_slack(ctx):
     if not url and project_id:
         url = slack.webhook_for(project_id)
     ok, message = slack.check(url or None)
-    return json_response({"ok": ok, "message": message}, 200 if ok else 400)
+    return json_response({"ok": ok, "message": message})

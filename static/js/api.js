@@ -52,7 +52,8 @@ async function request(method, path, { body, query, raw } = {}) {
     try { data = JSON.parse(text); } catch { data = { error: text.slice(0, 200) }; }
   }
   if (!response.ok) {
-    throw new ApiError(response.status, data?.error || `エラー (${response.status})`, data?.detail);
+    const reason = data?.error || data?.message || `エラー (${response.status})`;
+    throw new ApiError(response.status, reason, data?.detail);
   }
   return data;
 }

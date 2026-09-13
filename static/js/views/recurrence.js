@@ -213,7 +213,7 @@ export function openRecurrenceForm(project, rule = null, task = null) {
             active: f.active.checked,
           };
           if (!payload.title) { toast('タスク名を入力してください', 'error'); return; }
-          event.currentTarget.disabled = true;
+          button.disabled = true;
           try {
             if (rule) await api.patch(`/api/recurrences/${rule.id}`, payload);
             else await api.post(`/api/projects/${project.id}/recurrences`, payload);
@@ -221,7 +221,7 @@ export function openRecurrenceForm(project, rule = null, task = null) {
             close(true);
           } catch (error) {
             toast(error.message, 'error');
-            event.currentTarget.disabled = false;
+            button.disabled = false;
           }
         },
       }, '保存'),
