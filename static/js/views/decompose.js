@@ -110,6 +110,7 @@ export async function openSubtaskSuggestions(task, { onChange } = {}) {
       el('button', {
         class: 'btn btn-primary',
         onClick: async (event) => {
+          const button = event.currentTarget;
           const chosen = state.items.filter((i) => i.checked && i.title.trim());
           if (!chosen.length) { toast('追加する子タスクを選んでください', 'error'); return; }
           button.disabled = true;

@@ -18,6 +18,20 @@ const FIELD_LABEL = {
 
 export async function openQuickAdd({ projectId = null, onCreated } = {}) {
   const state = { draft: null, warning: null, busy: false };
+  let parseButton = null;
+  let footerSubmit = null;
+
+  /** 解析中・未解析のときは登録できないことを、ボタンの状態で示す。 */
+  function syncButtons() {
+    if (parseButton) {
+      parseButton.disabled = state.busy;
+      parseButton.textContent = state.busy ? '解析中…' : '解析';
+    }
+    if (footerSubmit) {
+      footerSubmit.disabled = state.busy || !state.draft;
+      footerSubmit.title = state.draft ? '' : '先に「解析」を押してください';
+    }
+  }
   const input = el('textarea', {
     class: 'textarea qa-input',
     placeholder: `やることを一文で。例）${EXAMPLES[0]}`,
@@ -37,8 +51,12 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
   async function parse() {
     const text = input.value.trim();
     if (!text) { toast('内容を入力してください', 'error'); return; }
+    if (state.busy) return;
     state.busy = true;
-    fill(status, el('div', { class: 'hint', text: '解析しています…' }));
+    state.draft = null;
+    syncButtons();
+    fill(status, el('div', { class: 'qa-progress' },
+      el('span', { class: 'spinner' }), el('span', { text: '解析しています…' })));
     try {
       const data = await api.post('/api/nl/parse', { text, project_id: projectId });
       state.draft = data.draft;
@@ -49,6 +67,7 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
       preview.hidden = true;
     }
     state.busy = false;
+    syncButtons();
   }
 
   function drawPreview() {
@@ -98,6 +117,7 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
         el('label', { class: 'check' }, decomposeCheck,
           el('span', { text: '登録したあとに子タスクの分解案を出す' }))));
     preview.hidden = false;
+    syncButtons();
   }
 
   function labelFor(draft, matched) {
@@ -113,13 +133,11 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
-      if (state.draft) submitFromFooter();
+      if (state.busy) return;
+      if (state.draft) footerSubmit?.click();
       else parse();
     }
   });
-
-  let footerSubmit = null;
-  const submitFromFooter = () => footerSubmit && footerSubmit.click();
 
   const created = await openModal({
     title: '⚡ クイック追加',
@@ -129,11 +147,12 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
         text: '日付・担当者・重要度などを文章から読み取ります。内容を確認してから登録してください。' }),
       input, hint, status, preview),
     footer: (close) => {
-      const parseButton = el('button', { class: 'btn', onClick: parse }, '解析');
+      parseButton = el('button', { class: 'btn', onClick: parse }, '解析');
       footerSubmit = el('button', {
-        class: 'btn btn-primary',
+        class: 'btn btn-primary', disabled: true,
         onClick: async (event) => {
-          if (!state.draft) { parse(); return; }
+          const button = event.currentTarget;
+          if (state.busy || !state.draft) { toast('先に「解析」を押してください', 'error'); return; }
           const payload = {
             project_id: Number(fields.project.value),
             title: fields.title.value.trim(),
@@ -158,6 +177,7 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
           }
         },
       }, '登録');
+      syncButtons();
       return [el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
         parseButton, footerSubmit];
     },

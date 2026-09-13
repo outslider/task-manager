@@ -108,6 +108,7 @@ export async function render(container) {
           el('button', {
             class: 'btn btn-primary',
             onClick: async (event) => {
+              const button = event.currentTarget;
               if (next.value !== confirm.value) {
                 toast('新しいパスワードが一致しません', 'error');
                 return;

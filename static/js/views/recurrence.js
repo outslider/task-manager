@@ -197,6 +197,7 @@ export function openRecurrenceForm(project, rule = null, task = null) {
       el('button', {
         class: 'btn btn-primary',
         onClick: async (event) => {
+          const button = event.currentTarget;
           const payload = {
             title: f.title.value.trim(),
             description: f.description.value,

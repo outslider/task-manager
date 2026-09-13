@@ -23,6 +23,8 @@ const ADMIN_NAV = [
 
 let shell = null;
 let currentRoute = null;
+// 描画の世代。非同期の描画が遅れて完了し、新しい画面を上書きするのを防ぐ。
+let renderToken = 0;
 
 /* ------------------------------------------------------------------ shell */
 
@@ -55,14 +57,15 @@ function buildShell() {
     el('div', { class: 'topbar-spacer' }),
     topActions, quickAdd, bell);
 
+  const progress = el('div', { class: 'route-progress', hidden: true });
   const content = el('main', { class: 'content', id: 'content' });
   const mobileNav = el('nav', { class: 'mobile-nav' });
-  const main = el('div', { class: 'main' }, topbar, content);
+  const main = el('div', { class: 'main' }, topbar, progress, content);
   const wrap = el('div', { class: 'app-shell' }, sidebar, main);
 
   clear(root);
   root.append(wrap, backdrop, mobileNav);
-  shell = { sidebar, backdrop, title, topActions, content, bellBadge, mobileNav };
+  shell = { sidebar, backdrop, title, topActions, content, bellBadge, mobileNav, progress };
   renderSidebar();
   renderMobileNav();
   store.on(() => { renderSidebar(); renderMobileNav(); updateBell(); });
@@ -171,9 +174,11 @@ export function contentEl() {
 export async function openQuickAddDialog() {
   const { openQuickAdd } = await import('./views/quickAdd.js');
   const match = (location.hash || '').match(/^#\/p\/(\d+)\//);
+  const openedAt = location.hash;
   await openQuickAdd({
     projectId: match ? Number(match[1]) : null,
-    onCreated: () => renderRoute(),
+    // 登録中に別の画面へ移動していたら、その画面を上書きしない
+    onCreated: () => { if (location.hash === openedAt) renderRoute(); },
   });
 }
 
@@ -232,6 +237,7 @@ const LOADERS = {
 
 async function renderRoute() {
   const route = parseRoute();
+  const token = ++renderToken;
   currentRoute = route;
   closeAllOverlays();
   renderSidebar();
@@ -272,17 +278,33 @@ async function renderRoute() {
         'このページは存在しません')));
     return;
   }
-  fill(shell.content, el('div', { class: 'empty', text: '読み込み中…' }));
+
+  // ビューはいったん DOM から切り離した箱に描く。描いている間に別の画面へ
+  // 移動していたら、その箱ごと捨てる。古い描画が新しい画面を上書きしない。
+  const view = el('div', { class: 'content' });
+  setLoading(true);
   try {
     const module = await loader();
-    if (currentRoute !== route) return;
-    await module.render(shell.content, route);
+    if (token !== renderToken) return;
+    await module.render(view, route);
   } catch (error) {
+    if (token !== renderToken) return;
     console.error(error);
-    fill(shell.content, el('div', { class: 'card' },
+    fill(view, el('div', { class: 'card' },
       el('div', { class: 'empty' }, el('div', { class: 'big', text: '⚠️' }),
         error.message || '読み込みに失敗しました')));
+  } finally {
+    if (token === renderToken) setLoading(false);
   }
+  if (token !== renderToken) return;
+  shell.content.className = view.className;
+  fill(shell.content, ...[...view.childNodes]);
+}
+
+/** 画面の切り替え中であることを細いバーで示す。 */
+function setLoading(on) {
+  if (!shell?.progress) return;
+  shell.progress.hidden = !on;
 }
 
 /* ------------------------------------------------------------------- boot */
