@@ -52,7 +52,9 @@ DECOMPOSE_SCHEMA = {
                 "properties": {
                     "title": {"type": "string", "description": "子タスク名（簡潔な名詞句）"},
                     "category": {"type": "string", "enum": CATEGORY_VALUES},
-                    "weight": {"type": "integer", "minimum": 1, "maximum": 5,
+                    # 構造化出力のスキーマは integer の minimum/maximum を受け付けないため
+                    # 取りうる値を enum で列挙する
+                    "weight": {"type": "integer", "enum": [1, 2, 3, 4, 5],
                                "description": "相対的な所要期間。標準は 1〜3"},
                 },
                 "required": ["title", "category", "weight"],

@@ -6,7 +6,7 @@ from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import nlp  # noqa: E402
+from app import llm, nlp  # noqa: E402
 
 USERS = [{"id": 2, "name": "佐藤 花子"}, {"id": 3, "name": "鈴木 一郎"}]
 PROJECTS = [{"id": 7, "name": "新製品リリース"}]
@@ -147,3 +147,65 @@ class TestDecomposition(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestLlmSchemas(unittest.TestCase):
+    """構造化出力のスキーマが、API が受け付ける書き方になっているかを検証する。
+
+    integer に minimum / maximum を付けると 400 になる（実際に踏んだ）。
+    API を呼ばずに気づけるよう、ここで形だけを検査する。
+    """
+
+    UNSUPPORTED = ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum")
+
+    def walk(self, node, path="root"):
+        """スキーマを再帰的にたどって (パス, ノード) を返す。"""
+        if isinstance(node, dict):
+            yield path, node
+            for key, value in node.items():
+                yield from self.walk(value, "{}.{}".format(path, key))
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                yield from self.walk(value, "{}[{}]".format(path, index))
+
+    def schemas(self):
+        return {"parse": llm.PARSE_SCHEMA, "decompose": llm.DECOMPOSE_SCHEMA}
+
+    def test_no_unsupported_range_keywords(self):
+        for name, schema in self.schemas().items():
+            for path, node in self.walk(schema):
+                for keyword in self.UNSUPPORTED:
+                    self.assertNotIn(
+                        keyword, node,
+                        "{} スキーマの {} に {} が入っている（API が 400 を返す）"
+                        .format(name, path, keyword))
+
+    def test_objects_forbid_extra_properties(self):
+        for name, schema in self.schemas().items():
+            for path, node in self.walk(schema):
+                if node.get("type") == "object":
+                    self.assertIs(node.get("additionalProperties"), False,
+                                  "{} の {} に additionalProperties: False がない"
+                                  .format(name, path))
+
+    def test_every_property_is_required(self):
+        for name, schema in self.schemas().items():
+            for path, node in self.walk(schema):
+                if node.get("type") == "object" and "properties" in node:
+                    self.assertEqual(
+                        sorted(node["properties"]), sorted(node.get("required", [])),
+                        "{} の {} で required が properties と一致していない".format(name, path))
+
+    def test_bounded_integers_use_enum(self):
+        """範囲を持たせたい整数は enum で列挙されていること。"""
+        weight = llm.DECOMPOSE_SCHEMA["properties"]["steps"]["items"]["properties"]["weight"]
+        self.assertEqual(weight["type"], "integer")
+        self.assertEqual(weight["enum"], [1, 2, 3, 4, 5])
+        priority = llm.PARSE_SCHEMA["properties"]["priority"]
+        self.assertEqual(priority["enum"], [0, 1, 2, 3])
+
+    def test_categories_match_the_application(self):
+        """スキーマの enum が実際のカテゴリ定義とずれていないこと。"""
+        from app import api
+        self.assertEqual(sorted(llm.CATEGORY_VALUES),
+                         sorted(list(api.CATEGORY_VALUES) + [""]))
