@@ -23,7 +23,11 @@ DDL = [
         password_hash VARCHAR(255) NOT NULL,
         role          VARCHAR(20)  NOT NULL DEFAULT 'member',
         is_active     TINYINT(1)   NOT NULL DEFAULT 1,
-        email_notify  TINYINT(1)   NOT NULL DEFAULT 1,
+        email_notify  TINYINT(1)   NOT NULL DEFAULT 1,   -- メール通知の親スイッチ
+        notify_assigned TINYINT(1) NOT NULL DEFAULT 1,   -- 自分が担当になったとき
+        notify_comment  TINYINT(1) NOT NULL DEFAULT 1,   -- 自分が関わるものへのコメント
+        notify_due      TINYINT(1) NOT NULL DEFAULT 1,   -- 期限が近い / 超過
+        notify_digest   TINYINT(1) NOT NULL DEFAULT 1,   -- 日次レポート
         avatar_color  VARCHAR(20)  NOT NULL DEFAULT '#4f8cff',
         ui_theme      VARCHAR(10)  NOT NULL DEFAULT 'auto',   -- auto|light|dark
         ui_accent     VARCHAR(20)  NOT NULL DEFAULT '',       -- 空なら組織の既定色
@@ -56,6 +60,8 @@ DDL = [
         owner_id    INT NULL,
         archived    TINYINT(1)    NOT NULL DEFAULT 0,
         slack_webhook_url VARCHAR(300) NOT NULL DEFAULT '',  -- 空なら全体設定を使う
+        notify_enabled TINYINT(1)  NOT NULL DEFAULT 1,       -- 0 ならこのプロジェクトの通知を止める
+        slack_events VARCHAR(120)  NOT NULL DEFAULT '',      -- 空なら全体設定を使う
         created_at  DATETIME      NOT NULL,
         CONSTRAINT fk_proj_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -260,6 +266,15 @@ DDL = [
         CONSTRAINT fk_checkin_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
+    """
+    CREATE TABLE IF NOT EXISTS notification_mutes (
+        user_id    INT NOT NULL,
+        project_id INT NOT NULL,
+        PRIMARY KEY (user_id, project_id),
+        CONSTRAINT fk_mute_user    FOREIGN KEY (user_id)    REFERENCES users(id)    ON DELETE CASCADE,
+        CONSTRAINT fk_mute_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
 ]
 
 DEFAULT_SETTINGS = {
@@ -280,6 +295,7 @@ DEFAULT_SETTINGS = {
     "llm_model": "claude-opus-5",
     "slack_enabled": "0",
     "slack_webhook_url": "",
+    "slack_events": "issue,digest",
     "work_hours_per_day": "8",
     "app_name": "タスク管理",
 }
@@ -433,6 +449,18 @@ MIGRATIONS = [
     ("projects", "slack_webhook_url",
      "ALTER TABLE projects ADD COLUMN slack_webhook_url VARCHAR(300) NOT NULL DEFAULT ''"),
     ("comments", "issue_id", "ALTER TABLE comments ADD COLUMN issue_id INT NULL AFTER task_id"),
+    ("users", "notify_assigned",
+     "ALTER TABLE users ADD COLUMN notify_assigned TINYINT(1) NOT NULL DEFAULT 1"),
+    ("users", "notify_comment",
+     "ALTER TABLE users ADD COLUMN notify_comment TINYINT(1) NOT NULL DEFAULT 1"),
+    ("users", "notify_due",
+     "ALTER TABLE users ADD COLUMN notify_due TINYINT(1) NOT NULL DEFAULT 1"),
+    ("users", "notify_digest",
+     "ALTER TABLE users ADD COLUMN notify_digest TINYINT(1) NOT NULL DEFAULT 1"),
+    ("projects", "notify_enabled",
+     "ALTER TABLE projects ADD COLUMN notify_enabled TINYINT(1) NOT NULL DEFAULT 1"),
+    ("projects", "slack_events",
+     "ALTER TABLE projects ADD COLUMN slack_events VARCHAR(120) NOT NULL DEFAULT ''"),
     ("attachments", "issue_id",
      "ALTER TABLE attachments ADD COLUMN issue_id INT NULL AFTER task_id"),
 ]

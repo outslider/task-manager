@@ -258,6 +258,22 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .check input { width: 16px; height: 16px; accent-color: var(--accent); }
 
+/* 通知設定などで使う、説明つきチェックボックスの縦並び */
+.check-list { display: flex; flex-direction: column; gap: 2px; }
+.check-row {
+  align-items: flex-start; padding: 8px 10px; border-radius: 10px;
+  border: 1px solid transparent; transition: background .12s, border-color .12s;
+}
+.check-row:hover { background: var(--accent-soft); border-color: var(--border); }
+.check-row input { margin-top: 2px; flex: 0 0 auto; }
+.check-row > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.check-row .hint { margin: 0; }
+.check-row input:disabled + span { opacity: .5; }
+.check-row .name-line { display: flex; align-items: center; gap: 0; }
+.check-row .dot {
+  width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px;
+}
+
 /* ---------- surfaces ---------- */
 .card {
   background: var(--surface); border: 1px solid var(--border);

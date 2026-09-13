@@ -263,6 +263,24 @@ async function renderSettings(container) {
     return el('div', { class: 'field' }, el('label', { text: label }), node,
       options.hint ? el('div', { class: 'hint', text: options.hint }) : null);
   };
+  const eventPicker = (key, label, catalog, hint) => {
+    const selected = new Set(String(s[key] || '').split(',').filter(Boolean));
+    const boxes = (catalog || []).map((event) => {
+      const node = el('input', { type: 'checkbox', checked: selected.has(event.value) ? true : null });
+      return { event, node };
+    });
+    fields[key] = () => boxes.filter(({ node }) => node.checked)
+      .map(({ event }) => event.value).join(',');
+    return el('div', { class: 'field' },
+      el('label', { text: label }),
+      el('div', { class: 'check-list' },
+        ...boxes.map(({ event, node }) => el('label', { class: 'check check-row' },
+          node,
+          el('span', {},
+            el('span', { text: event.label }),
+            el('span', { class: 'hint', text: event.help }))))),
+      hint ? el('div', { class: 'hint', text: hint }) : null);
+  };
   const toggle = (key, label, hint) => {
     const node = el('input', { type: 'checkbox', checked: s[key] === '1' ? true : null });
     fields[key] = () => (node.checked ? '1' : '0');
@@ -342,8 +360,10 @@ async function renderSettings(container) {
           toggle('slack_enabled', 'Slack 通知を使う'),
           input('slack_webhook_url', 'Incoming Webhook URL',
             { placeholder: 'https://hooks.slack.com/services/...' }),
+          eventPicker('slack_events', 'Slack に流す内容', data.slack_events,
+            'プロジェクト設定で個別に上書きできます。'),
           el('div', { class: 'hint',
-            text: 'プロジェクトごとに別のチャンネルへ送りたい場合は、プロジェクト設定で個別に指定できます。' }),
+            text: 'プロジェクトごとに別のチャンネルへ送りたい場合も、プロジェクト設定で指定できます。' }),
           el('button', {
             class: 'btn', style: { marginTop: '10px' },
             onClick: async (event) => {

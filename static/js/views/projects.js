@@ -105,6 +105,24 @@ export async function render(container) {
       class: 'input', placeholder: 'https://hooks.slack.com/services/…（任意）',
     });
     slack.value = project?.slack_webhook_url || '';
+    const notifyEnabled = el('input', { type: 'checkbox' });
+    notifyEnabled.checked = project ? Boolean(project.notify_enabled) : true;
+    const slackEventKeys = (project?.slack_events || '').split(',').filter(Boolean);
+    const slackEventBoxes = (store.meta?.slack_events || []).map((event) => {
+      const box = el('input', { type: 'checkbox' });
+      box.checked = slackEventKeys.includes(event.value);
+      return { event, box };
+    });
+    const perProjectEvents = el('input', { type: 'checkbox' });
+    perProjectEvents.checked = slackEventKeys.length > 0;
+    const syncSlackEvents = () => {
+      for (const { box } of slackEventBoxes) {
+        box.disabled = !perProjectEvents.checked || !notifyEnabled.checked;
+      }
+    };
+    perProjectEvents.addEventListener('change', syncSlackEvents);
+    notifyEnabled.addEventListener('change', syncSlackEvents);
+    syncSlackEvents();
     const ownerSelect = el('select', { class: 'select' },
       ...store.users.map((u) => el('option', {
         value: u.id, selected: (project?.owner_id ?? store.user.id) === u.id ? true : null,
@@ -119,9 +137,27 @@ export async function render(container) {
           el('div', { class: 'field' }, el('label', { text: '色' }), color),
           el('div', { class: 'field' }, el('label', { text: 'オーナー' }), ownerSelect)),
         el('div', { class: 'field' },
+          el('label', { class: 'check' }, notifyEnabled,
+            el('span', { text: 'このプロジェクトの通知を送る' })),
+          el('div', { class: 'hint',
+            text: 'オフにすると、メールも Slack も一切送りません（画面の通知も止まります）。' })),
+        el('div', { class: 'field' },
           el('label', { text: 'Slack の通知先' }), slack,
           el('div', { class: 'hint',
             text: '空欄なら全体設定のチャンネルに送られます。' })),
+        slackEventBoxes.length
+          ? el('div', { class: 'field' },
+            el('label', { class: 'check' }, perProjectEvents,
+              el('span', { text: 'Slack に流す種類をこのプロジェクトだけ変える' })),
+            el('div', { class: 'check-list' },
+              ...slackEventBoxes.map(({ event, box }) => el('label', { class: 'check check-row' },
+                box,
+                el('span', {},
+                  el('span', { text: event.label }),
+                  el('span', { class: 'hint', text: event.help }))))),
+            el('div', { class: 'hint',
+              text: 'チェックしない場合は管理者設定の選択に従います。' }))
+          : null,
         project
           ? el('div', { class: 'field' },
             el('label', { class: 'check' }, archived,
@@ -151,6 +187,10 @@ export async function render(container) {
               color: color.value,
               owner_id: Number(ownerSelect.value),
               slack_webhook_url: slack.value.trim(),
+              notify_enabled: notifyEnabled.checked,
+              slack_events: perProjectEvents.checked
+                ? slackEventBoxes.filter(({ box }) => box.checked).map(({ event }) => event.value)
+                : [],
             };
             if (project) payload.archived = archived.checked;
             if (!payload.name) { toast('プロジェクト名を入力してください', 'error'); return; }

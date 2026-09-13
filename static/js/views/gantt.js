@@ -56,7 +56,7 @@ const EXPORT_PRESETS = [
 
 export async function render(container, route) {
   const projectId = route.projectId;
-  const data = await api.projectTasks(projectId);
+  let data = await api.projectTasks(projectId);
   const project = data.project;
 
   const compact = window.innerWidth < 760;

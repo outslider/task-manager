@@ -1,20 +1,13 @@
-/*M!999999\- enable the sandbox mode */ 
+-- タスク管理システム スキーマ定義（参照用）
+-- app/db.py が起動時に自動生成・移行するため、通常このファイルを流す必要はありません。
+-- 生成: mysqldump --no-data --skip-comments --compact
 
-/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
-/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
-/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
-/*!40101 SET NAMES utf8mb4 */;
-/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
-/*!40103 SET TIME_ZONE='+00:00' */;
-/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
-/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
-/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
-/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!40101 SET character_set_client = utf8mb4 */;
 CREATE TABLE `attachments` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
-  `task_id` int(11) NOT NULL,
+  `task_id` int(11) DEFAULT NULL,
+  `issue_id` int(11) DEFAULT NULL,
   `kind` varchar(10) NOT NULL,
   `name` varchar(300) NOT NULL,
   `url` varchar(2000) NOT NULL DEFAULT '',
@@ -25,7 +18,9 @@ CREATE TABLE `attachments` (
   `created_at` datetime NOT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_attachments_task` (`task_id`),
+  KEY `idx_attachments_issue` (`issue_id`),
   KEY `fk_att_user` (`uploaded_by`),
+  CONSTRAINT `fk_att_issue` FOREIGN KEY (`issue_id`) REFERENCES `issues` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_att_task` FOREIGN KEY (`task_id`) REFERENCES `tasks` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_att_user` FOREIGN KEY (`uploaded_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -47,14 +42,17 @@ CREATE TABLE `checkins` (
 /*!40101 SET character_set_client = utf8mb4 */;
 CREATE TABLE `comments` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
-  `task_id` int(11) NOT NULL,
+  `task_id` int(11) DEFAULT NULL,
+  `issue_id` int(11) DEFAULT NULL,
   `user_id` int(11) DEFAULT NULL,
   `body` text NOT NULL,
   `kind` varchar(20) NOT NULL DEFAULT 'comment',
   `created_at` datetime NOT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_comments_task` (`task_id`),
+  KEY `idx_comments_issue` (`issue_id`),
   KEY `fk_comment_user` (`user_id`),
+  CONSTRAINT `fk_comment_issue` FOREIGN KEY (`issue_id`) REFERENCES `issues` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_comment_task` FOREIGN KEY (`task_id`) REFERENCES `tasks` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_comment_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -68,6 +66,58 @@ CREATE TABLE `group_members` (
   KEY `fk_gm_user` (`user_id`),
   CONSTRAINT `fk_gm_group` FOREIGN KEY (`group_id`) REFERENCES `user_groups` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_gm_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `issue_tasks` (
+  `issue_id` int(11) NOT NULL,
+  `task_id` int(11) NOT NULL,
+  PRIMARY KEY (`issue_id`,`task_id`),
+  KEY `idx_issue_tasks_task` (`task_id`),
+  CONSTRAINT `fk_it_issue` FOREIGN KEY (`issue_id`) REFERENCES `issues` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_it_task` FOREIGN KEY (`task_id`) REFERENCES `tasks` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `issues` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `project_id` int(11) NOT NULL,
+  `seq` int(11) NOT NULL,
+  `title` varchar(300) NOT NULL,
+  `description` text DEFAULT NULL,
+  `category` varchar(20) NOT NULL DEFAULT '',
+  `status` varchar(20) NOT NULL DEFAULT 'open',
+  `severity` tinyint(4) NOT NULL DEFAULT 1,
+  `owner_id` int(11) DEFAULT NULL,
+  `raised_by` int(11) DEFAULT NULL,
+  `raised_on` date NOT NULL,
+  `due_date` date DEFAULT NULL,
+  `resolved_on` date DEFAULT NULL,
+  `resolution` text DEFAULT NULL,
+  `created_at` datetime NOT NULL,
+  `updated_at` datetime NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_issue_seq` (`project_id`,`seq`),
+  KEY `idx_issues_status` (`project_id`,`status`),
+  KEY `idx_issues_owner` (`owner_id`),
+  KEY `idx_issues_due` (`due_date`),
+  KEY `fk_issue_raiser` (`raised_by`),
+  CONSTRAINT `fk_issue_owner` FOREIGN KEY (`owner_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_issue_project` FOREIGN KEY (`project_id`) REFERENCES `projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_issue_raiser` FOREIGN KEY (`raised_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `notification_mutes` (
+  `user_id` int(11) NOT NULL,
+  `project_id` int(11) NOT NULL,
+  PRIMARY KEY (`user_id`,`project_id`),
+  KEY `fk_mute_project` (`project_id`),
+  CONSTRAINT `fk_mute_project` FOREIGN KEY (`project_id`) REFERENCES `projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_mute_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -110,10 +160,48 @@ CREATE TABLE `projects` (
   `color` varchar(20) NOT NULL DEFAULT '#4f8cff',
   `owner_id` int(11) DEFAULT NULL,
   `archived` tinyint(1) NOT NULL DEFAULT 0,
+  `slack_webhook_url` varchar(300) NOT NULL DEFAULT '',
+  `notify_enabled` tinyint(1) NOT NULL DEFAULT 1,
+  `slack_events` varchar(120) NOT NULL DEFAULT '',
   `created_at` datetime NOT NULL,
   PRIMARY KEY (`id`),
   KEY `fk_proj_owner` (`owner_id`),
   CONSTRAINT `fk_proj_owner` FOREIGN KEY (`owner_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `recurrences` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `project_id` int(11) NOT NULL,
+  `title` varchar(300) NOT NULL,
+  `description` text DEFAULT NULL,
+  `category` varchar(20) NOT NULL DEFAULT '',
+  `priority` tinyint(4) NOT NULL DEFAULT 1,
+  `assignee_id` int(11) DEFAULT NULL,
+  `estimate_hours` decimal(6,1) DEFAULT NULL,
+  `parent_id` int(11) DEFAULT NULL,
+  `freq` varchar(10) NOT NULL,
+  `interval_n` int(11) NOT NULL DEFAULT 1,
+  `weekdays` varchar(20) NOT NULL DEFAULT '',
+  `month_day` tinyint(4) DEFAULT NULL,
+  `lead_days` int(11) NOT NULL DEFAULT 3,
+  `next_on` date NOT NULL,
+  `last_created_on` date DEFAULT NULL,
+  `active` tinyint(1) NOT NULL DEFAULT 1,
+  `created_by` int(11) DEFAULT NULL,
+  `created_at` datetime NOT NULL,
+  `updated_at` datetime NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_recurrence_project` (`project_id`),
+  KEY `idx_recurrence_next` (`active`,`next_on`),
+  KEY `fk_rec_assignee` (`assignee_id`),
+  KEY `fk_rec_parent` (`parent_id`),
+  KEY `fk_rec_creator` (`created_by`),
+  CONSTRAINT `fk_rec_assignee` FOREIGN KEY (`assignee_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_rec_creator` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_rec_parent` FOREIGN KEY (`parent_id`) REFERENCES `tasks` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_rec_project` FOREIGN KEY (`project_id`) REFERENCES `projects` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -155,12 +243,15 @@ CREATE TABLE `tasks` (
   `parent_id` int(11) DEFAULT NULL,
   `title` varchar(300) NOT NULL,
   `description` text DEFAULT NULL,
+  `category` varchar(20) NOT NULL DEFAULT '',
   `status` varchar(20) NOT NULL DEFAULT 'todo',
   `priority` tinyint(4) NOT NULL DEFAULT 1,
   `assignee_id` int(11) DEFAULT NULL,
   `start_date` date DEFAULT NULL,
   `due_date` date DEFAULT NULL,
   `progress` int(11) NOT NULL DEFAULT 0,
+  `estimate_hours` decimal(6,1) DEFAULT NULL,
+  `actual_hours` decimal(6,1) NOT NULL DEFAULT 0.0,
   `is_milestone` tinyint(1) NOT NULL DEFAULT 0,
   `sort_order` int(11) NOT NULL DEFAULT 0,
   `created_by` int(11) DEFAULT NULL,
@@ -172,6 +263,7 @@ CREATE TABLE `tasks` (
   KEY `idx_tasks_parent` (`parent_id`),
   KEY `idx_tasks_assignee` (`assignee_id`),
   KEY `idx_tasks_due` (`due_date`),
+  KEY `idx_tasks_category` (`category`),
   KEY `fk_task_creator` (`created_by`),
   CONSTRAINT `fk_task_assignee` FOREIGN KEY (`assignee_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_task_creator` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL,
@@ -188,7 +280,7 @@ CREATE TABLE `user_groups` (
   `created_at` datetime NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!40101 SET character_set_client = utf8mb4 */;
@@ -200,19 +292,15 @@ CREATE TABLE `users` (
   `role` varchar(20) NOT NULL DEFAULT 'member',
   `is_active` tinyint(1) NOT NULL DEFAULT 1,
   `email_notify` tinyint(1) NOT NULL DEFAULT 1,
+  `notify_assigned` tinyint(1) NOT NULL DEFAULT 1,
+  `notify_comment` tinyint(1) NOT NULL DEFAULT 1,
+  `notify_due` tinyint(1) NOT NULL DEFAULT 1,
+  `notify_digest` tinyint(1) NOT NULL DEFAULT 1,
   `avatar_color` varchar(20) NOT NULL DEFAULT '#4f8cff',
+  `ui_theme` varchar(10) NOT NULL DEFAULT 'auto',
+  `ui_accent` varchar(20) NOT NULL DEFAULT '',
   `created_at` datetime NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `email` (`email`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=7 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
-/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
-
-/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
-/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
-/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
-/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
-/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
-/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
-/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
-

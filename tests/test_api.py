@@ -29,7 +29,7 @@ os.environ.setdefault("TM_SECURE_COOKIE", "0")
 os.environ.setdefault("TM_ADMIN_EMAIL", "admin@test.local")
 os.environ.setdefault("TM_ADMIN_PASSWORD", "admin-test-pw")
 
-from app import auth, config, db, http_util, notify  # noqa: E402
+from app import auth, config, db, http_util, notify, prefs  # noqa: E402
 import server as server_module  # noqa: E402
 
 ADMIN = ("admin@test.local", "admin-test-pw")
@@ -1435,3 +1435,165 @@ class TestSettings(ApiTestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestNotificationPreferences(ApiTestCase):
+    """メール / Slack を「どこまで送るか」の制御。"""
+
+    def setUp(self):
+        super().setUp()
+        db.set_setting("slack_events", "issue,digest")
+
+    def member_of(self, project, name="通知テスト"):
+        user, email = self.make_user(name)
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "editor"}]})
+        return user, email
+
+    # -- 個人設定 --------------------------------------------------------
+    def test_defaults_are_all_on(self):
+        _, email = self.make_user("既定値")
+        data = self.client_for(email).get("/api/me/notification-settings")[1]
+        self.assertTrue(data["prefs"]["email_notify"])
+        for key in prefs.EMAIL_EVENT_KEYS:
+            self.assertTrue(data["prefs"][key], "{} は既定で ON".format(key))
+        self.assertEqual(data["muted_project_ids"], [])
+        self.assertEqual([e["value"] for e in data["events"]], prefs.EMAIL_EVENT_KEYS)
+
+    def test_event_toggles_round_trip(self):
+        user, email = self.make_user("イベント切替")
+        client = self.client_for(email)
+        status, data = client.put("/api/me/notification-settings",
+                                  {"assigned": False, "digest": False})
+        self.assertEqual(status, 200, data)
+        self.assertFalse(data["prefs"]["assigned"])
+        self.assertFalse(data["prefs"]["digest"])
+        self.assertTrue(data["prefs"]["comment"], "触っていない項目は変わらないこと")
+        self.assertFalse(prefs.email_allowed(user["id"], "assigned"))
+        self.assertTrue(prefs.email_allowed(user["id"], "comment"))
+
+    def test_due_events_follow_the_due_toggle(self):
+        user, email = self.make_user("期限通知")
+        self.client_for(email).put("/api/me/notification-settings", {"due": False})
+        for ntype in ("overdue", "due_soon"):
+            self.assertFalse(prefs.email_allowed(user["id"], ntype),
+                             "{} は期限通知の設定に従うこと".format(ntype))
+
+    def test_master_switch_stops_everything(self):
+        user, email = self.make_user("全停止")
+        self.client_for(email).put("/api/me/notification-settings", {"email_notify": False})
+        for key in prefs.EMAIL_EVENT_KEYS:
+            self.assertFalse(prefs.email_allowed(user["id"], key))
+
+    def test_settings_require_a_login(self):
+        anonymous = Client(self.base)
+        self.assertEqual(anonymous.get("/api/me/notification-settings")[0], 401)
+
+    # -- プロジェクト単位のミュート（受け取る人の都合） ------------------
+    def test_muting_a_project_silences_only_that_project(self):
+        quiet = self.make_project("黙らせるPJ")
+        loud = self.make_project("普通のPJ")
+        user, email = self.member_of(quiet, "ミュート")
+        self.admin.put("/api/projects/{}/members".format(loud["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "editor"}]})
+        client = self.client_for(email)
+        data = client.put("/api/me/notification-settings",
+                          {"muted_project_ids": [quiet["id"]]})[1]
+        self.assertEqual(data["muted_project_ids"], [quiet["id"]])
+        self.assertFalse(prefs.email_allowed(user["id"], "assigned", quiet["id"]))
+        self.assertTrue(prefs.email_allowed(user["id"], "assigned", loud["id"]))
+
+    def test_muting_a_project_the_user_cannot_see_is_ignored(self):
+        secret = self.make_project("見えないPJ")
+        user, email = self.make_user("部外者")
+        self.client_for(email).put("/api/me/notification-settings",
+                                   {"muted_project_ids": [secret["id"]]})
+        self.assertEqual(prefs.muted_projects(user["id"]), [])
+
+    def test_muted_projects_drop_out_of_the_digest(self):
+        project = self.make_project("ダイジェスト除外")
+        user, email = self.member_of(project, "ダイジェスト")
+        self.make_task(project["id"], "超過タスク",
+                       assignee_id=user["id"], due_date="2020-01-01")
+        self.assertTrue(notify.daily_summary_for(user["id"], exclude_muted=True)["overdue"])
+        self.client_for(email).put("/api/me/notification-settings",
+                                   {"muted_project_ids": [project["id"]]})
+        self.assertFalse(notify.daily_summary_for(user["id"], exclude_muted=True)["overdue"])
+        self.assertTrue(notify.daily_summary_for(user["id"])["overdue"],
+                        "画面に出す一覧はミュートの影響を受けないこと")
+
+    def test_mutes_disappear_with_the_project(self):
+        project = self.make_project("消えるPJ")
+        user, email = self.member_of(project, "残骸チェック")
+        self.client_for(email).put("/api/me/notification-settings",
+                                   {"muted_project_ids": [project["id"]]})
+        self.admin.delete("/api/projects/{}".format(project["id"]))
+        self.assertEqual(prefs.muted_projects(user["id"]), [])
+
+    # -- プロジェクト単位の停止（送る側の都合） --------------------------
+    def test_project_switch_stops_mail_and_in_app_alike(self):
+        project = self.make_project("通知停止PJ")
+        user, _ = self.member_of(project, "停止対象")
+        status, data = self.admin.patch("/api/projects/{}".format(project["id"]),
+                                        {"notify_enabled": False})
+        self.assertEqual(status, 200, data)
+        self.assertFalse(prefs.project_notify_enabled(project["id"]))
+        self.assertFalse(prefs.email_allowed(user["id"], "assigned", project["id"]))
+        self.assertFalse(notify.create(user["id"], "assigned", "届かないはず",
+                                       project_id=project["id"]))
+
+    def test_stopped_projects_are_skipped_by_the_due_scan(self):
+        project = self.make_project("スキャン対象外")
+        user, _ = self.member_of(project, "期限担当")
+        self.make_task(project["id"], "止まっているPJの超過",
+                       assignee_id=user["id"], due_date="2020-01-01")
+        self.admin.patch("/api/projects/{}".format(project["id"]), {"notify_enabled": False})
+        notify.scan_due_tasks()
+        overdue = db.query(
+            "SELECT title FROM notifications WHERE user_id=%s AND type IN ('overdue','due_soon')",
+            (user["id"],))
+        self.assertEqual(list(overdue), [], "停止中のプロジェクトからは期限通知を出さないこと")
+
+    def test_project_switch_defaults_to_on(self):
+        project = self.make_project("既定ON")
+        detail = self.admin.get("/api/projects/{}".format(project["id"]))[1]["project"]
+        self.assertTrue(detail["notify_enabled"])
+
+    # -- Slack のイベント選択 --------------------------------------------
+    def test_global_slack_events_round_trip(self):
+        self.admin.put("/api/settings", {"settings": {"slack_events": ["digest"]}})
+        self.assertEqual(db.get_setting("slack_events"), "digest")
+        self.assertTrue(prefs.slack_allowed("digest"))
+        self.assertFalse(prefs.slack_allowed("issue"))
+
+    def test_slack_events_accept_a_comma_string_and_drop_junk(self):
+        self.admin.put("/api/settings", {"settings": {"slack_events": "issue, nonsense"}})
+        self.assertEqual(db.get_setting("slack_events"), "issue")
+
+    def test_project_slack_events_override_the_global_choice(self):
+        project = self.make_project("Slack個別")
+        self.admin.put("/api/settings", {"settings": {"slack_events": ["digest"]}})
+        self.admin.patch("/api/projects/{}".format(project["id"]),
+                         {"slack_events": ["issue"]})
+        self.assertTrue(prefs.slack_allowed("issue", project["id"]))
+        self.assertFalse(prefs.slack_allowed("digest", project["id"]))
+        # 個別指定を空に戻すと全体設定に従う
+        self.admin.patch("/api/projects/{}".format(project["id"]), {"slack_events": []})
+        self.assertTrue(prefs.slack_allowed("digest", project["id"]))
+        self.assertFalse(prefs.slack_allowed("issue", project["id"]))
+
+    def test_a_stopped_project_never_posts_to_slack(self):
+        project = self.make_project("Slack停止")
+        self.admin.patch("/api/projects/{}".format(project["id"]),
+                         {"notify_enabled": False, "slack_events": ["issue", "digest"]})
+        self.assertFalse(prefs.slack_allowed("issue", project["id"]))
+        self.assertFalse(prefs.slack_allowed("digest", project["id"]))
+
+    def test_slack_catalogs_are_exposed_to_the_ui(self):
+        settings = self.admin.get("/api/settings")[1]
+        self.assertEqual([e["value"] for e in settings["slack_events"]],
+                         prefs.SLACK_EVENT_KEYS)
+        meta = self.admin.get("/api/meta")[1]
+        self.assertEqual([e["value"] for e in meta["slack_events"]], prefs.SLACK_EVENT_KEYS)

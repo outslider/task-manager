@@ -9,7 +9,7 @@ import threading
 import urllib.error
 import urllib.request
 
-from . import db
+from . import db, prefs
 
 log = logging.getLogger("tm.slack")
 TIMEOUT = 10
@@ -64,8 +64,11 @@ def post(text, webhook_url=None, project_id=None):
         return False, "送信に失敗しました: {}".format(error)
 
 
-def post_async(text, project_id=None):
+def post_async(text, project_id=None, event=None):
+    """非同期で送る。event を渡すと、その種類が選ばれているときだけ送る。"""
     if not available():
+        return
+    if event and not prefs.slack_allowed(event, project_id):
         return
     threading.Thread(target=_send, args=(text, project_id), daemon=True).start()
 

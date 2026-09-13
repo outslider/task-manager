@@ -9,7 +9,7 @@ from email.utils import formataddr
 
 import pymysql
 
-from . import db, slack
+from . import db, prefs, slack
 
 log = logging.getLogger("tm.notify")
 
@@ -24,8 +24,14 @@ OPEN_STATUSES = ("todo", "doing", "review", "blocked")
 # in-app notifications
 # --------------------------------------------------------------------------
 
-def create(user_id, ntype, title, body="", task_id=None, dedupe_key=None, email=True):
-    """Insert a notification.  A repeated dedupe_key for the same user is a no-op."""
+def create(user_id, ntype, title, body="", task_id=None, dedupe_key=None, email=True,
+           project_id=None):
+    """Insert a notification.  A repeated dedupe_key for the same user is a no-op.
+
+    画面の通知一覧には必ず残し、メールを送るかどうかだけ通知設定で判断する。
+    """
+    if project_id and not prefs.project_notify_enabled(project_id):
+        return False
     try:
         db.insert(
             "INSERT INTO notifications(user_id, task_id, type, title, body, dedupe_key, created_at) "
@@ -34,9 +40,9 @@ def create(user_id, ntype, title, body="", task_id=None, dedupe_key=None, email=
         )
     except pymysql.err.IntegrityError:
         return False  # already sent
-    if email:
-        user = db.query_one("SELECT email, name, email_notify FROM users WHERE id=%s", (user_id,))
-        if user and user["email_notify"]:
+    if email and prefs.email_allowed(user_id, ntype, project_id):
+        user = db.query_one("SELECT email, name FROM users WHERE id=%s", (user_id,))
+        if user:
             send_email_async(user["email"], title, body, user["name"])
     return True
 
@@ -126,12 +132,14 @@ def scan_due_tasks():
 
     rows = db.query(
         """
-        SELECT t.id, t.title, t.due_date, t.assignee_id, t.status, p.name AS project_name
+        SELECT t.id, t.title, t.due_date, t.assignee_id, t.status,
+               t.project_id, p.name AS project_name
           FROM tasks t JOIN projects p ON p.id = t.project_id
          WHERE t.assignee_id IS NOT NULL
            AND t.due_date IS NOT NULL
            AND t.status IN %s
            AND p.archived = 0
+           AND p.notify_enabled = 1
            AND t.due_date <= %s
         """,
         (OPEN_STATUSES, horizon),
@@ -153,7 +161,8 @@ def scan_due_tasks():
             t["project_name"], due.isoformat(),
             STATUS_LABEL.get(t["status"], t["status"]), task_url(t["id"]),
         )
-        if create(t["assignee_id"], ntype, title, body, task_id=t["id"], dedupe_key=key):
+        if create(t["assignee_id"], ntype, title, body, task_id=t["id"], dedupe_key=key,
+                  project_id=t["project_id"]):
             created += 1
     return created
 
@@ -162,14 +171,20 @@ def scan_due_tasks():
 # daily digest
 # --------------------------------------------------------------------------
 
-def daily_summary_for(user_id):
-    """Tasks the user should look at today, grouped by urgency."""
+def daily_summary_for(user_id, exclude_muted=False):
+    """Tasks the user should look at today, grouped by urgency.
+
+    exclude_muted=True のときは、本人がミュートしたプロジェクトと
+    通知を止めているプロジェクトを外す（日次レポートの送信用）。
+    画面に出す一覧では外さない。
+    """
     today = db.today()
     soon_days = int(db.get_setting("due_soon_days", "3") or 3)
+    muted = set(prefs.muted_projects(user_id)) if exclude_muted else set()
     rows = db.query(
         """
         SELECT t.id, t.title, t.status, t.progress, t.due_date, t.priority,
-               p.name AS project_name, p.id AS project_id
+               p.name AS project_name, p.id AS project_id, p.notify_enabled
           FROM tasks t JOIN projects p ON p.id = t.project_id
          WHERE t.assignee_id = %s AND t.status IN %s AND p.archived = 0
          ORDER BY (t.due_date IS NULL), t.due_date, t.priority DESC
@@ -178,6 +193,8 @@ def daily_summary_for(user_id):
     )
     buckets = {"overdue": [], "today": [], "soon": [], "later": [], "no_due": []}
     for t in rows:
+        if exclude_muted and (t["project_id"] in muted or not t["notify_enabled"]):
+            continue
         due = t["due_date"]
         if due is None:
             buckets["no_due"].append(t)
@@ -226,8 +243,8 @@ def run_daily_digest(force=False):
     scanned = scan_due_tasks()
     slack_posts = slack_daily_summary()
     sent = 0
-    for user in db.query("SELECT id, name, email, email_notify FROM users WHERE is_active=1"):
-        buckets = daily_summary_for(user["id"])
+    for user in db.query("SELECT id, name, email FROM users WHERE is_active=1"):
+        buckets = daily_summary_for(user["id"], exclude_muted=True)
         actionable = sum(len(buckets[k]) for k in ("overdue", "today", "soon", "no_due"))
         if actionable == 0:
             continue
@@ -252,7 +269,7 @@ def slack_daily_summary():
                SUM(t.status IN %s AND t.due_date = %s) AS due_today,
                SUM(t.status IN %s) AS open_tasks
           FROM projects p LEFT JOIN tasks t ON t.project_id = p.id
-         WHERE p.archived = 0
+         WHERE p.archived = 0 AND p.notify_enabled = 1
          GROUP BY p.id
         """,
         (OPEN_STATUSES, today, OPEN_STATUSES, today, OPEN_STATUSES))
@@ -260,6 +277,8 @@ def slack_daily_summary():
     posted = 0
     combined = []
     for row in rows:
+        if not prefs.slack_allowed("digest", row["id"]):
+            continue
         overdue, due_today = int(row["overdue"] or 0), int(row["due_today"] or 0)
         issues = db.scalar(
             "SELECT COUNT(*) AS c FROM issues WHERE project_id=%s AND status IN %s "

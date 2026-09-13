@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import pymysql
 
-from . import auth, db, graph, llm, nlp, notify, recurrence, slack, workload
+from . import auth, db, graph, llm, nlp, notify, prefs, recurrence, slack, workload
 from .config import MAX_UPLOAD_BYTES, UPLOAD_DIR
 from .http_util import (HttpError, as_bool, as_date, as_int, bad_request, forbidden,
                         json_response, not_found, require, unauthorized, Response)
@@ -630,6 +630,12 @@ def update_project(ctx, project_id):
     if "archived" in ctx.body:
         fields.append("archived=%s")
         params.append(1 if as_bool(ctx.body["archived"]) else 0)
+    if "notify_enabled" in ctx.body:
+        fields.append("notify_enabled=%s")
+        params.append(1 if as_bool(ctx.body["notify_enabled"]) else 0)
+    if "slack_events" in ctx.body:
+        fields.append("slack_events=%s")
+        params.append(prefs.format_events(ctx.body["slack_events"], prefs.SLACK_EVENT_KEYS))
     if "owner_id" in ctx.body:
         fields.append("owner_id=%s")
         params.append(as_int(ctx.body["owner_id"]))
@@ -931,14 +937,14 @@ def create_task(ctx):
 
 
 def _notify_assignment(task_id, title, assignee_id, actor):
-    project_name = db.scalar(
-        "SELECT p.name AS n FROM tasks t JOIN projects p ON p.id=t.project_id WHERE t.id=%s",
-        (task_id,), default="")
+    row = db.query_one(
+        "SELECT p.id AS project_id, p.name AS project_name FROM tasks t "
+        "JOIN projects p ON p.id=t.project_id WHERE t.id=%s", (task_id,)) or {}
     notify.create(
         assignee_id, "assigned", "タスクが割り当てられました: {}".format(title),
         "プロジェクト: {}\n担当者に設定: {}\n{}".format(
-            project_name, actor["name"], notify.task_url(task_id)),
-        task_id=task_id)
+            row.get("project_name", ""), actor["name"], notify.task_url(task_id)),
+        task_id=task_id, project_id=row.get("project_id"))
 
 
 @route("GET", r"/api/tasks/(\d+)")
@@ -1258,7 +1264,7 @@ def _notify_comment(task, actor, body):
             user_id, "comment", "コメント: {}".format(task["title"]),
             "{} さんのコメント\n\n{}\n\n{}".format(
                 actor["name"], excerpt, notify.task_url(task["id"])),
-            task_id=task["id"])
+            task_id=task["id"], project_id=task["project_id"])
 
 
 @route("DELETE", r"/api/comments/(\d+)")
@@ -1429,6 +1435,45 @@ def delete_notification(ctx, notification_id):
     return json_response({"ok": True})
 
 
+@route("GET", r"/api/me/notification-settings")
+def get_notification_settings(ctx):
+    """自分宛の通知をどこまで受け取るか。プロジェクト単位のミュートも含む。"""
+    user = me(ctx)
+    ids = auth.visible_project_ids(user)
+    projects = db.query(
+        "SELECT id, name, color, notify_enabled FROM projects "
+        "WHERE id IN %s AND archived=0 ORDER BY name", (tuple(ids),)) if ids else []
+    return json_response({
+        "prefs": prefs.email_prefs(user["id"]),
+        "muted_project_ids": prefs.muted_projects(user["id"]),
+        "projects": projects,
+        "events": [{"value": k, "label": label, "help": help_text}
+                   for k, label, help_text in prefs.EMAIL_EVENTS],
+        "email_ready": notify.email_configured(),
+    })
+
+
+@route("PUT", r"/api/me/notification-settings")
+def put_notification_settings(ctx):
+    user = me(ctx)
+    values = {}
+    if "email_notify" in ctx.body:
+        values["email_notify"] = as_bool(ctx.body["email_notify"])
+    for key in prefs.EMAIL_EVENT_KEYS:
+        if key in ctx.body:
+            values[key] = as_bool(ctx.body[key])
+    saved = prefs.save_email_prefs(user["id"], values)
+    muted = prefs.muted_projects(user["id"])
+    if "muted_project_ids" in ctx.body:
+        wanted = ctx.body["muted_project_ids"]
+        if not isinstance(wanted, list):
+            raise bad_request("muted_project_ids は配列で指定してください")
+        visible = set(auth.visible_project_ids(user))
+        muted = prefs.set_muted_projects(
+            user["id"], [i for i in wanted if as_int(i, 0) in visible])
+    return json_response({"prefs": saved, "muted_project_ids": muted})
+
+
 # --------------------------------------------------------------------------
 # daily check-in
 # --------------------------------------------------------------------------
@@ -1570,6 +1615,8 @@ def get_settings(ctx):
         "llm_sdk": llm.sdk_installed(),
         "llm_models": llm.MODELS,
         "slack_ready": slack.available(),
+        "slack_events": [{"value": k, "label": label, "help": help_text}
+                         for k, label, help_text in prefs.SLACK_EVENTS],
     })
 
 
@@ -1582,6 +1629,10 @@ def put_settings(ctx):
             continue
         if key in SECRET_SETTINGS and value == "********":
             continue
+        if key == "slack_events":
+            value = prefs.format_events(
+                value if isinstance(value, list) else str(value or "").split(","),
+                prefs.SLACK_EVENT_KEYS)
         db.set_setting(key, value)
     return json_response({"ok": True})
 
@@ -1623,6 +1674,9 @@ def meta(ctx):
         "severity": [{"value": k, "label": v}
                      for k, v in sorted(SEVERITY_LABEL.items(), reverse=True)],
         "llm_available": llm.available(),
+        "slack_events": [{"value": k, "label": label, "help": help_text}
+                         for k, label, help_text in prefs.SLACK_EVENTS],
+        "slack_enabled": db.get_setting("slack_enabled", "0") == "1",
         "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
         "max_depth": MAX_TASK_DEPTH,
     })
@@ -1817,7 +1871,7 @@ def create_issue(ctx):
         set_issue_tasks(issue_id, project_id, ctx.body["task_ids"])
     owner_id = as_int(ctx.body.get("owner_id"))
     if owner_id and owner_id != user["id"]:
-        _notify_issue_owner(issue_id, title, owner_id, user)
+        _notify_issue_owner(issue_id, title, owner_id, user, project_id)
     severity = as_int(ctx.body.get("severity"), 1, 0, 3)
     if severity >= 2:
         base = db.get_setting("app_base_url", "").rstrip("/")
@@ -1825,15 +1879,16 @@ def create_issue(ctx):
             "📌 課題が起票されました（影響度 {}）\n*{}*\n起票: {}{}".format(
                 SEVERITY_LABEL.get(severity, "-"), title, user["name"],
                 "\n{}/#/issue/{}".format(base, issue_id) if base else ""),
-            project_id=project_id)
+            project_id=project_id, event="issue")
     return json_response({"issue": db.query_one(ISSUE_SELECT + " WHERE i.id=%s", (issue_id,))}, 201)
 
 
-def _notify_issue_owner(issue_id, title, owner_id, actor):
+def _notify_issue_owner(issue_id, title, owner_id, actor, project_id=None):
     base = db.get_setting("app_base_url", "").rstrip("/")
     link = "{}/#/issue/{}".format(base, issue_id) if base else ""
     notify.create(owner_id, "assigned", "課題の対応者に設定されました: {}".format(title),
-                  "{} さんが対応者に設定しました\n{}".format(actor["name"], link))
+                  "{} さんが対応者に設定しました\n{}".format(actor["name"], link),
+                  project_id=project_id)
 
 
 @route("GET", r"/api/issues/(\d+)")
@@ -2003,7 +2058,8 @@ def _notify_issue_comment(issue, actor, body):
     excerpt = body if len(body) <= 300 else body[:300] + "…"
     for user_id in recipients:
         notify.create(user_id, "comment", "課題コメント: {}".format(issue["title"]),
-                      "{} さんのコメント\n\n{}\n\n{}".format(actor["name"], excerpt, link))
+                      "{} さんのコメント\n\n{}\n\n{}".format(actor["name"], excerpt, link),
+                      project_id=issue["project_id"])
 
 
 @route("POST", r"/api/issues/(\d+)/attachments")
