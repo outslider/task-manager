@@ -152,6 +152,17 @@ def descendant_ids(task_id):
     return out
 
 
+def subtree_height(task_id):
+    """task_id を根とする部分木の高さ（本人だけなら 0）。"""
+    height, frontier = 0, [task_id]
+    while frontier and height < MAX_TASK_DEPTH + 2:
+        rows = db.query("SELECT id FROM tasks WHERE parent_id IN %s", (tuple(frontier),))
+        frontier = [r["id"] for r in rows]
+        if frontier:
+            height += 1
+    return height
+
+
 def task_depth(parent_id):
     depth = 0
     while parent_id is not None and depth < MAX_TASK_DEPTH + 2:
@@ -1082,6 +1093,13 @@ def update_task(ctx, task_id):
         _validate_parent(task_id, parent_id, current["project_id"])
         fields.append("parent_id=%s")
         params.append(parent_id)
+        if parent_id != current["parent_id"]:
+            notes.append("親タスク: {} → {}".format(
+                task_label(current["parent_id"]), task_label(parent_id)))
+            if "sort_order" not in body:
+                # 付け替え先の末尾に置く（前の階層での並び順が残ると混ざるため）
+                fields.append("sort_order=%s")
+                params.append(next_sort_order(current["project_id"], parent_id))
     if "sort_order" in body:
         fields.append("sort_order=%s")
         params.append(as_int(body["sort_order"], 0))
@@ -1116,6 +1134,25 @@ def update_task(ctx, task_id):
     return json_response({"task": db.query_one(TASK_SELECT + " WHERE t.id=%s", (task_id,))})
 
 
+def task_label(task_id):
+    if not task_id:
+        return "トップレベル"
+    return db.scalar("SELECT title AS t FROM tasks WHERE id=%s", (task_id,), default="（不明）")
+
+
+def next_sort_order(project_id, parent_id):
+    """同じ親を持つタスクの末尾に来る並び順。"""
+    if parent_id is None:
+        current = db.scalar(
+            "SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks "
+            "WHERE project_id=%s AND parent_id IS NULL", (project_id,), default=0)
+    else:
+        current = db.scalar(
+            "SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE parent_id=%s",
+            (parent_id,), default=0)
+    return int(current or 0) + 10
+
+
 def _validate_parent(task_id, parent_id, project_id):
     if parent_id is None:
         return
@@ -1126,7 +1163,8 @@ def _validate_parent(task_id, parent_id, project_id):
         raise bad_request("親タスクが同じプロジェクトにありません")
     if parent_id in descendant_ids(task_id):
         raise bad_request("子孫タスクを親にはできません")
-    if task_depth(parent_id) >= MAX_TASK_DEPTH:
+    # 動かすタスクだけでなく、その下にぶら下がる子孫まで入る深さか確かめる
+    if task_depth(parent_id) + 1 + subtree_height(task_id) > MAX_TASK_DEPTH:
         raise bad_request("階層が深すぎます（最大 {} 階層）".format(MAX_TASK_DEPTH))
 
 
@@ -1151,13 +1189,17 @@ def reorder_tasks(ctx):
         updates.append((parent_id, as_int(item.get("sort_order"), 0), db.now(), task_id))
     parents = {u[3]: u[0] for u in updates}
     for task_id in parents:
-        seen, cursor = set(), parents.get(task_id)
+        seen, cursor, depth = set(), parents.get(task_id), 1
         while cursor is not None:
             if cursor == task_id or cursor in seen:
                 raise bad_request("循環する階層は指定できません")
             seen.add(cursor)
+            depth += 1
             cursor = parents.get(cursor, db.scalar(
                 "SELECT parent_id FROM tasks WHERE id=%s", (cursor,)))
+        # 移動するタスクだけでなく、その下の子孫まで収まるか確かめる
+        if depth + subtree_height(task_id) > MAX_TASK_DEPTH:
+            raise bad_request("階層が深すぎます（最大 {} 階層）".format(MAX_TASK_DEPTH))
     with db.transaction():
         db.executemany(
             "UPDATE tasks SET parent_id=%s, sort_order=%s, updated_at=%s WHERE id=%s", updates)

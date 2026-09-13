@@ -1597,3 +1597,173 @@ class TestNotificationPreferences(ApiTestCase):
                          prefs.SLACK_EVENT_KEYS)
         meta = self.admin.get("/api/meta")[1]
         self.assertEqual([e["value"] for e in meta["slack_events"]], prefs.SLACK_EVENT_KEYS)
+
+
+class TestReparenting(ApiTestCase):
+    """タスクを別のタスクの子にする・親を付け替える操作。"""
+
+    def chain(self, project_id, depth, prefix="L"):
+        """深さ depth の直系チェーンを作り、上から順に返す。"""
+        tasks, parent_id = [], None
+        for level in range(depth):
+            task = self.make_task(project_id, "{}{}".format(prefix, level),
+                                  parent_id=parent_id)
+            parent_id = task["id"]
+            tasks.append(task)
+        return tasks
+
+    def task_row(self, task_id):
+        return self.admin.get("/api/tasks/{}".format(task_id))[1]["task"]
+
+    def test_a_top_level_task_can_become_a_child(self):
+        project = self.make_project()
+        parent = self.make_task(project["id"], "親にする")
+        task = self.make_task(project["id"], "子になる")
+        status, data = self.admin.patch("/api/tasks/{}".format(task["id"]),
+                                        {"parent_id": parent["id"]})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["task"]["parent_id"], parent["id"])
+
+    def test_a_child_can_be_moved_back_to_the_top(self):
+        project = self.make_project()
+        parent = self.make_task(project["id"], "親")
+        child = self.make_task(project["id"], "子", parent_id=parent["id"])
+        status, data = self.admin.patch("/api/tasks/{}".format(child["id"]),
+                                        {"parent_id": None})
+        self.assertEqual(status, 200, data)
+        self.assertIsNone(data["task"]["parent_id"])
+
+    def test_children_follow_their_parent(self):
+        project = self.make_project()
+        new_home = self.make_task(project["id"], "移動先")
+        moving = self.make_task(project["id"], "動かす")
+        kid = self.make_task(project["id"], "ついてくる子", parent_id=moving["id"])
+        self.admin.patch("/api/tasks/{}".format(moving["id"]),
+                         {"parent_id": new_home["id"]})
+        self.assertEqual(self.task_row(kid["id"])["parent_id"], moving["id"])
+        self.assertEqual(self.task_row(moving["id"])["parent_id"], new_home["id"])
+
+    def test_moved_task_lands_at_the_end_of_its_new_siblings(self):
+        project = self.make_project()
+        parent = self.make_task(project["id"], "親")
+        first = self.make_task(project["id"], "既存1", parent_id=parent["id"])
+        second = self.make_task(project["id"], "既存2", parent_id=parent["id"])
+        self.admin.post("/api/tasks/reorder", {
+            "project_id": project["id"],
+            "items": [{"id": first["id"], "parent_id": parent["id"], "sort_order": 10},
+                      {"id": second["id"], "parent_id": parent["id"], "sort_order": 20}]})
+        moved = self.make_task(project["id"], "あとから移動")
+        self.admin.patch("/api/tasks/{}".format(moved["id"]), {"parent_id": parent["id"]})
+        self.assertGreater(self.task_row(moved["id"])["sort_order"],
+                           self.task_row(second["id"])["sort_order"])
+
+    def test_an_explicit_sort_order_still_wins(self):
+        project = self.make_project()
+        parent = self.make_task(project["id"], "親")
+        self.make_task(project["id"], "既存", parent_id=parent["id"])
+        moved = self.make_task(project["id"], "割り込ませる")
+        self.admin.patch("/api/tasks/{}".format(moved["id"]),
+                         {"parent_id": parent["id"], "sort_order": 5})
+        self.assertEqual(self.task_row(moved["id"])["sort_order"], 5)
+
+    def test_the_change_is_recorded_in_the_history(self):
+        project = self.make_project()
+        parent = self.make_task(project["id"], "新しい親")
+        task = self.make_task(project["id"], "動かす")
+        self.admin.patch("/api/tasks/{}".format(task["id"]), {"parent_id": parent["id"]})
+        detail = self.admin.get("/api/tasks/{}".format(task["id"]))[1]
+        history = [c["body"] for c in detail["comments"] if c["kind"] == "system"]
+        self.assertIn("親タスク: トップレベル → 新しい親", history)
+        self.admin.patch("/api/tasks/{}".format(task["id"]), {"parent_id": None})
+        detail = self.admin.get("/api/tasks/{}".format(task["id"]))[1]
+        history = [c["body"] for c in detail["comments"] if c["kind"] == "system"]
+        self.assertIn("親タスク: 新しい親 → トップレベル", history)
+
+    def test_setting_the_same_parent_is_not_logged(self):
+        project = self.make_project()
+        parent = self.make_task(project["id"], "親")
+        child = self.make_task(project["id"], "子", parent_id=parent["id"])
+        self.admin.patch("/api/tasks/{}".format(child["id"]),
+                         {"parent_id": parent["id"], "title": "子（改名）"})
+        detail = self.admin.get("/api/tasks/{}".format(child["id"]))[1]
+        history = [c["body"] for c in detail["comments"] if c["kind"] == "system"]
+        self.assertEqual([h for h in history if "親タスク" in h], [])
+
+    def test_cannot_become_its_own_parent(self):
+        project = self.make_project()
+        task = self.make_task(project["id"], "自分")
+        status, data = self.admin.patch("/api/tasks/{}".format(task["id"]),
+                                        {"parent_id": task["id"]})
+        self.assertEqual(status, 400)
+        self.assertIn("自分自身", data["error"])
+
+    def test_cannot_move_under_another_project(self):
+        mine = self.make_project("こちら")
+        theirs = self.make_project("あちら")
+        task = self.make_task(mine["id"], "動かす")
+        outsider = self.make_task(theirs["id"], "別プロジェクト")
+        status, data = self.admin.patch("/api/tasks/{}".format(task["id"]),
+                                        {"parent_id": outsider["id"]})
+        self.assertEqual(status, 400)
+        self.assertIn("プロジェクト", data["error"])
+
+    def test_a_subtree_cannot_be_pushed_past_the_depth_limit(self):
+        """親だけでなく、ぶら下がる子孫まで数えて深さを判定すること。"""
+        project = self.make_project()
+        deep = self.chain(project["id"], 7)          # L0..L6（7 階層）
+        lone = self.make_task(project["id"], "単体")
+        with_kid = self.make_task(project["id"], "子持ち")
+        self.make_task(project["id"], "その子", parent_id=with_kid["id"])
+
+        # 7 階層目の下＝8 階層目なので単体なら入る
+        status, data = self.admin.patch("/api/tasks/{}".format(lone["id"]),
+                                        {"parent_id": deep[-1]["id"]})
+        self.assertEqual(status, 200, data)
+        # 子持ちだと 9 階層目ができてしまうので弾く
+        status, data = self.admin.patch("/api/tasks/{}".format(with_kid["id"]),
+                                        {"parent_id": deep[-1]["id"]})
+        self.assertEqual(status, 400, data)
+        self.assertIn("階層", data["error"])
+
+    def test_reorder_also_checks_the_depth_limit(self):
+        project = self.make_project()
+        deep = self.chain(project["id"], 8)          # 8 階層ぶん
+        task = self.make_task(project["id"], "はみ出す")
+        status, data = self.admin.post("/api/tasks/reorder", {
+            "project_id": project["id"],
+            "items": [{"id": task["id"], "parent_id": deep[-1]["id"], "sort_order": 10}]})
+        self.assertEqual(status, 400, data)
+        self.assertIn("階層", data["error"])
+
+    def test_reorder_counts_the_moved_subtree(self):
+        project = self.make_project()
+        deep = self.chain(project["id"], 7)
+        with_kid = self.make_task(project["id"], "子持ち")
+        self.make_task(project["id"], "その子", parent_id=with_kid["id"])
+        status, data = self.admin.post("/api/tasks/reorder", {
+            "project_id": project["id"],
+            "items": [{"id": with_kid["id"], "parent_id": deep[-1]["id"], "sort_order": 10}]})
+        self.assertEqual(status, 400, data)
+        self.assertIn("階層", data["error"])
+
+    def test_reparenting_needs_edit_rights(self):
+        project = self.make_project()
+        parent = self.make_task(project["id"], "親")
+        task = self.make_task(project["id"], "子候補")
+        user, email = self.make_user("閲覧者")
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "viewer"}]})
+        client = self.client_for(email)
+        self.assertEqual(client.patch("/api/tasks/{}".format(task["id"]),
+                                      {"parent_id": parent["id"]})[0], 403)
+
+    def test_parent_change_keeps_the_progress_rollup_consistent(self):
+        project = self.make_project()
+        parent = self.make_task(project["id"], "集計される親")
+        task = self.make_task(project["id"], "進捗100", progress=100)
+        self.admin.patch("/api/tasks/{}".format(task["id"]), {"parent_id": parent["id"]})
+        rows = self.admin.get("/api/projects/{}/tasks".format(project["id"]))[1]["tasks"]
+        moved_parent = next(t for t in rows if t["id"] == parent["id"])
+        self.assertEqual(moved_parent["leaf_total"], 1)
+        self.assertEqual(moved_parent["leaf_done"], 1)

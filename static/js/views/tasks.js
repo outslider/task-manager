@@ -1,4 +1,5 @@
-/* Project task list: hierarchical tree with inline status, drag & drop ordering. */
+/* Project task list: hierarchical tree with inline status, drag & drop ordering.
+ * 階層の組み替えは、行のドラッグ（PC）と行メニュー（スマホを含む）の両方からできる。 */
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store, STATUS_LABEL, IMPORTANCE_LABEL, CATEGORIES, category } from '../store.js';
@@ -9,6 +10,7 @@ import { openTaskForm } from './taskForm.js';
 import { categoryChip } from './pickers.js';
 import { openTaskDetail } from './taskDetail.js';
 import { projectTabs } from './projectNav.js';
+import { indentTarget, openParentPicker, outdentTarget, setParent } from './hierarchy.js';
 
 const collapsedKey = (projectId) => `tm.collapsed.${projectId}`;
 
@@ -276,7 +278,10 @@ export async function render(container, route) {
       },
     },
     el('div', { class: 'task-main', style: { paddingLeft: `${depth * 16}px` } },
-      canEdit ? el('span', { class: 'drag-handle', title: 'ドラッグで並べ替え' }, '⠿') : null,
+      canEdit ? el('span', {
+        class: 'drag-handle',
+        title: 'ドラッグで並べ替え。行の中央に重ねるとその子タスクになります',
+      }, '⠿') : null,
       twisty,
       importanceMark(task.priority),
       task.is_milestone ? el('span', { class: 'milestone-mark', title: 'マイルストーン' }, '◆') : null,
@@ -448,6 +453,7 @@ export async function render(container, route) {
     },
     menuItem('👁 詳細を開く', () => openTaskDetail(task.id, { onChange: reload })),
     menuItem('＋ 子タスクを追加', () => addTask(task.id)),
+    ...hierarchyMenuItems(task, menuItem),
     menuItem('✏️ 編集', async () => {
       const saved = await openTaskForm({ project, task, tasks: data.tasks, deps: data.deps });
       if (saved) reload();
@@ -488,6 +494,41 @@ export async function render(container, route) {
         onClick: () => { menu.remove(); action(); },
       }, label);
     }
+  }
+
+  /** 階層を組み替えるメニュー項目。タッチ端末ではここが唯一の手段になる。 */
+  function hierarchyMenuItems(task, menuItem) {
+    const indentTo = indentTarget(data.tasks, task);
+    const outdentTo = outdentTarget(data.tasks, task);
+    const items = [];
+    if (indentTo) {
+      items.push(menuItem(`⇥ 「${ellipsis(indentTo.title)}」の子にする`,
+        () => reparent(task, indentTo.id)));
+    }
+    if (outdentTo) {
+      const grandParent = data.tasks.find((t) => t.id === outdentTo.parent_id);
+      items.push(menuItem(
+        grandParent ? `⇤ 「${ellipsis(grandParent.title)}」の子にする` : '⇤ トップレベルに出す',
+        () => reparent(task, outdentTo.parent_id ?? null)));
+    }
+    items.push(menuItem('⤴ 親タスクを変更…', async () => {
+      const chosen = await openParentPicker(task, data.tasks);
+      if (chosen === undefined) return;
+      await reparent(task, chosen);
+    }));
+    return items;
+  }
+
+  async function reparent(task, parentId) {
+    if (!await setParent(task, parentId, data.tasks)) return;
+    if (parentId) collapsed.delete(parentId);
+    saveCollapsed(projectId, collapsed);
+    toast(parentId ? '階層を移動しました' : 'トップレベルに移動しました', 'ok');
+    await reload();
+  }
+
+  function ellipsis(text, limit = 16) {
+    return text.length > limit ? `${text.slice(0, limit)}…` : text;
   }
 
   async function addTask(parentId) {

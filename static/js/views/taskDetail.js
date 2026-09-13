@@ -9,6 +9,7 @@ import {
 } from '../util.js';
 import { openTaskForm } from './taskForm.js';
 import { categorySelect, userSelect } from './pickers.js';
+import { openParentPicker, setParent } from './hierarchy.js';
 
 let openInstance = null;
 
@@ -136,6 +137,8 @@ async function renderDetail(instance, taskId, onChange) {
 
   body.append(warnings(task, metrics, conflicts));
   body.append(el('div', { class: 'detail-grid' },
+    el('div', { class: 'detail-wide' }, el('span', { class: 'label', text: '親タスク' }),
+      parentControl(task, path, canEdit, reload)),
     el('div', {}, el('span', { class: 'label', text: '状態' }), statusSelect),
     el('div', {}, el('span', { class: 'label', text: 'カテゴリ' }), categoryInput),
     el('div', {}, el('span', { class: 'label', text: '担当者' }), assignee),
@@ -475,4 +478,47 @@ async function addDependency(task, reload) {
     await api.post(`/api/tasks/${task.id}/deps`, { depends_on_id: Number(chosen) });
     reload();
   } catch (error) { toast(error.message, 'error'); }
+}
+
+
+/** 親タスクの表示と付け替え。ドラッグの効かない端末でもここから変えられる。 */
+function parentControl(task, path, canEdit, reload) {
+  const parent = path.length ? path[path.length - 1] : null;
+  const label = parent
+    ? el('a', {
+      href: '#', class: 'parent-current',
+      onClick: (event) => { event.preventDefault(); openTaskDetail(parent.id); },
+      text: parent.title,
+    })
+    : el('span', { class: 'cell-mut', text: 'トップレベル' });
+
+  if (!canEdit) return el('div', { class: 'parent-row' }, label);
+
+  return el('div', { class: 'parent-row' }, label,
+    el('button', {
+      class: 'btn btn-sm',
+      onClick: async () => {
+        const projectTasks = await api.projectTasks(task.project_id);
+        const chosen = await openParentPicker(task, projectTasks.tasks);
+        if (chosen === undefined) return;
+        if (await setParent(task, chosen, projectTasks.tasks)) {
+          toast(chosen ? '階層を移動しました' : 'トップレベルに移動しました', 'ok');
+          reload();
+        }
+      },
+    }, '変更'),
+    parent
+      ? el('button', {
+        class: 'btn btn-sm',
+        title: '一つ上の階層に出す',
+        onClick: async () => {
+          const projectTasks = await api.projectTasks(task.project_id);
+          const grandParent = path.length > 1 ? path[path.length - 2].id : null;
+          if (await setParent(task, grandParent, projectTasks.tasks)) {
+            toast('階層を移動しました', 'ok');
+            reload();
+          }
+        },
+      }, '⇤ 一つ上へ')
+      : null);
 }

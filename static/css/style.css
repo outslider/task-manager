@@ -717,6 +717,27 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
 .detail-grid > * { min-width: 0; }
+.detail-grid .detail-wide { grid-column: 1 / -1; }
+
+/* 詳細ドロワーの親タスク行 */
+.parent-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.parent-current { font-weight: 600; }
+
+/* 親タスクを選ぶダイアログ */
+.parent-pick-list {
+  max-height: 46vh; overflow-y: auto; border: 1px solid var(--border);
+  border-radius: 10px; padding: 4px; display: flex; flex-direction: column; gap: 2px;
+}
+.parent-pick {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 8px 10px; border: 1px solid transparent; border-radius: 8px;
+  background: none; color: inherit; font: inherit; cursor: pointer;
+}
+.parent-pick:hover:not(:disabled) { background: var(--accent-soft); }
+.parent-pick.active { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+.parent-pick:disabled { opacity: .45; cursor: not-allowed; }
+.parent-pick-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.parent-pick .hint { margin: 0; flex: 0 0 auto; }
 .section-title {
   font-size: 12px; font-weight: 700; color: var(--text-faint); letter-spacing: .05em;
   text-transform: uppercase; margin: 18px 0 8px; display: flex; align-items: center; gap: 8px;
