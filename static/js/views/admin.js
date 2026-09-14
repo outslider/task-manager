@@ -263,6 +263,57 @@ async function renderSettings(container) {
     return el('div', { class: 'field' }, el('label', { text: label }), node,
       options.hint ? el('div', { class: 'hint', text: options.hint }) : null);
   };
+  /** 会社独自の休業日（年末年始や夏季休暇）を足し引きする小さな一覧。 */
+  const holidayEditor = () => {
+    const host = el('div', { class: 'holiday-list' });
+    const dayInput = el('input', { class: 'input', type: 'date', style: { maxWidth: '160px' } });
+    const nameInput = el('input', { class: 'input', placeholder: '例）年末年始休業' });
+    const year = new Date().getFullYear();
+
+    const load = async () => {
+      try {
+        const result = await api.holidays({ from: `${year}-01-01`, to: `${year + 1}-12-31` });
+        const company = (result.holidays || []).filter((h) => h.company);
+        fill(host, ...(company.length
+          ? company.map((h) => el('div', { class: 'holiday-row' },
+            el('span', { text: `${h.day}　${h.name}` }),
+            el('button', {
+              class: 'icon-btn', title: '削除',
+              onClick: async () => {
+                await api.del(`/api/holidays/${h.day}`);
+                load();
+              },
+            }, '×')))
+          : [el('div', { class: 'hint', text: '会社独自の休業日はまだありません' })]));
+      } catch (error) { toast(error.message, 'error'); }
+    };
+
+    load();
+    return el('div', { class: 'field' },
+      el('label', { text: '会社の休業日（祝日以外）' }),
+      host,
+      el('div', { style: { display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' } },
+        dayInput, nameInput,
+        el('button', {
+          class: 'btn btn-sm',
+          onClick: async (event) => {
+            if (!dayInput.value) { toast('日付を選んでください', 'error'); return; }
+            const button = event.currentTarget;
+            button.disabled = true;
+            try {
+              await api.post('/api/holidays', {
+                day: dayInput.value, name: nameInput.value.trim() || '休業日',
+              });
+              dayInput.value = ''; nameInput.value = '';
+              load();
+            } catch (error) { toast(error.message, 'error'); }
+            button.disabled = false;
+          },
+        }, '＋ 追加')),
+      el('div', { class: 'hint',
+        text: `${year}年と${year + 1}年ぶんを表示しています。祝日は自動で入るので、ここには追加不要です。` }));
+  };
+
   const eventPicker = (key, label, catalog, hint) => {
     const selected = new Set(String(s[key] || '').split(',').filter(Boolean));
     const boxes = (catalog || []).map((event) => {
@@ -378,12 +429,16 @@ async function renderSettings(container) {
             },
           }, 'テスト送信'))),
       el('div', { class: 'card' },
-        el('div', { class: 'card-head' }, el('h2', {}, '稼働時間')),
+        el('div', { class: 'card-head' }, el('h2', {}, '稼働時間と休日')),
         el('div', { class: 'card-body' },
           el('div', { class: 'page-sub',
             text: '負荷ビューで「1人が週にどれだけ持てるか」の基準に使います。' }),
           input('work_hours_per_day', '1日の稼働時間 (h)', { type: 'number' }),
-          el('div', { class: 'hint', text: '土日を除いた5日分が1週間の上限になります（既定 8h → 40h/週）。' })))),
+          el('div', { class: 'hint', text: '土日を除いた5日分が1週間の上限になります（既定 8h → 40h/週）。' }),
+          toggle('use_holidays', '日本の祝日を休みとして扱う',
+            'ガントで網掛けし、負荷計算ではその週に使える時間を減らします。'
+            + '春分・秋分、振替休日、国民の休日も自動で計算します。'),
+          holidayEditor()))),
     el('div', { class: 'card', style: { marginTop: '14px' } },
       el('div', { class: 'card-head' }, el('h2', {}, 'Claude 連携（任意）'),
         el('span', {

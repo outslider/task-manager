@@ -112,7 +112,14 @@ export async function render(container, route) {
         el('th', { class: 'wl-name', text: '担当者' }),
         ...weeks.map((week) => el('th', {
           class: `wl-week${week.is_current ? ' current' : ''}`,
+          // 祝日のある週は使える時間が減るので、その旨を出す
+          title: (week.holidays || []).length
+            ? `祝日・休業日 ${week.holidays.length} 日（この週に使えるのは ${week.capacity}h）`
+            : null,
         }, el('span', { text: week.label }),
+        (week.holidays || []).length
+          ? el('span', { class: 'wl-holiday', text: `−${week.holidays.length}日` })
+          : null,
         week.is_current ? el('span', { class: 'wl-now', text: '今週' }) : null)),
         el('th', { class: 'wl-total', text: '合計' }))),
       el('tbody', {}, ...rows.map((row) => el('tr', {},
@@ -120,13 +127,14 @@ export async function render(container, route) {
           el('span', { class: 'avatar-stack' },
             avatar({ name: row.user_id ? row.name : '', avatar_color: row.avatar_color }, 'sm'),
             el('span', { text: row.name }))),
-        ...row.cells.map((cell) => cellNode(cell, capacity, showHours)),
+        ...row.cells.map((cell, i) =>
+          cellNode(cell, weeks[i]?.capacity ?? capacity, showHours)),
         el('td', { class: 'wl-total' },
           showHours ? `${row.total_hours}h` : `${row.total_count}件`)))));
   }
 
   function cellNode(cell, capacity, showHours) {
-    const ratio = showHours ? cell.ratio : Math.min(1.4, cell.count / 5);
+    const ratio = showHours ? (cell.ratio ?? 0) : Math.min(1.4, cell.count / 5);
     const level = ratio >= 1 ? 'over' : ratio >= 0.8 ? 'high' : ratio > 0 ? 'ok' : 'idle';
     const label = showHours
       ? (cell.hours ? `${cell.hours}h` : '')

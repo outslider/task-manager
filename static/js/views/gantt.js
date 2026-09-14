@@ -61,6 +61,9 @@ export async function render(container, route) {
   const projectId = route.projectId;
   let data = await api.projectTasks(projectId);
   const project = data.project;
+  /** 日付 (ISO) → 祝日名。ガントの網掛けに使う。 */
+  const holidayMap = new Map();
+  let holidayRange = null;
 
   const compact = window.innerWidth < 760;
   const canEdit = store.canEdit(project);
@@ -271,10 +274,27 @@ export async function render(container, route) {
     }
   }
 
+  /** 表示中の期間の祝日をまとめて取り、足りなければ引き直す。 */
+  async function ensureHolidays(range) {
+    const from = toISO(addDays(range.from, -40));
+    const to = toISO(addDays(range.to, 40));
+    if (holidayRange && holidayRange.from <= from && holidayRange.to >= to) return false;
+    try {
+      const data = await api.holidays({ from, to });
+      holidayMap.clear();
+      for (const item of data.holidays || []) holidayMap.set(item.day, item.name);
+      holidayRange = { from, to };
+      return true;
+    } catch {
+      return false;                 // 祝日が取れなくても本体は描画する
+    }
+  }
+
   function draw() {
     const rows = visibleRows();
     const milestones = milestoneRows();
     const range = dateRange(rows, milestones);
+    ensureHolidays(range).then((changed) => { if (changed) draw(); });
     const roadmap = state.mode === 'roadmap';
     syncRangeInputs(range);
     const svg = buildGanttSvg({
@@ -283,7 +303,7 @@ export async function render(container, route) {
       title: project.name, nameWidth: state.nameWidth, interactive: true,
       // ロードマップは見せるための図なので、ドラッグ編集はガント表示だけにする
       editable: canEdit && !roadmap, onEdit: applyEdit, scroller: scroll,
-      roadmap, milestones,
+      roadmap, milestones, holidays: holidayMap,
     });
     drawLegend();
     fill(scroll, svg);
@@ -387,7 +407,7 @@ export async function render(container, route) {
         ? `${toISO(range.from)} 〜 ${toISO(range.to)}　作成日: ${toISO(today())}`
         : null,
       nameWidth: NAME_W_DEFAULT, forExport: true,
-      roadmap, milestones: milestoneRows(),
+      roadmap, milestones: milestoneRows(), holidays: holidayMap,
     });
     const stamp = toISO(today());
     const kind = roadmap ? 'ロードマップ' : 'ガント';
@@ -420,7 +440,7 @@ export function buildGanttSvg({
   rows, range, scale, deps = [], conflicts = [], colorBy = 'status',
   title = null, subtitle = null, editable = false, onEdit = null, scroller = null,
   nameWidth = NAME_W_DEFAULT, interactive = false, forExport = false,
-  roadmap = false, milestones = [],
+  roadmap = false, milestones = [], holidays = null,
 }) {
   const colorOf = (COLOR_MODES[colorBy] || COLOR_MODES.status).color;
   const conflictEdges = new Set(
@@ -482,14 +502,18 @@ export function buildGanttSvg({
 
   const gridG = svgEl('g');
   const bodyH = rows.length * rowH;
+  const holidayName = (date) => (holidays ? holidays.get(toISO(date)) : null) || null;
   if (scale.key === 'day') {
     for (let i = 0; i < totalDays; i += 1) {
       const date = addDays(range.from, i);
-      if (isWeekend(date)) {
-        gridG.appendChild(svgEl('rect', {
+      const name = holidayName(date);
+      if (isWeekend(date) || name) {
+        const cell = svgEl('rect', {
           x: originX + i * dayWidth, y: originY, width: dayWidth, height: bodyH,
           fill: colors.weekend, opacity: forExport ? 1 : 0.7,
-        }));
+        });
+        if (name) cell.appendChild(svgEl('title', { text: name }));
+        gridG.appendChild(cell);
       }
     }
   }
@@ -553,13 +577,17 @@ export function buildGanttSvg({
     for (let i = 0; i < totalDays; i += 1) {
       const date = addDays(range.from, i);
       const cx = originX + i * dayWidth;
-      headerG.appendChild(svgEl('text', {
+      const off = isWeekend(date) || Boolean(holidayName(date));
+      const dayText = svgEl('text', {
         x: cx + dayWidth / 2, y: headerY + 32, 'font-size': 10, 'text-anchor': 'middle',
-        fill: isWeekend(date) ? '#e14c4c' : colors.muted, text: String(date.getDate()),
-      }));
+        fill: off ? '#e14c4c' : colors.muted, text: String(date.getDate()),
+      });
+      if (holidayName(date)) dayText.appendChild(svgEl('title', { text: holidayName(date) }));
+      headerG.appendChild(dayText);
       headerG.appendChild(svgEl('text', {
         x: cx + dayWidth / 2, y: headerY + 43, 'font-size': 8.5, 'text-anchor': 'middle',
-        fill: isWeekend(date) ? '#e14c4c' : colors.muted, opacity: 0.8, text: weekday(date),
+        fill: off ? '#e14c4c' : colors.muted, opacity: 0.8,
+        text: holidayName(date) ? '祝' : weekday(date),
       }));
       gridG.appendChild(svgEl('line', {
         x1: cx, y1: originY, x2: cx, y2: originY + bodyH,

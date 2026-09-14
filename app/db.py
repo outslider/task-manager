@@ -283,6 +283,13 @@ DDL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
+    CREATE TABLE IF NOT EXISTS company_holidays (
+        day        DATE NOT NULL PRIMARY KEY,
+        name       VARCHAR(100) NOT NULL DEFAULT '休業日',
+        created_at DATETIME NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
     CREATE TABLE IF NOT EXISTS notification_mutes (
         user_id    INT NOT NULL,
         project_id INT NOT NULL,
@@ -312,6 +319,7 @@ DEFAULT_SETTINGS = {
     "slack_enabled": "0",
     "slack_webhook_url": "",
     "slack_events": "issue,digest",
+    "use_holidays": "1",
     "work_hours_per_day": "8",
     "app_name": "タスク管理",
 }

@@ -3,12 +3,13 @@ import mimetypes
 import os
 import re
 import secrets
-from datetime import timedelta
+from datetime import date, timedelta
 from urllib.parse import quote
 
 import pymysql
 
-from . import auth, db, graph, llm, nlp, notify, prefs, recurrence, slack, workload
+from . import (auth, db, graph, holidays, llm, nlp, notify, prefs, recurrence,
+               slack, workload)
 from .config import MAX_UPLOAD_BYTES, UPLOAD_DIR
 from .http_util import (HttpError, as_bool, as_date, as_int, bad_request, forbidden,
                         json_response, not_found, require, unauthorized, Response)
@@ -1560,6 +1561,461 @@ def put_notification_settings(ctx):
 
 
 # --------------------------------------------------------------------------
+# 横断検索
+# --------------------------------------------------------------------------
+
+@route("GET", r"/api/search")
+def search(ctx):
+    """タスク・課題・コメント・プロジェクト・自分の ToDo をまとめて探す。
+
+    見えないプロジェクトのものは一切返さない。ToDo は本人のものだけ。
+    """
+    user = me(ctx)
+    keyword = (ctx.query.get("q") or "").strip()
+    if len(keyword) < 2:
+        return json_response({"q": keyword, "groups": [], "total": 0,
+                              "message": "2 文字以上で検索してください"})
+    limit = as_int(ctx.query.get("limit"), 8, 1, 30)
+    like = "%{}%".format(keyword)
+    project_ids = auth.visible_project_ids(user)
+    scope = tuple(project_ids) or (0,)
+
+    tasks = db.query(
+        "SELECT t.id, t.title, t.status, t.due_date, t.is_milestone, "
+        "       p.name AS project_name, p.color AS project_color, u.name AS assignee_name "
+        "  FROM tasks t JOIN projects p ON p.id = t.project_id "
+        "  LEFT JOIN users u ON u.id = t.assignee_id "
+        " WHERE t.project_id IN %s AND (t.title LIKE %s OR t.description LIKE %s) "
+        " ORDER BY (t.status='done'), (t.due_date IS NULL), t.due_date LIMIT %s",
+        (scope, like, like, limit))
+    issues = db.query(
+        "SELECT i.id, i.seq, i.title, i.status, i.severity, i.due_date, "
+        "       p.name AS project_name, p.color AS project_color "
+        "  FROM issues i JOIN projects p ON p.id = i.project_id "
+        " WHERE i.project_id IN %s AND (i.title LIKE %s OR i.description LIKE %s "
+        "       OR i.resolution LIKE %s) "
+        " ORDER BY i.severity DESC, i.seq DESC LIMIT %s",
+        (scope, like, like, like, limit))
+    comments = db.query(
+        "SELECT c.id, c.body, c.created_at, c.task_id, c.issue_id, u.name AS user_name, "
+        "       COALESCE(t.title, i.title) AS parent_title, "
+        "       COALESCE(pt.name, pi.name) AS project_name "
+        "  FROM comments c "
+        "  LEFT JOIN users u ON u.id = c.user_id "
+        "  LEFT JOIN tasks t ON t.id = c.task_id "
+        "  LEFT JOIN projects pt ON pt.id = t.project_id "
+        "  LEFT JOIN issues i ON i.id = c.issue_id "
+        "  LEFT JOIN projects pi ON pi.id = i.project_id "
+        " WHERE c.kind='comment' AND c.body LIKE %s "
+        "   AND (t.project_id IN %s OR i.project_id IN %s) "
+        " ORDER BY c.created_at DESC LIMIT %s",
+        (like, scope, scope, limit))
+    projects = db.query(
+        "SELECT id, name, description, color FROM projects "
+        " WHERE id IN %s AND (name LIKE %s OR description LIKE %s) ORDER BY archived, name "
+        " LIMIT %s", (scope, like, like, limit))
+    todos = db.query(
+        "SELECT id, title, due_date, is_done FROM todos "
+        " WHERE user_id=%s AND (title LIKE %s OR note LIKE %s) "
+        " ORDER BY is_done, (due_date IS NULL), due_date LIMIT %s",
+        (user["id"], like, like, limit))
+
+    groups = []
+    if tasks:
+        groups.append({"kind": "task", "label": "タスク", "icon": "✓", "items": tasks})
+    if issues:
+        groups.append({"kind": "issue", "label": "課題", "icon": "📌", "items": issues})
+    if todos:
+        groups.append({"kind": "todo", "label": "マイ ToDo", "icon": "📝", "items": todos})
+    if projects:
+        groups.append({"kind": "project", "label": "プロジェクト", "icon": "📁",
+                       "items": projects})
+    if comments:
+        for row in comments:
+            body = row["body"] or ""
+            at = body.find(keyword)
+            start = max(0, at - 30)
+            row["excerpt"] = ("…" if start else "") + body[start:start + 120].replace("\n", " ")
+        groups.append({"kind": "comment", "label": "コメント", "icon": "💬", "items": comments})
+
+    return json_response({
+        "q": keyword,
+        "groups": groups,
+        "total": sum(len(g["items"]) for g in groups),
+    })
+
+
+# --------------------------------------------------------------------------
+# 休日（祝日 + 会社の休業日）
+# --------------------------------------------------------------------------
+
+@route("GET", r"/api/holidays")
+def list_holidays(ctx):
+    """期間内の休日。ガントの網掛けと負荷計算で使う。"""
+    me(ctx)
+    start = as_date(ctx.query.get("from")) or db.today().replace(month=1, day=1).isoformat()
+    end = as_date(ctx.query.get("to")) or db.today().replace(month=12, day=31).isoformat()
+    if db.get_setting("use_holidays", "1") != "1":
+        return json_response({"holidays": [], "enabled": False})
+    found = holidays.holidays_between(as_pydate(start), as_pydate(end))
+    company = set(holidays.company_holidays(start, end))
+    return json_response({
+        "enabled": True,
+        "holidays": [{"day": day.isoformat(), "name": name,
+                      "company": day in company}
+                     for day, name in sorted(found.items())],
+    })
+
+
+@route("POST", r"/api/holidays")
+def add_company_holiday(ctx):
+    """会社独自の休業日（年末年始・夏季休暇など）を足す。"""
+    admin_only(ctx)
+    day = as_date(ctx.body.get("day"))
+    if not day:
+        raise bad_request("日付を指定してください")
+    name = (ctx.body.get("name") or "休業日")[:100]
+    db.execute(
+        "INSERT INTO company_holidays(day, name, created_at) VALUES(%s,%s,%s) "
+        "ON DUPLICATE KEY UPDATE name=VALUES(name)", (day, name, db.now()))
+    return json_response({"ok": True, "day": day, "name": name}, 201)
+
+
+@route("DELETE", r"/api/holidays/(\d{4}-\d{2}-\d{2})")
+def delete_company_holiday(ctx, day):
+    admin_only(ctx)
+    db.execute("DELETE FROM company_holidays WHERE day=%s", (day,))
+    return json_response({"ok": True})
+
+
+def as_pydate(value):
+    from datetime import datetime
+    return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+
+
+# --------------------------------------------------------------------------
+# 一括取り込み / 一括編集
+# --------------------------------------------------------------------------
+
+# 取り込みで受け付ける列。value, 表示名, 説明（画面の対応づけに使う）
+IMPORT_FIELDS = [
+    ("title", "タスク名", "必須。先頭の空白やインデントは階層として読み取ります"),
+    ("level", "階層", "0 か 1 から始まる数字。指定がなければタスク名のインデントで判断します"),
+    ("parent", "親タスク名", "同じ取り込みの中の別のタスク名。階層より優先します"),
+    ("assignee", "担当者", "氏名またはメールアドレス"),
+    ("start_date", "開始日", "2026-04-01 / 2026/4/1 / 4月1日 など"),
+    ("due_date", "期限", "同上"),
+    ("category", "カテゴリ", "調査・リサーチ / 設計・企画 …（表示名でも英字でも可）"),
+    ("priority", "重要度", "低 / 中 / 高 / 最重要 または 0〜3"),
+    ("status", "状態", "未着手 / 進行中 / レビュー中 / 完了 / ブロック中"),
+    ("progress", "進捗", "0〜100 の数字（% は付いていても構いません）"),
+    ("estimate_hours", "見積 (h)", "数字。空欄でも構いません"),
+    ("description", "メモ", ""),
+    ("is_milestone", "マイルストーン", "○ / はい / 1 などでマイルストーン扱い"),
+]
+IMPORT_FIELD_KEYS = [f[0] for f in IMPORT_FIELDS]
+
+TRUE_WORDS = {"1", "true", "yes", "y", "はい", "○", "◯", "〇", "◎", "有", "あり", "true"}
+STATUS_BY_LABEL = {label: value for value, label in STATUS_LABEL.items()}
+IMPORTANCE_BY_LABEL = {label: value for value, label in IMPORTANCE_LABEL.items()}
+CATEGORY_BY_LABEL = {label: value for value, label, _c, _i in CATEGORIES}
+
+
+def _import_text(value):
+    return "" if value is None else str(value).strip()
+
+
+def _import_date(value):
+    """Excel から来がちな書き方をひととおり受ける。"""
+    text = _import_text(value).replace("　", " ")
+    if not text:
+        return None
+    text = re.sub(r"[（(].*?[)）]", "", text).strip()          # 「4/1(水)」の曜日を落とす
+    match = re.match(r"^(\d{4})\D+(\d{1,2})\D+(\d{1,2})", text)
+    if match:
+        y, m, d = (int(g) for g in match.groups())
+    else:
+        match = re.match(r"^(\d{1,2})\D+(\d{1,2})\D*$", text)
+        if not match:
+            return None
+        y = db.today().year
+        m, d = (int(g) for g in match.groups())
+    try:
+        return date(y, m, d).isoformat()
+    except ValueError:
+        return None
+
+
+def _import_number(value, lo=None, hi=None):
+    text = _import_text(value).replace("%", "").replace("時間", "").replace("h", "")
+    if not text:
+        return None
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    if lo is not None:
+        number = max(lo, number)
+    if hi is not None:
+        number = min(hi, number)
+    return number
+
+
+def _import_level(row):
+    """階層の深さ。数字の列があればそれ、なければタスク名のインデント。"""
+    raw = _import_text(row.get("level"))
+    if raw:
+        digits = re.sub(r"\D", "", raw)
+        if digits:
+            level = int(digits)
+            return max(0, level - 1) if level >= 1 and raw.strip()[0] not in "0" else level
+    title = str(row.get("title") or "")
+    indent = len(title) - len(title.lstrip(" 　\t"))
+    return indent // 2 if indent else 0
+
+
+@route("GET", r"/api/import/fields")
+def import_fields(ctx):
+    me(ctx)
+    return json_response({
+        "fields": [{"value": v, "label": label, "help": help_text}
+                   for v, label, help_text in IMPORT_FIELDS],
+        "statuses": list(STATUS_BY_LABEL),
+        "categories": list(CATEGORY_BY_LABEL),
+        "importance": list(IMPORTANCE_BY_LABEL),
+    })
+
+
+@route("POST", r"/api/projects/(\d+)/tasks/import")
+def import_tasks(ctx, project_id):
+    """表計算ソフトからの一括取り込み。dry_run=true なら登録せず結果だけ返す。"""
+    user = me(ctx)
+    project_or_404(user, project_id, "editor")
+    rows = ctx.body.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise bad_request("取り込む行がありません")
+    if len(rows) > 1000:
+        raise bad_request("一度に取り込めるのは 1000 行までです")
+    dry_run = as_bool(ctx.body.get("dry_run"))
+
+    members = {}
+    for person in project_member_users(project_id):
+        members[person["name"].strip()] = person["id"]
+        members[person["email"].strip().lower()] = person["id"]
+
+    prepared, problems = [], []
+    for index, raw in enumerate(rows):
+        line = index + 1
+        if not isinstance(raw, dict):
+            problems.append({"line": line, "message": "行の形式が正しくありません"})
+            continue
+        title = _import_text(raw.get("title"))
+        if not title:
+            problems.append({"line": line, "message": "タスク名が空です"})
+            continue
+
+        assignee_id = None
+        assignee_text = _import_text(raw.get("assignee"))
+        if assignee_text:
+            assignee_id = members.get(assignee_text) or members.get(assignee_text.lower())
+            if not assignee_id:
+                problems.append({
+                    "line": line,
+                    "message": "「{}」はこのプロジェクトのメンバーに見つかりません".format(
+                        assignee_text),
+                })
+
+        status_text = _import_text(raw.get("status"))
+        status = STATUS_BY_LABEL.get(status_text, status_text if status_text in STATUSES else "todo")
+        priority_text = _import_text(raw.get("priority"))
+        if priority_text in IMPORTANCE_BY_LABEL:
+            priority = IMPORTANCE_BY_LABEL[priority_text]
+        else:
+            priority = int(_import_number(priority_text, 0, 3) or 1)
+        category_text = _import_text(raw.get("category"))
+        category = CATEGORY_BY_LABEL.get(category_text, "")
+        if not category and category_text in CATEGORY_VALUES:
+            category = category_text
+
+        start_date = _import_date(raw.get("start_date"))
+        due_date = _import_date(raw.get("due_date"))
+        if start_date and due_date and start_date > due_date:
+            problems.append({"line": line, "message": "開始日が期限より後になっています"})
+            start_date = None
+
+        progress = _import_number(raw.get("progress"), 0, 100)
+        estimate = _import_number(raw.get("estimate_hours"), 0, 9999)
+        prepared.append({
+            "line": line,
+            "title": title.strip(),
+            "level": _import_level(raw),
+            "parent": _import_text(raw.get("parent")),
+            "assignee_id": assignee_id,
+            "start_date": start_date,
+            "due_date": due_date,
+            "category": category,
+            "priority": priority,
+            "status": status,
+            "progress": int(progress) if progress is not None else (100 if status == "done" else 0),
+            "estimate_hours": estimate,
+            "description": _import_text(raw.get("description")),
+            "is_milestone": 1 if _import_text(raw.get("is_milestone")).lower() in TRUE_WORDS else 0,
+        })
+
+    if dry_run:
+        return json_response({
+            "ok": not problems, "would_create": len(prepared), "problems": problems,
+            "preview": prepared[:50],
+        })
+    if not prepared:
+        raise bad_request("取り込める行がありませんでした")
+
+    created, by_title, stack = [], {}, {}
+    now = db.now()
+    base_order = (db.scalar(
+        "SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE project_id=%s",
+        (project_id,), default=0) or 0)
+    with db.transaction():
+        for offset, item in enumerate(prepared):
+            parent_id = None
+            if item["parent"] and item["parent"] in by_title:
+                parent_id = by_title[item["parent"]]
+            else:
+                level = min(item["level"], MAX_TASK_DEPTH - 1)
+                # 親は「一つ浅い階層で直前に出てきたタスク」
+                while level > 0 and level - 1 not in stack:
+                    level -= 1
+                parent_id = stack.get(level - 1) if level > 0 else None
+                item["level"] = level
+            if parent_id and task_depth(parent_id) >= MAX_TASK_DEPTH:
+                parent_id = None
+            task_id = db.insert(
+                "INSERT INTO tasks(project_id, parent_id, title, description, category, status, "
+                "priority, assignee_id, start_date, due_date, progress, estimate_hours, "
+                "is_milestone, sort_order, created_by, created_at, updated_at, completed_at) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (project_id, parent_id, item["title"], item["description"], item["category"],
+                 item["status"], item["priority"], item["assignee_id"], item["start_date"],
+                 item["due_date"], item["progress"], item["estimate_hours"],
+                 item["is_milestone"], base_order + (offset + 1) * 10, user["id"], now, now,
+                 now if item["status"] == "done" else None))
+            created.append(task_id)
+            by_title[item["title"]] = task_id
+            stack[item["level"]] = task_id
+            for deeper in [k for k in stack if k > item["level"]]:
+                stack.pop(deeper)
+    return json_response({"created": len(created), "task_ids": created,
+                          "problems": problems}, 201)
+
+
+BULK_EDITABLE = ("assignee_id", "status", "category", "priority", "due_date", "start_date")
+
+
+@route("POST", r"/api/tasks/bulk")
+def bulk_update_tasks(ctx):
+    """選んだタスクをまとめて更新する。プロジェクトをまたいでも構わない。"""
+    user = me(ctx)
+    ids = ctx.body.get("ids")
+    if not isinstance(ids, list) or not ids:
+        raise bad_request("対象のタスクを選んでください")
+    ids = [as_int(i) for i in ids if as_int(i)]
+    if len(ids) > 500:
+        raise bad_request("一度に更新できるのは 500 件までです")
+    action = ctx.body.get("action") or "set"
+    tasks = db.query("SELECT * FROM tasks WHERE id IN %s", (tuple(ids),))
+    if len(tasks) != len(set(ids)):
+        raise not_found("見つからないタスクが含まれています")
+    for task in tasks:
+        project_or_404(user, task["project_id"], "editor")
+
+    if action == "delete":
+        targets = set()
+        for task in tasks:
+            targets.add(task["id"])
+            targets.update(descendant_ids(task["id"]))
+        stored = db.query(
+            "SELECT stored_name FROM attachments WHERE task_id IN %s AND kind='file'",
+            (tuple(targets),))
+        with db.transaction():
+            db.execute("DELETE FROM tasks WHERE id IN %s", (tuple(targets),))
+        for row in stored:
+            _remove_stored_file(row["stored_name"])
+        return json_response({"deleted": len(targets)})
+
+    if action == "shift":
+        days = as_int(ctx.body.get("days"), 0)
+        if not days:
+            raise bad_request("ずらす日数を指定してください")
+        moved = 0
+        with db.transaction():
+            for task in tasks:
+                if not (task["start_date"] or task["due_date"]):
+                    continue
+                db.execute(
+                    "UPDATE tasks SET start_date = DATE_ADD(start_date, INTERVAL %s DAY), "
+                    "due_date = DATE_ADD(due_date, INTERVAL %s DAY), updated_at=%s WHERE id=%s",
+                    (days, days, db.now(), task["id"]))
+                moved += 1
+        for task in tasks:
+            system_comment(task["id"], user["id"],
+                           "日程を {} 日{}にずらしました".format(abs(days),
+                                                     "後ろ" if days > 0 else "前"))
+        return json_response({"updated": moved})
+
+    fields, params, notes = [], [], []
+    body = ctx.body
+    if "assignee_id" in body:
+        assignee_id = as_int(body["assignee_id"])
+        for task in tasks:
+            ensure_member(assignee_id, task["project_id"])
+        fields.append("assignee_id=%s")
+        params.append(assignee_id)
+        notes.append("担当: {}".format(
+            db.scalar("SELECT name AS n FROM users WHERE id=%s", (assignee_id,),
+                      default="未割当") if assignee_id else "未割当"))
+    if "status" in body:
+        status = body["status"] if body["status"] in STATUSES else None
+        if not status:
+            raise bad_request("状態の指定が正しくありません")
+        fields += ["status=%s", "completed_at=%s"]
+        params += [status, db.now() if status == "done" else None]
+        if status == "done":
+            fields.append("progress=100")
+        notes.append("状態: {}".format(STATUS_LABEL[status]))
+    if "category" in body:
+        fields.append("category=%s")
+        params.append(normalize_category(body["category"]))
+        notes.append("カテゴリを変更")
+    if "priority" in body:
+        fields.append("priority=%s")
+        params.append(as_int(body["priority"], 1, 0, 3))
+        notes.append("重要度: {}".format(IMPORTANCE_LABEL[as_int(body["priority"], 1, 0, 3)]))
+    for key in ("due_date", "start_date"):
+        if key in body:
+            fields.append(key + "=%s")
+            params.append(as_date(body[key]))
+            notes.append("{}: {}".format("期限" if key == "due_date" else "開始日",
+                                         as_date(body[key]) or "未設定"))
+    if not fields:
+        raise bad_request("更新する項目がありません")
+
+    fields.append("updated_at=%s")
+    params.append(db.now())
+    with db.transaction():
+        db.execute("UPDATE tasks SET {} WHERE id IN %s".format(", ".join(fields)),
+                   params + [tuple(ids)])
+    note = "一括更新 — " + " / ".join(notes)
+    for task in tasks:
+        system_comment(task["id"], user["id"], note)
+    if "assignee_id" in body and as_int(body["assignee_id"]):
+        new_assignee = as_int(body["assignee_id"])
+        for task in tasks:
+            if task["assignee_id"] != new_assignee and new_assignee != user["id"]:
+                _notify_assignment(task["id"], task["title"], new_assignee, user)
+    return json_response({"updated": len(ids)})
+
+
+# --------------------------------------------------------------------------
 # 個人 ToDo（プロジェクトに属さない、自分だけのメモ書き）
 # --------------------------------------------------------------------------
 
@@ -2478,8 +2934,14 @@ def workload_view(ctx):
     users = db.query("SELECT id, name, avatar_color FROM users WHERE is_active=1")
     weeks = as_int(ctx.query.get("weeks"), 8, 2, 26)
     hours_per_day = float(db.get_setting("work_hours_per_day", "8") or 8)
+    off_days = ()
+    if db.get_setting("use_holidays", "1") == "1":
+        today = db.today()
+        off_days = set(holidays.holidays_between(
+            today - timedelta(days=14), today + timedelta(weeks=weeks + 2)))
 
-    result = workload.build(tasks, users, weeks=weeks, hours_per_day=hours_per_day)
+    result = workload.build(tasks, users, weeks=weeks, hours_per_day=hours_per_day,
+                            holidays=off_days)
     result["effort"] = workload.effort_summary(tasks)
     result["projects"] = db.query(
         "SELECT id, name FROM projects WHERE id IN %s AND archived=0 ORDER BY name",

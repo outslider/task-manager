@@ -87,6 +87,7 @@ export const api = {
   // notifications & daily
   notifications: (query) => request('GET', '/api/notifications', { query }),
   todos: (query) => request('GET', '/api/todos', { query }),
+  holidays: (query) => request('GET', '/api/holidays', { query }),
   notificationSettings: () => request('GET', '/api/me/notification-settings'),
   saveNotificationSettings: (body) => request('PUT', '/api/me/notification-settings', { body }),
   daily: () => request('GET', '/api/daily'),

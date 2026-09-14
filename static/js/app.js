@@ -52,11 +52,16 @@ function buildShell() {
   menuButton.innerHTML =
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>';
 
+  const searchInput = el('input', {
+    class: 'input topbar-search', type: 'search',
+    placeholder: '検索（/ キー）', 'aria-label': '横断検索',
+  });
+
   const topbar = el('header', { class: 'topbar' },
     menuButton,
     title,
     el('div', { class: 'topbar-spacer' }),
-    topActions, quickAdd, bell);
+    searchInput, topActions, quickAdd, bell);
 
   const progress = el('div', { class: 'route-progress', hidden: true });
   const content = el('main', { class: 'content', id: 'content' });
@@ -66,7 +71,9 @@ function buildShell() {
 
   clear(root);
   root.append(wrap, backdrop, mobileNav);
-  shell = { sidebar, backdrop, title, topActions, content, bellBadge, mobileNav, progress };
+  shell = { sidebar, backdrop, title, topActions, content, bellBadge, mobileNav, progress,
+    searchInput };
+  import('./views/search.js').then((m) => m.attachSearch(searchInput));
   renderSidebar();
   renderMobileNav();
   store.on(() => { renderSidebar(); renderMobileNav(); updateBell(); });
@@ -336,12 +343,13 @@ async function boot() {
   updateBell();
   window.addEventListener('hashchange', renderRoute);
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'n' || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (!['n', '/'].includes(event.key) || event.metaKey || event.ctrlKey || event.altKey) return;
     const active = document.activeElement;
     if (active && active.matches('input, textarea, select, [contenteditable]')) return;
     if (document.querySelector('.overlay')) return;
     event.preventDefault();
-    openQuickAddDialog();
+    if (event.key === '/') shell.searchInput?.focus();
+    else openQuickAddDialog();
   });
   await renderRoute();
   primeNotifiedCursor();

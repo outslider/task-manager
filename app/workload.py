@@ -2,6 +2,9 @@
 
 見積工数は任意項目なので、入っていない場合でも件数ベースで負荷が見えるように
 両方を返す。期間が入っていないタスクは「未計画」として別に数える。
+
+祝日や会社の休業日は holidays（date の集合）で渡す。渡した週は使える時間が
+減るので、GW や年末年始の週が過負荷に見えるようになる。
 """
 from datetime import date, timedelta
 
@@ -12,11 +15,12 @@ def week_start(day):
     return day - timedelta(days=day.weekday())
 
 
-def business_days(start, end):
-    """土日を除いた日付の一覧。両端を含む。"""
+def business_days(start, end, holidays=None):
+    """土日と休日を除いた日付の一覧。両端を含む。"""
+    holidays = holidays or ()
     days, cursor = [], start
     while cursor <= end:
-        if cursor.weekday() < 5:
+        if cursor.weekday() < 5 and cursor not in holidays:
             days.append(cursor)
         cursor += timedelta(days=1)
     return days or [start]
@@ -28,30 +32,43 @@ def _as_date(value):
     return date.fromisoformat(str(value)[:10])
 
 
-def task_span(task):
+def task_span(task, holidays=None):
     """タスクが占める営業日。期間が決まっていなければ None。"""
     start = _as_date(task.get("start_date"))
     due = _as_date(task.get("due_date"))
     if start and due and due >= start:
-        return business_days(start, due)
+        return business_days(start, due, holidays)
     if due:
-        return business_days(due, due)
+        return business_days(due, due, holidays)
     if start:
-        return business_days(start, start)
+        return business_days(start, start, holidays)
     return None
 
 
-def build(tasks, users, weeks=8, base=None, hours_per_day=8.0):
+def build(tasks, users, weeks=8, base=None, hours_per_day=8.0, holidays=None):
     """週ごと・担当者ごとの負荷表を組み立てる。
 
     tasks: id/assignee_id/status/start_date/due_date/estimate_hours/actual_hours/title
     users: [{"id","name","avatar_color"}]
     """
     base = base or date.today()
+    holidays = set(holidays or ())
     first = week_start(base)
     buckets = [first + timedelta(weeks=i) for i in range(weeks)]
     index = {day: i for i, day in enumerate(buckets)}
     capacity = round(hours_per_day * 5, 1)
+
+    def week_capacity(monday):
+        """その週に働ける時間。祝日や休業日のぶんだけ減る。"""
+        off = sum(1 for i in range(5) if monday + timedelta(days=i) in holidays)
+        return round(hours_per_day * (5 - off), 1)
+
+    capacities = [week_capacity(day) for day in buckets]
+    holidays_by_week = [
+        [(day + timedelta(days=i)).isoformat()
+         for i in range(5) if day + timedelta(days=i) in holidays]
+        for day in buckets
+    ]
 
     rows = {}
     unscheduled = {}
@@ -77,7 +94,7 @@ def build(tasks, users, weeks=8, base=None, hours_per_day=8.0):
         if estimate is None:
             missing_estimate += 1
 
-        span = task_span(task)
+        span = task_span(task, holidays)
         if span is None:
             entry = unscheduled.setdefault(assignee, {"user_id": assignee, "count": 0,
                                                       "hours": 0.0})
@@ -107,9 +124,12 @@ def build(tasks, users, weeks=8, base=None, hours_per_day=8.0):
     result = []
     for user_id, row in rows.items():
         person = by_id.get(user_id)
-        for cell in row["cells"]:
+        for i, cell in enumerate(row["cells"]):
             cell["hours"] = round(cell["hours"], 1)
-            cell["ratio"] = round(cell["hours"] / capacity, 2) if capacity else 0
+            week_hours = capacities[i]
+            cell["capacity"] = week_hours
+            cell["ratio"] = round(cell["hours"] / week_hours, 2) if week_hours else (
+                2.0 if cell["hours"] else 0)
             cell["tasks"] = cell["tasks"][:12]
         result.append({
             **row,
@@ -124,7 +144,9 @@ def build(tasks, users, weeks=8, base=None, hours_per_day=8.0):
     return {
         "weeks": [{"start": day.isoformat(),
                    "label": "{}/{}".format(day.month, day.day),
-                   "is_current": day == first} for day in buckets],
+                   "capacity": capacities[i],
+                   "holidays": holidays_by_week[i],
+                   "is_current": day == first} for i, day in enumerate(buckets)],
         "rows": result,
         "unscheduled": [
             {**entry, "hours": round(entry["hours"], 1),

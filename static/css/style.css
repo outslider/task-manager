@@ -948,3 +948,63 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .member-strip.clickable { cursor: pointer; }
 .member-strip.clickable:hover { opacity: .8; }
+
+/* ---------- まとめて編集 ---------- */
+.bulk-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+  background: var(--accent-soft);
+}
+.bulk-count { font-weight: 650; white-space: nowrap; }
+.bulk-bar .select, .bulk-bar .input { max-width: 170px; }
+.task-pick { width: 15px; height: 15px; accent-color: var(--accent); flex: 0 0 auto; margin-right: 2px; }
+
+/* ---------- 取り込みダイアログ ---------- */
+.import-map { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
+.import-map-col { min-width: 165px; flex: 0 0 auto; }
+.import-map-head {
+  font-weight: 650; font-size: 12px; margin-bottom: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.import-map-col .hint { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.table-scroll { overflow-x: auto; max-height: 260px; overflow-y: auto; }
+.warn-box.ok { border-color: var(--ok); background: var(--ok-soft, transparent); }
+.wl-holiday { display: block; font-size: 9.5px; color: var(--danger); font-weight: 600; }
+.holiday-list { display: flex; flex-direction: column; gap: 2px; max-height: 200px; overflow-y: auto; }
+.holiday-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 8px; border-radius: 8px; font-size: 13px;
+}
+.holiday-row:hover { background: var(--surface-2); }
+
+/* ---------- 横断検索 ---------- */
+.topbar-search { max-width: 230px; height: 34px; }
+@media (max-width: 900px) { .topbar-search { display: none; } }
+.search-panel {
+  position: fixed; z-index: 200; width: min(430px, calc(100vw - 16px));
+  max-height: min(70vh, 560px); overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: var(--shadow-lg); padding: 6px;
+}
+.search-group {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 8px 10px 4px; font-size: 12px; font-weight: 700; color: var(--text-muted);
+}
+.search-group .hint { margin: 0; }
+.search-hit {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left;
+  padding: 7px 10px; border: 1px solid transparent; border-radius: 9px;
+  background: none; color: inherit; font: inherit; cursor: pointer;
+}
+.search-hit:hover, .search-hit:focus { background: var(--accent-soft); outline: none; }
+.search-hit:focus { border-color: var(--accent); }
+.search-title {
+  display: flex; align-items: center; gap: 6px; font-weight: 550;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.search-sub {
+  display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.search-sub .overdue { color: var(--danger); font-weight: 600; }
+.search-empty { padding: 18px; text-align: center; color: var(--text-muted); font-size: 13px; }

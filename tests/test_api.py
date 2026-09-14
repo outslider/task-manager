@@ -2005,3 +2005,334 @@ class TestTodos(ApiTestCase):
 
     def test_todos_need_a_login(self):
         self.assertEqual(Client(self.base).get("/api/todos")[0], 401)
+
+
+class TestTaskImport(ApiTestCase):
+    """表計算ソフトからの一括取り込み。"""
+
+    def rows(self, *items):
+        return [dict(zip(("title", "assignee", "start_date", "due_date", "category",
+                          "priority", "status", "progress", "estimate_hours",
+                          "description", "is_milestone", "level", "parent"),
+                         list(row) + [""] * (13 - len(row))))
+                for row in items]
+
+    def import_rows(self, project_id, rows, dry_run=False):
+        return self.admin.post("/api/projects/{}/tasks/import".format(project_id),
+                               {"rows": rows, "dry_run": dry_run})
+
+    def tasks_of(self, project_id):
+        return self.admin.get("/api/projects/{}/tasks".format(project_id))[1]["tasks"]
+
+    def test_basic_import(self):
+        project = self.make_project()
+        status, data = self.import_rows(project["id"], self.rows(
+            ("要件定義", "", "2026/10/1", "2026/10/15", "設計・企画", "高", "進行中", "40", "20"),
+            ("設計", "", "2026-10-16", "2026-10-31")))
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["created"], 2)
+        tasks = {t["title"]: t for t in self.tasks_of(project["id"])}
+        first = tasks["要件定義"]
+        self.assertEqual(first["start_date"], "2026-10-01")
+        self.assertEqual(first["due_date"], "2026-10-15")
+        self.assertEqual(first["category"], "design")
+        self.assertEqual(first["priority"], 2)
+        self.assertEqual(first["status"], "doing")
+        self.assertEqual(first["progress"], 40)
+        self.assertEqual(float(first["estimate_hours"]), 20.0)
+
+    def test_indentation_becomes_a_hierarchy(self):
+        project = self.make_project()
+        self.import_rows(project["id"], self.rows(
+            ("親A",), ("  子A1",), ("    孫A",), ("  子A2",), ("親B",)))
+        tasks = {t["title"]: t for t in self.tasks_of(project["id"])}
+        self.assertIsNone(tasks["親A"]["parent_id"])
+        self.assertEqual(tasks["子A1"]["parent_id"], tasks["親A"]["id"])
+        self.assertEqual(tasks["孫A"]["parent_id"], tasks["子A1"]["id"])
+        self.assertEqual(tasks["子A2"]["parent_id"], tasks["親A"]["id"])
+        self.assertIsNone(tasks["親B"]["parent_id"])
+
+    def test_a_level_column_wins_over_indentation(self):
+        project = self.make_project()
+        rows = [{"title": "親", "level": "1"}, {"title": "子", "level": "2"}]
+        self.import_rows(project["id"], rows)
+        tasks = {t["title"]: t for t in self.tasks_of(project["id"])}
+        self.assertEqual(tasks["子"]["parent_id"], tasks["親"]["id"])
+
+    def test_a_parent_column_links_by_name(self):
+        project = self.make_project()
+        rows = [{"title": "土台"}, {"title": "上物", "parent": "土台"}]
+        self.import_rows(project["id"], rows)
+        tasks = {t["title"]: t for t in self.tasks_of(project["id"])}
+        self.assertEqual(tasks["上物"]["parent_id"], tasks["土台"]["id"])
+
+    def test_various_date_formats(self):
+        project = self.make_project()
+        self.import_rows(project["id"], [
+            {"title": "スラッシュ", "due_date": "2026/12/24"},
+            {"title": "和風", "due_date": "2026年12月25日"},
+            {"title": "曜日つき", "due_date": "2026/12/26(土)"},
+            {"title": "ハイフン", "due_date": "2026-12-27"},
+            {"title": "読めない", "due_date": "来週あたり"},
+        ])
+        tasks = {t["title"]: t for t in self.tasks_of(project["id"])}
+        self.assertEqual(tasks["スラッシュ"]["due_date"], "2026-12-24")
+        self.assertEqual(tasks["和風"]["due_date"], "2026-12-25")
+        self.assertEqual(tasks["曜日つき"]["due_date"], "2026-12-26")
+        self.assertEqual(tasks["ハイフン"]["due_date"], "2026-12-27")
+        self.assertIsNone(tasks["読めない"]["due_date"], "読めない日付は空にする")
+
+    def test_assignee_is_matched_by_name_or_email(self):
+        project = self.make_project()
+        user, email = self.make_user("担当 太郎")
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "editor"}]})
+        self.import_rows(project["id"], [
+            {"title": "氏名で", "assignee": "担当 太郎"},
+            {"title": "メールで", "assignee": email},
+        ])
+        tasks = {t["title"]: t for t in self.tasks_of(project["id"])}
+        self.assertEqual(tasks["氏名で"]["assignee_id"], user["id"])
+        self.assertEqual(tasks["メールで"]["assignee_id"], user["id"])
+
+    def test_an_unknown_assignee_is_reported_but_does_not_stop_the_import(self):
+        project = self.make_project()
+        status, data = self.import_rows(project["id"], [
+            {"title": "宛先不明", "assignee": "居ない 人"}])
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["created"], 1)
+        self.assertEqual(len(data["problems"]), 1)
+        self.assertIn("メンバーに見つかりません", data["problems"][0]["message"])
+        self.assertIsNone(self.tasks_of(project["id"])[0]["assignee_id"])
+
+    def test_dry_run_changes_nothing(self):
+        project = self.make_project()
+        status, data = self.import_rows(project["id"],
+                                        [{"title": "下見"}], dry_run=True)
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["would_create"], 1)
+        self.assertEqual(self.tasks_of(project["id"]), [])
+
+    def test_rows_without_a_title_are_reported(self):
+        project = self.make_project()
+        data = self.import_rows(project["id"],
+                                [{"title": "  "}, {"title": "ちゃんとある"}], dry_run=True)[1]
+        self.assertEqual(data["would_create"], 1)
+        self.assertIn("タスク名が空", data["problems"][0]["message"])
+
+    def test_import_needs_edit_rights(self):
+        project = self.make_project()
+        user, email = self.make_user("閲覧のみ")
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "viewer"}]})
+        client = self.client_for(email)
+        self.assertEqual(client.post(
+            "/api/projects/{}/tasks/import".format(project["id"]),
+            {"rows": [{"title": "だめ"}]})[0], 403)
+
+    def test_too_many_rows_are_refused(self):
+        project = self.make_project()
+        status, _ = self.import_rows(project["id"],
+                                     [{"title": "x"} for _ in range(1001)])
+        self.assertEqual(status, 400)
+
+    def test_import_keeps_the_existing_order(self):
+        project = self.make_project()
+        self.make_task(project["id"], "先にあったタスク")
+        self.import_rows(project["id"], [{"title": "あとから1"}, {"title": "あとから2"}])
+        titles = [t["title"] for t in sorted(self.tasks_of(project["id"]),
+                                             key=lambda t: t["sort_order"])]
+        self.assertEqual(titles, ["先にあったタスク", "あとから1", "あとから2"])
+
+
+class TestBulkEdit(ApiTestCase):
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project()
+        self.tasks = [self.make_task(self.project["id"], name,
+                                     start_date="2026-10-0{}".format(i + 1),
+                                     due_date="2026-10-0{}".format(i + 2))
+                      for i, name in enumerate(["甲", "乙", "丙"])]
+        self.ids = [t["id"] for t in self.tasks]
+
+    def reload(self):
+        return {t["title"]: t for t in
+                self.admin.get("/api/projects/{}/tasks".format(self.project["id"]))[1]["tasks"]}
+
+    def test_status_is_applied_to_all(self):
+        status, data = self.admin.post("/api/tasks/bulk",
+                                       {"ids": self.ids[:2], "status": "doing"})
+        self.assertEqual(status, 200, data)
+        rows = self.reload()
+        self.assertEqual(rows["甲"]["status"], "doing")
+        self.assertEqual(rows["乙"]["status"], "doing")
+        self.assertEqual(rows["丙"]["status"], "todo", "選んでいないタスクは変えない")
+
+    def test_marking_done_also_fills_the_progress(self):
+        self.admin.post("/api/tasks/bulk", {"ids": self.ids, "status": "done"})
+        for row in self.reload().values():
+            self.assertEqual(row["progress"], 100)
+
+    def test_shifting_the_schedule(self):
+        status, data = self.admin.post("/api/tasks/bulk",
+                                       {"ids": self.ids, "action": "shift", "days": 7})
+        self.assertEqual(status, 200, data)
+        rows = self.reload()
+        self.assertEqual(rows["甲"]["start_date"], "2026-10-08")
+        self.assertEqual(rows["甲"]["due_date"], "2026-10-09")
+        self.admin.post("/api/tasks/bulk", {"ids": self.ids, "action": "shift", "days": -7})
+        self.assertEqual(self.reload()["甲"]["start_date"], "2026-10-01")
+
+    def test_shifting_needs_a_number_of_days(self):
+        self.assertEqual(self.admin.post(
+            "/api/tasks/bulk", {"ids": self.ids, "action": "shift", "days": 0})[0], 400)
+
+    def test_bulk_delete_takes_the_children_too(self):
+        child = self.make_task(self.project["id"], "子", parent_id=self.ids[0])
+        status, data = self.admin.post("/api/tasks/bulk",
+                                       {"ids": [self.ids[0]], "action": "delete"})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["deleted"], 2)
+        self.assertEqual(self.admin.get("/api/tasks/{}".format(child["id"]))[0], 404)
+
+    def test_the_change_is_recorded_on_every_task(self):
+        self.admin.post("/api/tasks/bulk", {"ids": self.ids, "priority": 3})
+        detail = self.admin.get("/api/tasks/{}".format(self.ids[0]))[1]
+        history = [c["body"] for c in detail["comments"] if c["kind"] == "system"]
+        self.assertTrue(any("一括更新" in h and "最重要" in h for h in history))
+
+    def test_a_non_member_cannot_be_assigned_in_bulk(self):
+        outsider, _ = self.make_user("よその人")
+        status, data = self.admin.post("/api/tasks/bulk",
+                                       {"ids": self.ids, "assignee_id": outsider["id"]})
+        self.assertEqual(status, 400, data)
+        self.assertIn("メンバー", data["error"])
+
+    def test_tasks_from_a_project_i_cannot_edit_are_refused(self):
+        user, email = self.make_user("編集不可")
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "viewer"}]})
+        client = self.client_for(email)
+        self.assertEqual(client.post("/api/tasks/bulk",
+                                     {"ids": self.ids, "status": "done"})[0], 403)
+
+    def test_unknown_ids_are_refused(self):
+        self.assertEqual(self.admin.post("/api/tasks/bulk",
+                                         {"ids": [999999], "status": "done"})[0], 404)
+
+    def test_an_empty_selection_is_refused(self):
+        self.assertEqual(self.admin.post("/api/tasks/bulk", {"ids": []})[0], 400)
+
+
+class TestSearch(ApiTestCase):
+    """横断検索。見えないプロジェクトのものは絶対に返さない。"""
+
+    def setUp(self):
+        super().setUp()
+        self.mine = self.make_project("見えるPJ")
+        self.secret = self.make_project("見えないPJ")
+        self.task = self.make_task(self.mine["id"], "移行手順書の作成")
+        self.hidden = self.make_task(self.secret["id"], "移行手順書の裏レシピ")
+        self.issue = self.make_issue(self.mine["id"], "移行時の停止時間が読めない")
+        self.admin.post("/api/tasks/{}/comments".format(self.task["id"]),
+                        {"body": "移行のリハーサルは来週やります"})
+        self.user, self.email = self.make_user("検索する人")
+        self.admin.put("/api/projects/{}/members".format(self.mine["id"]), {
+            "members": [{"principal_type": "user", "principal_id": self.user["id"],
+                         "role": "editor"}]})
+        self.client = self.client_for(self.email)
+
+    def find(self, client, keyword):
+        data = client.get("/api/search?q={}".format(urllib.parse.quote(keyword)))[1]
+        return {g["kind"]: [i.get("title") or i.get("name") or i.get("excerpt")
+                            for i in g["items"]]
+                for g in data["groups"]}
+
+    def test_finds_tasks_issues_and_comments(self):
+        found = self.find(self.admin, "移行")
+        self.assertIn("移行手順書の作成", found.get("task", []))
+        self.assertIn("移行時の停止時間が読めない", found.get("issue", []))
+        self.assertTrue(found.get("comment"), "コメントも検索できること")
+
+    def test_projects_are_searchable(self):
+        self.assertIn("見えるPJ", self.find(self.admin, "見えるPJ").get("project", []))
+
+    def test_results_are_scoped_to_my_projects(self):
+        found = self.find(self.client, "移行")
+        self.assertIn("移行手順書の作成", found.get("task", []))
+        self.assertNotIn("移行手順書の裏レシピ", found.get("task", []))
+        self.assertNotIn("見えないPJ", found.get("project", []))
+
+    def test_comments_from_invisible_projects_are_excluded(self):
+        self.admin.post("/api/tasks/{}/comments".format(self.hidden["id"]),
+                        {"body": "これは部外者に見えてはいけない移行メモ"})
+        excerpts = " ".join(self.find(self.client, "移行").get("comment", []))
+        self.assertNotIn("部外者に見えてはいけない", excerpts)
+
+    def test_my_todos_are_searchable_but_only_mine(self):
+        self.admin.post("/api/todos", {"title": "移行の書類を出す"})
+        self.assertIn("移行の書類を出す", self.find(self.admin, "移行").get("todo", []))
+        self.assertNotIn("移行の書類を出す", self.find(self.client, "移行").get("todo", []))
+
+    def test_a_short_keyword_returns_nothing(self):
+        data = self.admin.get("/api/search?q=%E7%A7%BB")[1]
+        self.assertEqual(data["total"], 0)
+        self.assertIn("2 文字以上", data["message"])
+
+    def test_search_needs_a_login(self):
+        self.assertEqual(Client(self.base).get("/api/search?q=test")[0], 401)
+
+    def test_comment_excerpt_shows_the_surrounding_text(self):
+        found = self.admin.get("/api/search?q=%E3%83%AA%E3%83%8F%E3%83%BC%E3%82%B5%E3%83%AB")[1]
+        comments = next((g for g in found["groups"] if g["kind"] == "comment"), None)
+        self.assertIsNotNone(comments)
+        self.assertIn("リハーサル", comments["items"][0]["excerpt"])
+
+
+class TestHolidayApi(ApiTestCase):
+    def test_national_holidays_are_returned(self):
+        data = self.admin.get("/api/holidays?from=2026-04-25&to=2026-05-10")[1]
+        days = {h["day"]: h["name"] for h in data["holidays"]}
+        self.assertEqual(days.get("2026-04-29"), "昭和の日")
+        self.assertEqual(days.get("2026-05-06"), "振替休日")
+        self.assertTrue(data["enabled"])
+
+    def test_company_holidays_can_be_added_and_removed(self):
+        status, _ = self.admin.post("/api/holidays",
+                                    {"day": "2026-12-30", "name": "年末年始休業"})
+        self.assertEqual(status, 201)
+        data = self.admin.get("/api/holidays?from=2026-12-01&to=2026-12-31")[1]
+        entry = next(h for h in data["holidays"] if h["day"] == "2026-12-30")
+        self.assertEqual(entry["name"], "年末年始休業")
+        self.assertTrue(entry["company"])
+        self.admin.delete("/api/holidays/2026-12-30")
+        data = self.admin.get("/api/holidays?from=2026-12-01&to=2026-12-31")[1]
+        self.assertNotIn("2026-12-30", [h["day"] for h in data["holidays"]])
+
+    def test_only_admins_can_change_company_holidays(self):
+        _, email = self.make_user("一般利用者")
+        client = self.client_for(email)
+        self.assertEqual(client.post("/api/holidays", {"day": "2026-12-31"})[0], 403)
+        self.assertEqual(client.delete("/api/holidays/2026-12-31")[0], 403)
+        self.assertEqual(client.get("/api/holidays")[0], 200, "閲覧は誰でもできる")
+
+    def test_the_feature_can_be_switched_off(self):
+        db.set_setting("use_holidays", "0")
+        try:
+            data = self.admin.get("/api/holidays?from=2026-04-25&to=2026-05-10")[1]
+            self.assertFalse(data["enabled"])
+            self.assertEqual(data["holidays"], [])
+        finally:
+            db.set_setting("use_holidays", "1")
+
+    def test_workload_capacity_drops_on_holiday_weeks(self):
+        data = self.admin.get("/api/workload?weeks=8")[1]
+        weeks = {w["start"]: w for w in data["weeks"]}
+        self.assertTrue(any(w["capacity"] < 40 for w in weeks.values())
+                        or all(not w["holidays"] for w in weeks.values()),
+                        "祝日のある週は使える時間が減ること")
+        for week in weeks.values():
+            self.assertEqual(week["capacity"], 8.0 * (5 - len(week["holidays"])))

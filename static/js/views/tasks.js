@@ -84,11 +84,21 @@ export async function render(container, route) {
   const state = {
     query: '', assignee: '', status: 'open', category: '', attention: false,
     selectedId: null,
+    picked: new Set(),      // 一括編集で選んでいるタスク
   };
 
   const canEdit = store.canEdit(project);
 
   setHeader(project.name, [
+    canEdit
+      ? el('button', {
+        class: 'btn', title: 'Excel や CSV からまとめて登録します',
+        onClick: async () => {
+          const { openImportDialog } = await import('./importTasks.js');
+          if (await openImportDialog(project)) reload();
+        },
+      }, '⬆ 取り込み')
+      : null,
     canEdit
       ? el('button', { class: 'btn btn-primary', onClick: () => addTask(null) }, '＋ タスク')
       : null,
@@ -159,6 +169,8 @@ export async function render(container, route) {
       },
     }, '⤡ 折りたたみ'));
 
+  const bulkBar = el('div', { class: 'bulk-bar', hidden: true });
+
   const head = el('div', { class: 'tree-head' },
     el('div', { text: 'タスク' }), el('div', { text: 'カテゴリ' }), el('div', { text: '担当' }),
     el('div', { text: '状態' }), el('div', { text: '期限' }), el('div', { text: '進捗' }),
@@ -172,7 +184,7 @@ export async function render(container, route) {
       el('div', { class: 'grow' },
         el('div', { class: 'page-sub' }, project.description || '　'), summary)),
     alerts,
-    el('div', { class: 'card' }, toolbar, head,
+    el('div', { class: 'card' }, toolbar, bulkBar, head,
       el('div', { class: 'card-body tight' }, rowsHost)));
 
   const reload = async () => {
@@ -226,6 +238,7 @@ export async function render(container, route) {
       rows.forEach((row) => rowsHost.append(taskRow(row)));
     }
     drawAlerts();
+    drawBulkBar();
     const done = data.tasks.filter((t) => t.status === 'done').length;
     const overdue = data.tasks.filter((t) => dueClass(t.due_date, t.status) === 'overdue').length;
     fill(summary, 
@@ -278,6 +291,16 @@ export async function render(container, route) {
       },
     },
     el('div', { class: 'task-main', style: { paddingLeft: `${depth * 16}px` } },
+      canEdit ? el('input', {
+        type: 'checkbox', class: 'task-pick', title: 'まとめて編集する対象に選ぶ',
+        checked: state.picked.has(task.id) ? true : null,
+        onClick: (event) => event.stopPropagation(),
+        onChange: (event) => {
+          if (event.target.checked) state.picked.add(task.id);
+          else state.picked.delete(task.id);
+          drawBulkBar();
+        },
+      }) : null,
       canEdit ? el('span', {
         class: 'drag-handle',
         title: 'ドラッグで並べ替え。行の中央に重ねるとその子タスクになります',
@@ -495,6 +518,110 @@ export async function render(container, route) {
         onClick: () => { menu.remove(); action(); },
       }, label);
     }
+  }
+
+  /* ---- まとめて編集 ---- */
+
+  function drawBulkBar() {
+    // 画面から消えたタスクの選択は残さない
+    const visible = new Set(data.tasks.map((t) => t.id));
+    for (const id of [...state.picked]) if (!visible.has(id)) state.picked.delete(id);
+
+    const count = state.picked.size;
+    bulkBar.hidden = count === 0;
+    if (!count) { fill(bulkBar); return; }
+
+    const picked = () => [...state.picked];
+    const run = async (payload, label) => {
+      try {
+        const result = await api.post('/api/tasks/bulk', { ids: picked(), ...payload });
+        toast(`${result.updated ?? result.deleted} 件を${label}`, 'ok');
+        state.picked.clear();
+        await reload();
+      } catch (error) { toast(error.message, 'error'); }
+    };
+
+    const assignee = el('select', { class: 'select' },
+      el('option', { value: '' }, '担当者を変更…'),
+      el('option', { value: 'none' }, '未割当にする'),
+      ...(data.members || store.users).map((u) => el('option', { value: String(u.id) }, u.name)));
+    assignee.addEventListener('change', () => {
+      if (!assignee.value) return;
+      const value = assignee.value === 'none' ? null : Number(assignee.value);
+      assignee.value = '';
+      run({ assignee_id: value }, '更新しました');
+    });
+
+    const status = el('select', { class: 'select' },
+      el('option', { value: '' }, '状態を変更…'),
+      ...Object.entries(STATUS_LABEL).map(([value, label]) => el('option', { value }, label)));
+    status.addEventListener('change', () => {
+      if (!status.value) return;
+      const value = status.value;
+      status.value = '';
+      run({ status: value }, '更新しました');
+    });
+
+    const category = el('select', { class: 'select' },
+      el('option', { value: '' }, 'カテゴリを変更…'),
+      el('option', { value: 'none' }, '未分類にする'),
+      ...CATEGORIES.map((c) => el('option', { value: c.value }, `${c.icon} ${c.label}`)));
+    category.addEventListener('change', () => {
+      if (!category.value) return;
+      const value = category.value === 'none' ? '' : category.value;
+      category.value = '';
+      run({ category: value }, '更新しました');
+    });
+
+    const dueInput = el('input', { class: 'input', type: 'date', style: { maxWidth: '150px' } });
+    dueInput.addEventListener('change', () => {
+      if (!dueInput.value) return;
+      run({ due_date: dueInput.value }, '期限をそろえました');
+    });
+
+    fill(bulkBar,
+      el('span', { class: 'bulk-count', text: `${count} 件を選択中` }),
+      assignee, status, category,
+      el('span', { class: 'label', style: { margin: 0 }, text: '期限' }), dueInput,
+      el('button', {
+        class: 'btn btn-sm', title: '選んだタスクの開始日と期限をまとめてずらします',
+        onClick: () => shiftDialog(run),
+      }, '📆 日程をずらす'),
+      el('div', { class: 'spacer' }),
+      el('button', {
+        class: 'btn btn-sm btn-danger',
+        onClick: async () => {
+          const { confirmDialog } = await import('../util.js');
+          if (!await confirmDialog(
+            `選択した ${count} 件を削除します。\n子タスクもまとめて削除され、元に戻せません。`,
+            { danger: true, okLabel: '削除する' })) return;
+          run({ action: 'delete' }, '削除しました');
+        },
+      }, '🗑 削除'),
+      el('button', {
+        class: 'btn btn-sm',
+        onClick: () => { state.picked.clear(); draw(); },
+      }, '選択を解除'));
+  }
+
+  async function shiftDialog(run) {
+    const { openModal } = await import('../util.js');
+    const days = el('input', { class: 'input', type: 'number', value: '7', step: '1' });
+    const chosen = await openModal({
+      title: '日程をまとめてずらす',
+      build: () => el('div', {},
+        el('p', { class: 'page-sub',
+          text: '選んだタスクの開始日と期限を、同じ日数だけ前後に動かします。'
+            + 'マイナスを入れると前倒しです。日付が入っていないタスクはそのままです。' }),
+        el('div', { class: 'field' }, el('label', { text: 'ずらす日数' }), days)),
+      footer: (close) => [
+        el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
+        el('button', {
+          class: 'btn btn-primary', onClick: () => close(Number(days.value)),
+        }, 'ずらす'),
+      ],
+    });
+    if (chosen) run({ action: 'shift', days: chosen }, 'ずらしました');
   }
 
   /** 階層を組み替えるメニュー項目。タッチ端末ではここが唯一の手段になる。 */
