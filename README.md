@@ -664,6 +664,53 @@ cookie_path = /tasks
 > `base_path` が設定されていれば受け取ったパスからそれを取り除いてから通常どおり処理し、
 > 末尾スラッシュなしの `/tasks` は `/tasks/` にリダイレクトします。
 
+### 更新する（git pull）
+
+**スキーマの差分を手で当てる必要はありません。** アプリは起動のたびに
+
+1. `CREATE TABLE IF NOT EXISTS`（新しいテーブルを作る）
+2. 列・索引・外部キー・NULL 許可の移行（`app/db.py` の `MIGRATIONS` ほか）
+3. 新しい設定項目の既定値の投入
+
+を流します。いずれも**何度実行しても同じ結果**になるようにしてあるので、手順は
+「バックアップ → pull → 再起動 → 確認」だけです。
+
+```bash
+# 1. 念のため先にバックアップ（数秒で終わります）
+sudo systemctl start task-manager-backup.service
+
+# 2. 取得して再起動
+cd /opt/task-manager && git pull
+sudo systemctl restart task-manager
+
+# 3. スキーマが最新か確かめる
+.venv/bin/python server.py --check-schema
+```
+
+`--check-schema` は**データベースを一切変更せず**、足りないテーブル・列・索引・
+設定項目だけを表示します。問題がなければ終了コード 0、差分があれば 1 を返すので
+監視にも使えます。
+
+```
+接続先: tmapp@127.0.0.1:3306/task_manager
+テーブル数: 19
+スキーマは最新です。
+```
+
+何が適用されたかはログに残ります。
+
+```bash
+journalctl -u task-manager -n 30 | grep -i スキーマ
+# → tm.db: スキーマを移行しました (1 件): projects.slack_events
+```
+
+> **開発者向け**: 既存テーブルに列を足したときは、`DDL` だけでなく
+> `MIGRATIONS`（索引なら `MIGRATION_INDEXES`、外部キーなら `MIGRATION_FKS`、
+> NOT NULL を外したなら `NULLABLE_COLUMNS`）にも必ず追記してください。
+> 書き忘れると**新規インストールでは動くのに既存環境だけ壊れます**。
+> `tests/test_migration.py` が初版のスキーマ（`tests/fixtures/schema-v1.sql`）と
+> 突き合わせて、この追記漏れを検出します。
+
 ### 別のサーバーへデプロイする
 
 移すものは **アプリ本体・データベース・添付ファイル（`data/uploads/`）** の3つだけです。
@@ -932,7 +979,9 @@ task_manager/
 │   ├── test_graph.py      依存グラフ解析の単体テスト（18 ケース）
 │   ├── test_nlp.py        自然言語解析・分解の単体テスト（31 ケース）
 │   ├── test_workload.py   負荷集計・繰り返し規則の単体テスト（20 ケース）
-│   └── test_holidays.py   祝日計算の単体テスト（13 ケース）
+│   ├── test_holidays.py   祝日計算の単体テスト（13 ケース）
+│   ├── test_migration.py  既存DBを最新へ移行できるかの検証（10 ケース）
+│   └── fixtures/          初版のスキーマ（移行検証の基準）
 ├── docs/schema.sql        スキーマ定義（参照用）
 ├── deploy/
 │   ├── install.sh         導入・更新スクリプト

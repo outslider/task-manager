@@ -3,6 +3,7 @@
 One connection per thread, reconnecting automatically.  All SQL in the code
 base uses %s placeholders.
 """
+import logging
 import threading
 from datetime import date, datetime
 from decimal import Decimal
@@ -300,6 +301,8 @@ DDL = [
     """,
 ]
 
+log = logging.getLogger("tm.db")
+
 DEFAULT_SETTINGS = {
     "smtp_host": "",
     "smtp_port": "587",
@@ -568,16 +571,38 @@ def run_migrations():
 
 
 def init_db():
-    """Create the schema (idempotent), migrate it and seed default settings."""
+    """Create the schema (idempotent), migrate it and seed default settings.
+
+    起動のたびに走る。既存のデータベースはここで最新のスキーマへ追いつくので、
+    更新の手順は「git pull して再起動」だけで済む。
+    """
     conn = connect()
+    before = set(existing_tables())
     with conn.cursor() as cur:
         for stmt in DDL:
             cur.execute(stmt)
     conn.commit()
-    run_migrations()
+    created = sorted(set(existing_tables()) - before)
+    applied = run_migrations()
+    added_settings = []
     for k, v in DEFAULT_SETTINGS.items():
         if query_one("SELECT 1 FROM settings WHERE setting_key=%s", (k,)) is None:
             set_setting(k, v)
+            added_settings.append(k)
+    # 何が変わったのかは残しておく（黙って直っていると、後で追えなくなる）
+    if created:
+        log.info("テーブルを作成しました: %s", ", ".join(created))
+    if applied:
+        log.info("スキーマを移行しました (%d 件): %s", len(applied), ", ".join(applied))
+    if added_settings:
+        log.info("設定の既定値を追加しました: %s", ", ".join(added_settings))
+    return {"created_tables": created, "migrations": applied, "settings": added_settings}
+
+
+def existing_tables():
+    return [r["t"] for r in query(
+        "SELECT TABLE_NAME AS t FROM information_schema.TABLES "
+        "WHERE TABLE_SCHEMA = DATABASE()")]
 
 
 def server_version():

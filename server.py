@@ -11,6 +11,7 @@ import logging
 import mimetypes
 import os
 import posixpath
+import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
@@ -345,11 +346,63 @@ def seed_demo():
     print("デモデータを投入しました（パスワードはいずれも password123）。")
 
 
+def check_schema():
+    """データベースが最新かどうかを、何も変えずに調べる。
+
+    更新のあと「移行がちゃんと当たったか」を確かめるためのもの。
+    差分があれば 1 を返すので、そのまま監視にも使える。
+    """
+    try:
+        db.connect()
+    except Exception as exc:
+        print("データベースに接続できません: {}".format(exc), file=sys.stderr)
+        return 1
+
+    missing_tables, missing_columns, missing_keys = [], [], []
+    tables = set(db.existing_tables())
+    for statement in db.DDL:
+        match = re.search(r"CREATE TABLE IF NOT EXISTS (\w+)", statement)
+        if match and match.group(1) not in tables:
+            missing_tables.append(match.group(1))
+    for table, column, _ddl in db.MIGRATIONS:
+        if table in tables and not db.column_exists(table, column):
+            missing_columns.append("{}.{}".format(table, column))
+    for table, index, _ddl in db.MIGRATION_INDEXES:
+        if table in tables and not db.index_exists(table, index):
+            missing_keys.append("{}:{}".format(table, index))
+    for table, name, _ddl in db.MIGRATION_FKS:
+        if table in tables and not db.constraint_exists(table, name):
+            missing_keys.append("{}:{}".format(table, name))
+    missing_settings = [k for k in db.DEFAULT_SETTINGS
+                        if db.query_one("SELECT 1 FROM settings WHERE setting_key=%s",
+                                        (k,)) is None]
+
+    print("接続先: {user}@{host}:{port}/{database}".format(**DB))
+    print("テーブル数: {}".format(len(tables)))
+    problems = missing_tables or missing_columns or missing_keys or missing_settings
+    if not problems:
+        print("スキーマは最新です。")
+        return 0
+    if missing_tables:
+        print("足りないテーブル : {}".format(", ".join(missing_tables)))
+    if missing_columns:
+        print("足りない列       : {}".format(", ".join(missing_columns)))
+    if missing_keys:
+        print("足りない索引/制約: {}".format(", ".join(missing_keys)))
+    if missing_settings:
+        print("足りない設定既定値: {}".format(", ".join(missing_settings)))
+    print("\nアプリを再起動すると自動で適用されます"
+          "（systemctl restart task-manager）。")
+    return 1
+
+
 def main():
     parser = argparse.ArgumentParser(description="タスク管理システム")
     parser.add_argument("--host", default=SERVER["host"])
     parser.add_argument("--port", type=int, default=SERVER["port"])
     parser.add_argument("--init-db", action="store_true", help="スキーマ作成のみ行う")
+    parser.add_argument("--check-schema", action="store_true",
+                        help="データベースが最新のスキーマかどうかだけ調べる（変更しない）")
     parser.add_argument("--seed-demo", action="store_true", help="デモデータを投入する")
     parser.add_argument("--run-digest", action="store_true", help="日次サマリを一度送って終了")
     parser.add_argument("--no-scheduler", action="store_true", help="日次バッチを起動しない")
@@ -358,8 +411,14 @@ def main():
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s: %(message)s")
 
+    if args.check_schema:
+        return check_schema()
+
     try:
-        db.init_db()
+        changes = db.init_db()
+        if changes["created_tables"] or changes["migrations"]:
+            print("スキーマを更新しました: 新規テーブル {} / 列などの移行 {} 件".format(
+                len(changes["created_tables"]), len(changes["migrations"])))
     except Exception as exc:
         print("データベースに接続できません: {}".format(exc), file=sys.stderr)
         print("config.ini または TM_DB_* 環境変数を確認してください。", file=sys.stderr)
