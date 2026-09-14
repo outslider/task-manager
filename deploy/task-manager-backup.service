@@ -1,0 +1,15 @@
+[Unit]
+Description=Task Manager のバックアップ（日次7世代・週次4世代）
+After=mariadb.service
+Wants=mariadb.service
+
+[Service]
+Type=oneshot
+User=claude
+Group=claude
+Environment=BACKUP_DIR=/var/backups/task-manager
+Environment=APP_DIR=/home/claude/task_manager
+ExecStart=/home/claude/task_manager/deploy/backup-rotate.sh
+# 取得中に本体を止める必要はありません（mysqldump --single-transaction のため）
+Nice=10
+IOSchedulingClass=idle

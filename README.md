@@ -778,11 +778,51 @@ sudo systemctl restart task-manager    # 再起動
 /opt/task-manager/deploy/backup.sh /backup      # /backup/task-manager-YYYYmmdd-HHMM.tar.gz
 ```
 
-cron で日次実行し、古いものを削除する例:
+### 定期バックアップ（systemd タイマー）
 
-```cron
-30 2 * * * /opt/task-manager/deploy/backup.sh /backup >> /var/log/task-manager-backup.log 2>&1
-0  3 * * * find /backup -name 'task-manager-*.tar.gz' -mtime +30 -delete
+`deploy/backup-rotate.sh` が取得と世代管理をまとめて行います。既定は
+**日次 7 世代 + 週次 4 世代**、保存先は `/var/backups/task-manager` です。
+
+```bash
+sudo cp deploy/task-manager-backup.service deploy/task-manager-backup.timer /etc/systemd/system/
+sudo mkdir -p /var/backups/task-manager && sudo chown "$USER" /var/backups/task-manager
+sudo systemctl daemon-reload
+sudo systemctl enable --now task-manager-backup.timer
+```
+
+- 毎日 02:30 に実行します（`RandomizedDelaySec=10m`）。**サーバーが止まっていて
+  実行できなかった分は、起動後に取り返します**（`Persistent=true`）
+- 取得後に `tar tzf` で展開できるか、`database.sql` が入っているかを確かめ、
+  おかしければ 0 以外で終了します（`systemctl status` に失敗が残ります）
+- 週次は日曜のアーカイブを `weekly/` に**ハードリンク**するだけなので容量は増えません
+- 保存先・世代数は環境変数で変えられます
+
+```bash
+BACKUP_DIR=/data/backup KEEP_DAILY=14 KEEP_WEEKLY=8 ./deploy/backup-rotate.sh
+```
+
+状態の確認:
+
+```bash
+systemctl list-timers task-manager-backup.timer
+journalctl -u task-manager-backup -n 20
+ls -la /var/backups/task-manager/daily /var/backups/task-manager/weekly
+```
+
+> 保存先が同じディスクだと、ディスク障害には無力です。定期的に別マシンや
+> オブジェクトストレージへ持ち出すことをおすすめします。
+
+### 復元できるか確かめる
+
+バックアップは「取れていること」ではなく「戻せること」が大事なので、ときどき
+別のデータベースへ流し込んで確認してください。
+
+```bash
+tar xzf /var/backups/task-manager/daily/task-manager-YYYYmmdd-HHMM.tar.gz
+sudo mysql -e "CREATE DATABASE tm_restore_check CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+sudo mysql tm_restore_check < task-manager-*/database.sql
+sudo mysql tm_restore_check -e "SELECT COUNT(*) FROM tasks;"
+sudo mysql -e "DROP DATABASE tm_restore_check;"
 ```
 
 個別に取る場合:
@@ -837,6 +877,7 @@ task_manager/
 ├── deploy/
 │   ├── install.sh         導入・更新スクリプト
 │   ├── backup.sh          DB と添付のバックアップ／移行用
+│   ├── backup-rotate.sh   定期バックアップ（日次7世代・週次4世代）
 │   └── *.example          systemd / nginx の設定例
 └── data/uploads/          添付ファイルの実体
 ```

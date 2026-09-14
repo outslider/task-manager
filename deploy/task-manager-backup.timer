@@ -1,0 +1,11 @@
+[Unit]
+Description=Task Manager のバックアップを毎日実行
+
+[Timer]
+OnCalendar=*-*-* 02:30
+# サーバーが止まっていて実行できなかった場合は、起動後に取り返す
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target
