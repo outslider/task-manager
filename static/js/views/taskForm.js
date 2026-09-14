@@ -19,7 +19,9 @@ export function dependencyPicker(candidates, selectedIds = []) {
  * @param {object} options project, task (edit), parentId, tasks, deps
  * @returns {Promise<object|null>} the saved task
  */
-export function openTaskForm({ project, task = null, parentId = null, tasks = [], deps = [] }) {
+export function openTaskForm({
+  project, task = null, parentId = null, tasks = [], deps = [], members = null,
+}) {
   const editing = Boolean(task);
   const fields = {};
 
@@ -44,7 +46,7 @@ export function openTaskForm({ project, task = null, parentId = null, tasks = []
       });
       fields.description.value = task?.description || '';
       fields.category = categorySelect(task?.category || '');
-      fields.assignee = userSelect(task?.assignee_id);
+      fields.assignee = userSelect(task?.assignee_id, { people: members });
       fields.status = el('select', { class: 'select' },
         ...Object.entries(STATUS_LABEL).map(([value, label]) =>
           option(value, label, (task?.status || 'todo') === value)));

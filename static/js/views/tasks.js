@@ -455,7 +455,8 @@ export async function render(container, route) {
     menuItem('＋ 子タスクを追加', () => addTask(task.id)),
     ...hierarchyMenuItems(task, menuItem),
     menuItem('✏️ 編集', async () => {
-      const saved = await openTaskForm({ project, task, tasks: data.tasks, deps: data.deps });
+      const saved = await openTaskForm({
+        project, task, tasks: data.tasks, deps: data.deps, members: data.members });
       if (saved) reload();
     }),
     menuItem('🔁 定例にする', async () => {
@@ -532,7 +533,8 @@ export async function render(container, route) {
   }
 
   async function addTask(parentId) {
-    const saved = await openTaskForm({ project, parentId, tasks: data.tasks, deps: data.deps });
+    const saved = await openTaskForm({
+      project, parentId, tasks: data.tasks, deps: data.deps, members: data.members });
     if (saved) {
       if (parentId) collapsed.delete(parentId);
       reload();

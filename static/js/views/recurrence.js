@@ -101,7 +101,8 @@ export async function openRecurrenceManager(project, { onChange } = {}) {
 /**
  * 規則の作成・編集。task を渡すと、そのタスクの内容を初期値にする。
  */
-export function openRecurrenceForm(project, rule = null, task = null) {
+export async function openRecurrenceForm(project, rule = null, task = null) {
+  const members = await store.members(project.id);
   const source = rule || task || {};
   const state = {
     freq: rule?.freq || 'weekly',
@@ -147,7 +148,7 @@ export function openRecurrenceForm(project, rule = null, task = null) {
       f.description = el('textarea', { class: 'textarea', rows: 2 });
       f.description.value = source.description || '';
       f.category = categorySelect(source.category || '');
-      f.assignee = userSelect(source.assignee_id);
+      f.assignee = userSelect(source.assignee_id, { people: members });
       f.priority = el('select', { class: 'select' },
         ...[[3, '最重要'], [2, '高'], [1, '中'], [0, '低']].map(([value, label]) =>
           option(value, label, String(source.priority ?? 1) === String(value))));

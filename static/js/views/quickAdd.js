@@ -61,7 +61,7 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
       const data = await api.post('/api/nl/parse', { text, project_id: projectId });
       state.draft = data.draft;
       state.warning = data.warning;
-      drawPreview();
+      await drawPreview();
     } catch (error) {
       fill(status, el('div', { class: 'warn-box danger', text: error.message }));
       preview.hidden = true;
@@ -70,7 +70,7 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
     syncButtons();
   }
 
-  function drawPreview() {
+  async function drawPreview() {
     const draft = state.draft;
     const editable = store.projects.filter((p) => !p.archived && store.canEdit(p));
 
@@ -78,7 +78,15 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
       ...editable.map((p) => option(p.id, p.name, draft.project_id === p.id)));
     fields.title = el('input', { class: 'input', value: draft.title });
     fields.category = categorySelect(draft.category);
-    fields.assignee = userSelect(draft.assignee_id);
+    fields.assignee = userSelect(draft.assignee_id,
+      { people: await store.members(Number(fields.project.value) || draft.project_id) });
+    // プロジェクトを変えたら、担当者の候補もそのプロジェクトのメンバーに入れ替える
+    fields.project.addEventListener('change', async () => {
+      const people = await store.members(Number(fields.project.value));
+      const keep = fields.assignee.value;
+      fill(fields.assignee, option('', '未割当', !keep),
+        ...people.map((u) => option(u.id, u.name, String(u.id) === keep)));
+    });
     fields.priority = el('select', { class: 'select' },
       ...Object.entries(IMPORTANCE_LABEL).reverse().map(([value, label]) =>
         option(value, label, String(draft.priority) === value)));

@@ -111,6 +111,35 @@ export async function render(container) {
             el('span', { class: `badge ${issue.status}`,
               text: ISSUE_STATUS_LABEL[issue.status] })))))));
     }
+    if ((data.todos || []).length) {
+      listHost.append(el('div', { class: 'card daily-bucket' },
+        el('div', { class: 'card-head' },
+          el('h2', {}, '📝 マイ ToDo'),
+          el('a', { class: 'btn btn-sm', href: '#/todos' }, '一覧を開く')),
+        el('div', { class: 'card-body tight' },
+          ...data.todos.map((todo) => el('div', { class: 'daily-item' },
+            el('label', { class: 'check' },
+              el('input', {
+                type: 'checkbox',
+                onChange: async (event) => {
+                  event.target.disabled = true;
+                  try {
+                    await api.patch(`/api/todos/${todo.id}`, { is_done: true });
+                    reload();
+                  } catch (error) {
+                    toast(error.message, 'error');
+                    event.target.disabled = false;
+                  }
+                },
+              }),
+              el('span', { text: todo.title })),
+            todo.due_date
+              ? el('span', {
+                class: `badge ${dueClass(todo.due_date, 'todo') || ''}`.trim(),
+                text: `期限 ${formatDate(todo.due_date)}`,
+              })
+              : null)))));
+    }
     if (data.recently_done.length) {
       listHost.append(el('div', { class: 'card daily-bucket' },
         el('div', { class: 'card-head' }, el('h2', {}, '✅ 直近7日で完了したタスク')),

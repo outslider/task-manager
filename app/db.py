@@ -267,6 +267,22 @@ DDL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
+    CREATE TABLE IF NOT EXISTS todos (
+        id         INT AUTO_INCREMENT PRIMARY KEY,
+        user_id    INT NOT NULL,
+        title      VARCHAR(300) NOT NULL,
+        note       VARCHAR(1000) NOT NULL DEFAULT '',
+        due_date   DATE NULL,
+        is_done    TINYINT(1) NOT NULL DEFAULT 0,
+        sort_order INT NOT NULL DEFAULT 0,
+        done_at    DATETIME NULL,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL,
+        KEY idx_todos_user (user_id, is_done, sort_order),
+        CONSTRAINT fk_todo_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
     CREATE TABLE IF NOT EXISTS notification_mutes (
         user_id    INT NOT NULL,
         project_id INT NOT NULL,

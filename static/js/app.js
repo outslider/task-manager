@@ -10,6 +10,7 @@ const root = document.getElementById('app');
 const NAV = [
   { id: 'daily', icon: '☀️', label: '今日の確認', hash: '#/daily' },
   { id: 'mytasks', icon: '✓', label: 'マイタスク', hash: '#/mytasks' },
+  { id: 'todos', icon: '📝', label: 'マイ ToDo', hash: '#/todos' },
   { id: 'projects', icon: '📁', label: 'プロジェクト', hash: '#/projects' },
   { id: 'issues', icon: '📌', label: '課題', hash: '#/issues' },
   { id: 'notifications', icon: '🔔', label: '通知', hash: '#/notifications', badge: true },
@@ -132,7 +133,7 @@ function renderSidebar() {
   );
 }
 
-const MOBILE_NAV = ['daily', 'mytasks', 'projects', 'issues'];
+const MOBILE_NAV = ['daily', 'mytasks', 'todos', 'projects'];
 
 function renderMobileNav() {
   const active = location.hash || '#/daily';
@@ -194,6 +195,7 @@ const ROUTES = [
   [/^#?\/?$/, () => ({ view: 'daily' })],
   [/^#\/daily$/, () => ({ view: 'daily' })],
   [/^#\/mytasks$/, () => ({ view: 'mytasks' })],
+  [/^#\/todos$/, () => ({ view: 'todos' })],
   [/^#\/projects$/, () => ({ view: 'projects' })],
   [/^#\/p\/(\d+)\/tasks$/, (m) => ({ view: 'tasks', projectId: Number(m[1]) })],
   [/^#\/p\/(\d+)\/gantt$/, (m) => ({ view: 'gantt', projectId: Number(m[1]) })],
@@ -224,6 +226,7 @@ function parseRoute() {
 const LOADERS = {
   daily: () => import('./views/daily.js'),
   mytasks: () => import('./views/mytasks.js'),
+  todos: () => import('./views/todos.js'),
   projects: () => import('./views/projects.js'),
   tasks: () => import('./views/tasks.js'),
   gantt: () => import('./views/gantt.js'),

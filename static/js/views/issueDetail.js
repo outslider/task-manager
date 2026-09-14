@@ -61,6 +61,7 @@ async function renderDetail(instance, issueId, onChange) {
           const saved = await openIssueForm({
             project: { id: issue.project_id }, issue,
             tasks: projectTasks.tasks, linkedTaskIds: tasks.map((t) => t.id),
+            members: projectTasks.members,
           });
           if (saved) reload();
         },
@@ -98,7 +99,7 @@ async function renderDetail(instance, issueId, onChange) {
   categoryInput.disabled = !canEdit;
   categoryInput.addEventListener('change', (e) => patch({ category: e.target.value }));
 
-  const ownerSelect = userSelect(issue.owner_id);
+  const ownerSelect = userSelect(issue.owner_id, { people: data.members });
   ownerSelect.disabled = !canEdit;
   ownerSelect.addEventListener('change', (e) =>
     patch({ owner_id: e.target.value ? Number(e.target.value) : null }));

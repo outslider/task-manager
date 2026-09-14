@@ -6,10 +6,22 @@ export function option(value, label, selected) {
   return el('option', { value, selected: selected ? true : null }, label);
 }
 
-export function userSelect(value, { includeEmpty = true, emptyLabel = '未割当', id } = {}) {
+/**
+ * 担当者を選ぶセレクト。
+ * @param {Array} [options.people] 候補を絞る場合の一覧（プロジェクトのメンバーなど）。
+ *   今の担当者が候補外でも、選択が消えないように残す。
+ */
+export function userSelect(value, {
+  includeEmpty = true, emptyLabel = '未割当', id, people = null,
+} = {}) {
+  let candidates = people || store.users;
+  if (value && !candidates.some((u) => Number(u.id) === Number(value))) {
+    const current = store.users.find((u) => Number(u.id) === Number(value));
+    if (current) candidates = [...candidates, current];
+  }
   return el('select', { class: 'select', id },
     includeEmpty ? option('', emptyLabel, !value) : null,
-    ...store.users.map((u) => option(u.id, u.name, Number(value) === u.id)));
+    ...candidates.map((u) => option(u.id, u.name, Number(value) === u.id)));
 }
 
 export function categorySelect(value, { id } = {}) {

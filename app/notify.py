@@ -9,7 +9,7 @@ from email.utils import formataddr
 
 import pymysql
 
-from . import db, prefs, slack
+from . import auth, db, prefs, slack
 
 log = logging.getLogger("tm.notify")
 
@@ -118,6 +118,16 @@ def _send_and_close(to_address, subject, body, to_name):
 # due-date scanning
 # --------------------------------------------------------------------------
 
+def visible_project_ids(user_id):
+    """その人が閲覧できるプロジェクト。担当でも参加していなければ見えない。"""
+    user = db.query_one("SELECT id, role FROM users WHERE id=%s", (user_id,))
+    return set(auth.visible_project_ids(user)) if user else set()
+
+
+def visible_to(user_id, project_id):
+    return project_id in visible_project_ids(user_id)
+
+
 def task_url(task_id):
     base = db.get_setting("app_base_url", "").rstrip("/")
     return "{}/#/task/{}".format(base, task_id) if base else ""
@@ -145,6 +155,9 @@ def scan_due_tasks():
         (OPEN_STATUSES, horizon),
     )
     for t in rows:
+        # 参加していないプロジェクトのタスクは、開いても 403 になるので通知しない
+        if not visible_to(t["assignee_id"], t["project_id"]):
+            continue
         due = t["due_date"]
         overdue = due < today
         days = (today - due).days if overdue else (due - today).days
@@ -181,6 +194,7 @@ def daily_summary_for(user_id, exclude_muted=False):
     today = db.today()
     soon_days = int(db.get_setting("due_soon_days", "3") or 3)
     muted = set(prefs.muted_projects(user_id)) if exclude_muted else set()
+    visible = visible_project_ids(user_id)
     rows = db.query(
         """
         SELECT t.id, t.title, t.status, t.progress, t.due_date, t.priority,
@@ -193,6 +207,8 @@ def daily_summary_for(user_id, exclude_muted=False):
     )
     buckets = {"overdue": [], "today": [], "soon": [], "later": [], "no_due": []}
     for t in rows:
+        if t["project_id"] not in visible:
+            continue
         if exclude_muted and (t["project_id"] in muted or not t["notify_enabled"]):
             continue
         due = t["due_date"]

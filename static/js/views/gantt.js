@@ -15,6 +15,7 @@ const SCALES = {
   day: { key: 'day', label: '日', dayWidth: 26, minorEvery: 1 },
   week: { key: 'week', label: '週', dayWidth: 9, minorEvery: 7 },
   month: { key: 'month', label: '月', dayWidth: 3.6, minorEvery: 30 },
+  quarter: { key: 'quarter', label: '四半期', dayWidth: 1.3, minorEvery: 90 },
 };
 
 const IMPORTANCE_COLOR = { 0: '#98a2b3', 1: '#3b6ef5', 2: '#e8912b', 3: '#e14c4c' };
@@ -40,6 +41,8 @@ const COLOR_MODES = {
 };
 
 const ROW_H = 26;
+const ROADMAP_ROW_H = 40;      // ロードマップは帯を太くして、名前をバーの中に書く
+const MILESTONE_LANE_H = 44;   // 節目を並べる、チャート上部の専用レーン
 const HEADER_H = 46;
 const PAD = 14;
 const NAME_W_DEFAULT = 250;
@@ -62,6 +65,7 @@ export async function render(container, route) {
   const compact = window.innerWidth < 760;
   const canEdit = store.canEdit(project);
   const state = {
+    mode: localStorage.getItem('tm.gantt.mode') || 'gantt',   // gantt | roadmap
     scale: localStorage.getItem('tm.gantt.scale') || (compact ? 'week' : 'day'),
     colorBy: localStorage.getItem('tm.gantt.colorBy') || 'status',
     showDone: true,
@@ -71,11 +75,30 @@ export async function render(container, route) {
     toISO: null,
   };
 
-  setHeader(`${project.name} — ガント`, [
-    el('button', { class: 'btn btn-primary', onClick: () => exportDialog() }, '⬇ エクスポート'),
-  ]);
+  const syncHeader = () => setHeader(
+    `${project.name} — ${state.mode === 'roadmap' ? 'ロードマップ' : 'ガント'}`,
+    [el('button', { class: 'btn btn-primary', onClick: () => exportDialog() }, '⬇ エクスポート')]);
+  syncHeader();
 
   const scroll = el('div', { class: 'gantt-scroll' });
+
+  const modeSeg = el('div', { class: 'seg' },
+    ...[
+      { key: 'gantt', label: 'ガント', hint: '1タスク1行の詳細表示' },
+      { key: 'roadmap', label: 'ロードマップ', hint: 'フェーズ単位でまとめ、節目を上に並べます' },
+    ].map((mode) => el('button', {
+      class: state.mode === mode.key ? 'active' : '',
+      title: mode.hint,
+      onClick: (event) => {
+        state.mode = mode.key;
+        localStorage.setItem('tm.gantt.mode', mode.key);
+        [...event.currentTarget.parentNode.children].forEach((b) => b.classList.remove('active'));
+        event.currentTarget.classList.add('active');
+        applyModeDefaults();
+        syncHeader();
+        draw();
+      },
+    }, mode.label)));
 
   const scaleSeg = el('div', { class: 'seg' },
     ...Object.values(SCALES).map((scale) => el('button', {
@@ -109,7 +132,8 @@ export async function render(container, route) {
   });
 
   const toolbar = el('div', { class: 'toolbar' },
-    el('span', { class: 'label', style: { margin: 0 }, text: '表示単位' }), scaleSeg,
+    el('span', { class: 'label', style: { margin: 0 }, text: '表示' }), modeSeg,
+    el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '表示単位' }), scaleSeg,
     el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '色分け' }), colorSelect,
     el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '期間' }), fromInput, '〜', toInput,
     el('label', { class: 'check' },
@@ -123,10 +147,7 @@ export async function render(container, route) {
         onChange: (event) => { state.onlyMine = event.target.checked; draw(); },
       }), el('span', { text: '自分の担当のみ' })),
     el('div', { class: 'spacer' }),
-    canEdit
-      ? el('span', { class: 'hint', style: { marginRight: '4px' } },
-        'バーをドラッグで移動、端をドラッグで期間変更')
-      : null,
+    el('span', { class: 'hint', style: { marginRight: '4px' }, id: 'gantt-hint' }),
     el('button', {
       class: 'btn btn-sm',
       onClick: () => { state.fromISO = null; state.toISO = null; syncRangeInputs(); draw(); },
@@ -135,6 +156,12 @@ export async function render(container, route) {
   const legend = el('div', { class: 'gantt-legend' });
 
   function drawLegend() {
+    const hint = document.getElementById('gantt-hint');
+    if (hint) {
+      hint.textContent = state.mode === 'roadmap'
+        ? 'フェーズ（トップレベルのタスク）と節目だけを並べています'
+        : (canEdit ? 'バーをドラッグで移動、端をドラッグで期間変更' : '');
+    }
     fill(legend,
       ...COLOR_MODES[state.colorBy].legend().map((entry) => el('span', { class: 'legend-item' },
         el('span', { class: 'legend-swatch', style: { background: entry.color } }),
@@ -156,13 +183,25 @@ export async function render(container, route) {
     el('div', { class: 'gantt-wrap' },
       projectTabs(projectId, 'gantt'), toolbar, scroll, legend));
 
-  function visibleRows() {
-    const tasks = data.tasks.filter((task) => {
+  function filteredTasks() {
+    return data.tasks.filter((task) => {
       if (!state.showDone && task.status === 'done') return false;
       if (state.onlyMine && task.assignee_id !== store.user.id) return false;
       return true;
     });
+  }
+
+  function visibleRows() {
+    const tasks = filteredTasks();
     const { children } = buildTree(tasks);
+    if (state.mode === 'roadmap') {
+      // フェーズ＝トップレベルのタスク。節目は上のレーンにまとめるので行にはしない
+      return (children.get(null) || [])
+        .filter((task) => !task.is_milestone)
+        .map((task) => ({
+          task, depth: 0, hasChildren: (children.get(task.id) || []).length > 0,
+        }));
+    }
     const rows = [];
     const walk = (parentId, depth) => {
       for (const task of children.get(parentId) || []) {
@@ -174,10 +213,36 @@ export async function render(container, route) {
     return rows;
   }
 
-  function dateRange(rows) {
+  /** ロードマップの上部レーンに並べる節目。階層のどこにあっても拾う。 */
+  function milestoneRows() {
+    if (state.mode !== 'roadmap') return [];
+    return filteredTasks().filter((task) => task.is_milestone && task.due_date);
+  }
+
+  /** ロードマップは全体像を一目で見るための図なので、画面幅いっぱいに広げる。 */
+  function roadmapScale(range) {
+    const totalDays = Math.max(1, daysBetween(range.from, range.to) + 1);
+    const available = (scroll.clientWidth || 900) - state.nameWidth - PAD * 2 - 4;
+    return {
+      ...SCALES.quarter,
+      dayWidth: Math.min(12, Math.max(SCALES.quarter.dayWidth, available / totalDays)),
+    };
+  }
+
+  /** モードを切り替えたときに、見やすい表示単位へ寄せる。 */
+  function applyModeDefaults() {
+    const wanted = state.mode === 'roadmap' ? 'quarter' : (compact ? 'week' : 'day');
+    if (state.scale === wanted) return;
+    state.scale = wanted;
+    localStorage.setItem('tm.gantt.scale', wanted);
+    [...scaleSeg.children].forEach((button) =>
+      button.classList.toggle('active', button.textContent === SCALES[wanted].label));
+  }
+
+  function dateRange(rows, milestones = []) {
     let min = null;
     let max = null;
-    for (const { task } of rows) {
+    for (const { task } of [...rows, ...milestones.map((task) => ({ task }))]) {
       for (const value of [task.rollup_start || task.start_date, task.rollup_due || task.due_date]) {
         const date = parseDate(value);
         if (!date) continue;
@@ -208,13 +273,17 @@ export async function render(container, route) {
 
   function draw() {
     const rows = visibleRows();
-    const range = dateRange(rows);
+    const milestones = milestoneRows();
+    const range = dateRange(rows, milestones);
+    const roadmap = state.mode === 'roadmap';
     syncRangeInputs(range);
     const svg = buildGanttSvg({
-      rows, range, scale: SCALES[state.scale], deps: data.deps,
+      rows, range, scale: roadmap ? roadmapScale(range) : SCALES[state.scale], deps: data.deps,
       conflicts: data.conflicts, colorBy: state.colorBy,
       title: project.name, nameWidth: state.nameWidth, interactive: true,
-      editable: canEdit, onEdit: applyEdit, scroller: scroll,
+      // ロードマップは見せるための図なので、ドラッグ編集はガント表示だけにする
+      editable: canEdit && !roadmap, onEdit: applyEdit, scroller: scroll,
+      roadmap, milestones,
     });
     drawLegend();
     fill(scroll, svg);
@@ -244,7 +313,8 @@ export async function render(container, route) {
 
   async function exportDialog() {
     const rows = visibleRows();
-    const range = dateRange(rows);
+    const milestones = milestoneRows();
+    const range = dateRange(rows, milestones);
     const preset = { value: 'ppt169' };
     const includeTitle = { value: true };
     const format = { value: 'png' };
@@ -278,7 +348,10 @@ export async function render(container, route) {
           el('div', { class: 'hint',
             text: '期間の長さに合わせて目盛りの幅を自動調整し、余白の少ない図にします。' })),
         el('div', { class: 'hint',
-          text: `対象タスク ${rows.length} 件 / 期間 ${toISO(range.from)} 〜 ${toISO(range.to)}` })),
+          text: state.mode === 'roadmap'
+            ? `ロードマップ表示: フェーズ ${rows.length} 件 / 節目 ${milestones.length} 件`
+              + ` / 期間 ${toISO(range.from)} 〜 ${toISO(range.to)}`
+            : `対象タスク ${rows.length} 件 / 期間 ${toISO(range.from)} 〜 ${toISO(range.to)}` })),
       footer: (close) => [
         el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
         el('button', {
@@ -302,8 +375,9 @@ export async function render(container, route) {
 
   async function runExport(rows, range, presetId, format, withTitle, fitWidth = true) {
     const target = EXPORT_PRESETS.find((p) => p.id === presetId);
+    const roadmap = state.mode === 'roadmap';
     const scale = (fitWidth && target.w)
-      ? fitScale(range, target.w, NAME_W_DEFAULT)
+      ? fitScale(range, target.w, NAME_W_DEFAULT, roadmap)
       : SCALES[state.scale];
     const svg = buildGanttSvg({
       rows, range, scale, deps: data.deps,
@@ -313,9 +387,11 @@ export async function render(container, route) {
         ? `${toISO(range.from)} 〜 ${toISO(range.to)}　作成日: ${toISO(today())}`
         : null,
       nameWidth: NAME_W_DEFAULT, forExport: true,
+      roadmap, milestones: milestoneRows(),
     });
     const stamp = toISO(today());
-    const base = `${project.name}_ガント_${stamp}`.replace(/[\\/:*?"<>|]/g, '_');
+    const kind = roadmap ? 'ロードマップ' : 'ガント';
+    const base = `${project.name}_${kind}_${stamp}`.replace(/[\\/:*?"<>|]/g, '_');
     if (format === 'svg') {
       const text = new XMLSerializer().serializeToString(svg);
       downloadBlob(new Blob([`<?xml version="1.0" encoding="UTF-8"?>\n${text}`],
@@ -344,6 +420,7 @@ export function buildGanttSvg({
   rows, range, scale, deps = [], conflicts = [], colorBy = 'status',
   title = null, subtitle = null, editable = false, onEdit = null, scroller = null,
   nameWidth = NAME_W_DEFAULT, interactive = false, forExport = false,
+  roadmap = false, milestones = [],
 }) {
   const colorOf = (COLOR_MODES[colorBy] || COLOR_MODES.status).color;
   const conflictEdges = new Set(
@@ -352,8 +429,10 @@ export function buildGanttSvg({
   const dayWidth = scale.dayWidth;
   const chartW = Math.round(totalDays * dayWidth);
   const titleH = title ? 42 : 0;
+  const rowH = roadmap ? ROADMAP_ROW_H : ROW_H;
+  const laneH = roadmap && milestones.length ? MILESTONE_LANE_H : 0;
   const width = nameWidth + chartW + PAD * 2;
-  const height = titleH + HEADER_H + rows.length * ROW_H + PAD * 2 + 6;
+  const height = titleH + HEADER_H + laneH + rows.length * rowH + PAD * 2 + 6;
 
   const colors = forExport
     ? {
@@ -386,7 +465,7 @@ export function buildGanttSvg({
   }
 
   const originX = PAD + nameWidth;
-  const originY = titleH + PAD + HEADER_H;
+  const originY = titleH + PAD + HEADER_H + laneH;
   const x = (date) => originX + daysBetween(range.from, date) * dayWidth;
 
   /* ---- background bands and weekend shading ---- */
@@ -394,7 +473,7 @@ export function buildGanttSvg({
   rows.forEach((row, index) => {
     if (index % 2 === 1) {
       bands.appendChild(svgEl('rect', {
-        x: PAD, y: originY + index * ROW_H, width: nameWidth + chartW, height: ROW_H,
+        x: PAD, y: originY + index * rowH, width: nameWidth + chartW, height: rowH,
         fill: colors.band,
       }));
     }
@@ -402,7 +481,7 @@ export function buildGanttSvg({
   svg.appendChild(bands);
 
   const gridG = svgEl('g');
-  const bodyH = rows.length * ROW_H;
+  const bodyH = rows.length * rowH;
   if (scale.key === 'day') {
     for (let i = 0; i < totalDays; i += 1) {
       const date = addDays(range.from, i);
@@ -422,23 +501,52 @@ export function buildGanttSvg({
     x: PAD, y: headerY, width: nameWidth + chartW, height: HEADER_H,
     fill: forExport ? '#f7f8fa' : 'var(--surface-2)',
   }));
-  let cursor = new Date(range.from.getTime());
-  while (cursor <= range.to) {
-    const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
-    const nextMonth = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
-    const startX = Math.max(originX, x(monthStart));
-    const endX = Math.min(originX + chartW, x(nextMonth));
-    if (endX - startX > 26) {
-      headerG.appendChild(svgEl('text', {
-        x: startX + 5, y: headerY + 16, 'font-size': 11.5, 'font-weight': 700, fill: colors.text,
-        text: `${cursor.getFullYear()}年${cursor.getMonth() + 1}月`,
+  if (scale.key === 'quarter') {
+    // ロードマップ向け: 上段に年、下段に四半期
+    let cursor = new Date(range.from.getFullYear(), Math.floor(range.from.getMonth() / 3) * 3, 1);
+    while (cursor <= range.to) {
+      const next = new Date(cursor.getFullYear(), cursor.getMonth() + 3, 1);
+      const startX = Math.max(originX, x(cursor));
+      const endX = Math.min(originX + chartW, x(next));
+      const quarter = Math.floor(cursor.getMonth() / 3) + 1;
+      const yearStart = quarter === 1 || startX === originX;
+      if (endX - startX > 22) {
+        headerG.appendChild(svgEl('text', {
+          x: (startX + endX) / 2, y: headerY + 33, 'font-size': 12, 'font-weight': 700,
+          'text-anchor': 'middle', fill: colors.text, text: `Q${quarter}`,
+        }));
+      }
+      if (yearStart && endX - startX > 16) {
+        headerG.appendChild(svgEl('text', {
+          x: startX + 5, y: headerY + 15, 'font-size': 12, 'font-weight': 700,
+          fill: colors.text, text: `${cursor.getFullYear()}年`,
+        }));
+      }
+      headerG.appendChild(svgEl('line', {
+        x1: startX, y1: headerY, x2: startX, y2: originY + bodyH,
+        stroke: colors.gridStrong, 'stroke-width': quarter === 1 ? 1.6 : 1,
       }));
+      cursor = next;
     }
-    headerG.appendChild(svgEl('line', {
-      x1: startX, y1: headerY, x2: startX, y2: originY + bodyH,
-      stroke: colors.gridStrong, 'stroke-width': 1,
-    }));
-    cursor = nextMonth;
+  } else {
+    let cursor = new Date(range.from.getTime());
+    while (cursor <= range.to) {
+      const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+      const nextMonth = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+      const startX = Math.max(originX, x(monthStart));
+      const endX = Math.min(originX + chartW, x(nextMonth));
+      if (endX - startX > 26) {
+        headerG.appendChild(svgEl('text', {
+          x: startX + 5, y: headerY + 16, 'font-size': 11.5, 'font-weight': 700, fill: colors.text,
+          text: `${cursor.getFullYear()}年${cursor.getMonth() + 1}月`,
+        }));
+      }
+      headerG.appendChild(svgEl('line', {
+        x1: startX, y1: headerY, x2: startX, y2: originY + bodyH,
+        stroke: colors.gridStrong, 'stroke-width': 1,
+      }));
+      cursor = nextMonth;
+    }
   }
 
   if (scale.key === 'day') {
@@ -472,13 +580,23 @@ export function buildGanttSvg({
         stroke: colors.grid, 'stroke-width': 1,
       }));
     }
-  } else {
+  } else if (scale.key === 'month') {
     for (let i = 0; i < totalDays; i += 1) {
       const date = addDays(range.from, i);
       if (date.getDate() !== 1) continue;
       gridG.appendChild(svgEl('line', {
         x1: originX + i * dayWidth, y1: originY, x2: originX + i * dayWidth, y2: originY + bodyH,
         stroke: colors.grid, 'stroke-width': 1,
+      }));
+    }
+  } else {
+    // 四半期: 月の区切りは薄く、四半期の区切りはヘッダー側で濃く引く
+    for (let i = 0; i < totalDays; i += 1) {
+      const date = addDays(range.from, i);
+      if (date.getDate() !== 1 || date.getMonth() % 3 === 0) continue;
+      gridG.appendChild(svgEl('line', {
+        x1: originX + i * dayWidth, y1: originY, x2: originX + i * dayWidth, y2: originY + bodyH,
+        stroke: colors.grid, 'stroke-width': 1, opacity: 0.6,
       }));
     }
   }
@@ -495,7 +613,7 @@ export function buildGanttSvg({
   const barGeom = new Map();
 
   namesG.appendChild(svgEl('rect', {
-    x: PAD - 1, y: titleH + PAD, width: nameWidth + 1, height: HEADER_H + rows.length * ROW_H,
+    x: PAD - 1, y: titleH + PAD, width: nameWidth + 1, height: HEADER_H + laneH + rows.length * rowH,
     fill: colors.bg,
   }));
   namesG.appendChild(svgEl('rect', {
@@ -504,28 +622,34 @@ export function buildGanttSvg({
   }));
   namesG.appendChild(svgEl('text', {
     x: PAD + 8, y: titleH + PAD + 28, 'font-size': 12, 'font-weight': 600, fill: colors.muted,
-    text: 'タスク',
+    text: roadmap ? 'フェーズ' : 'タスク',
   }));
+  if (laneH) {
+    namesG.appendChild(svgEl('text', {
+      x: PAD + 8, y: titleH + PAD + HEADER_H + laneH / 2 + 4, 'font-size': 11,
+      'font-weight': 600, fill: colors.muted, text: '◆ マイルストーン',
+    }));
+  }
   rows.forEach((row, index) => {
     if (index % 2 === 1) {
       namesG.appendChild(svgEl('rect', {
-        x: PAD, y: originY + index * ROW_H, width: nameWidth, height: ROW_H, fill: colors.band,
+        x: PAD, y: originY + index * rowH, width: nameWidth, height: rowH, fill: colors.band,
       }));
     }
     namesG.appendChild(svgEl('line', {
-      x1: PAD, y1: originY + (index + 1) * ROW_H, x2: PAD + nameWidth,
-      y2: originY + (index + 1) * ROW_H, stroke: colors.grid, 'stroke-width': 1,
+      x1: PAD, y1: originY + (index + 1) * rowH, x2: PAD + nameWidth,
+      y2: originY + (index + 1) * rowH, stroke: colors.grid, 'stroke-width': 1,
     }));
   });
 
   rows.forEach((row, index) => {
     const { task, depth, hasChildren } = row;
-    const y = originY + index * ROW_H;
+    const y = originY + index * rowH;
     const indent = PAD + 8 + depth * 12;
     const label = truncate(task.title, Math.max(4, Math.floor((nameWidth - (indent - PAD) - 34) / 12)));
 
     const nameNode = svgEl('text', {
-      x: indent, y: y + ROW_H / 2 + 4, 'font-size': 11.5,
+      x: indent, y: y + rowH / 2 + 4, 'font-size': 11.5,
       'font-weight': hasChildren ? 650 : 400,
       fill: task.status === 'done' ? colors.muted : colors.text,
       text: (task.is_milestone ? '◆ ' : '')
@@ -539,7 +663,7 @@ export function buildGanttSvg({
     namesG.appendChild(nameNode);
 
     rowsG.appendChild(svgEl('line', {
-      x1: originX, y1: y + ROW_H, x2: PAD + nameWidth + chartW, y2: y + ROW_H,
+      x1: originX, y1: y + rowH, x2: PAD + nameWidth + chartW, y2: y + rowH,
       stroke: colors.grid, 'stroke-width': 1,
     }));
 
@@ -553,7 +677,7 @@ export function buildGanttSvg({
 
     if (task.is_milestone && due) {
       const cx = x(due) + dayWidth / 2;
-      const cy = y + ROW_H / 2;
+      const cy = y + rowH / 2;
       const size = 7;
       const node = svgEl('path', {
         d: `M ${cx} ${cy - size} L ${cx + size} ${cy} L ${cx} ${cy + size} L ${cx - size} ${cy} Z`,
@@ -596,8 +720,8 @@ export function buildGanttSvg({
     const barEnd = due || start;
     const bx = x(barStart);
     const bw = Math.max(dayWidth * 0.8, (daysBetween(barStart, barEnd) + 1) * dayWidth - 2);
-    const barH = hasChildren ? 9 : 14;
-    const by = y + (ROW_H - barH) / 2;
+    const barH = roadmap ? 22 : (hasChildren ? 9 : 14);
+    const by = y + (rowH - barH) / 2;
     const progress = hasChildren ? (task.rollup_progress ?? task.progress) : task.progress;
 
     const group = svgEl('g', { opacity: faded ? 0.45 : 1 });
@@ -630,13 +754,41 @@ export function buildGanttSvg({
     }
     rowsG.appendChild(group);
 
+    if (roadmap) {
+      // バーの中に名前を入れる。狭いときは外に出し、右端では左に逃がす
+      const inside = bw > 70;
+      const rightRoom = originX + chartW - (bx + bw) - 8;
+      const outsideRight = !inside && rightRoom > 60;
+      const anchor = inside || outsideRight ? 'start' : 'end';
+      const labelX = inside ? bx + 8 : (outsideRight ? bx + bw + 6 : bx - 6);
+      const room = inside ? bw - 16 : (outsideRight ? rightRoom : bx - originX - 8);
+      const textColor = inside
+        ? (progress >= 55 ? '#ffffff' : colors.text)
+        : colors.text;
+      const barLabel = svgEl('text', {
+        x: labelX, y: by + barH / 2 + 4, 'text-anchor': anchor,
+        'font-size': 11.5, 'font-weight': 600, fill: textColor,
+        text: truncate(task.title, Math.max(3, Math.floor(room / 12))),
+      });
+      barLabel.appendChild(svgEl('title', { text: task.title }));
+      group.appendChild(barLabel);
+      if (progress > 0 && bw > 110) {
+        group.appendChild(svgEl('text', {
+          x: bx + bw - 8, y: by + barH / 2 + 4, 'font-size': 10.5, 'text-anchor': 'end',
+          fill: inside && progress >= 95 ? '#ffffff' : colors.muted, text: `${progress}%`,
+        }));
+      }
+      barGeom.set(task.id, { x1: bx, x2: bx + bw, y: by + barH / 2 });
+      return;
+    }
+
     const labelParts = [];
     if (progress > 0 && progress < 100) labelParts.push(`${progress}%`);
     if (task.assignee_name) labelParts.push(task.assignee_name);
     let sideLabel = null;
     if (labelParts.length && bx + bw + 6 < originX + chartW) {
       sideLabel = svgEl('text', {
-        x: bx + bw + 6, y: y + ROW_H / 2 + 4, 'font-size': 10, fill: colors.muted,
+        x: bx + bw + 6, y: y + rowH / 2 + 4, 'font-size': 10, fill: colors.muted,
         text: labelParts.join(' · '),
       });
       group.appendChild(sideLabel);
@@ -673,6 +825,65 @@ export function buildGanttSvg({
     barGeom.set(task.id, { x1: bx, x2: bx + bw, y: by + barH / 2 });
   });
 
+  /* ---- マイルストーンのレーン（ロードマップ表示） ---- */
+  if (laneH) {
+    const laneY = titleH + PAD + HEADER_H;
+    const laneG = svgEl('g');
+    laneG.appendChild(svgEl('rect', {
+      x: PAD, y: laneY, width: nameWidth + chartW, height: laneH,
+      fill: forExport ? '#fbfcfd' : 'var(--surface-2)',
+    }));
+    laneG.appendChild(svgEl('line', {
+      x1: PAD, y1: laneY + laneH, x2: PAD + nameWidth + chartW, y2: laneY + laneH,
+      stroke: colors.gridStrong, 'stroke-width': 1,
+    }));
+    const sorted = [...milestones]
+      .filter((m) => parseDate(m.due_date || m.rollup_due))
+      .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
+    let lastX = -Infinity;
+    let level = 0;
+    for (const task of sorted) {
+      const due = parseDate(task.due_date || task.rollup_due);
+      const cx = x(due) + dayWidth / 2;
+      // 近すぎるラベルは上下に振り分けて重ならないようにする
+      level = cx - lastX < 90 ? 1 - level : 0;
+      lastX = cx;
+      const cy = laneY + 15;
+      const size = 6.5;
+      const done = task.status === 'done';
+      const pin = svgEl('path', {
+        d: `M ${cx} ${cy - size} L ${cx + size} ${cy} L ${cx} ${cy + size} L ${cx - size} ${cy} Z`,
+        fill: done ? STATUS_COLOR.done : '#e8912b',
+        stroke: forExport ? '#ffffff' : 'none', 'stroke-width': 1,
+      });
+      pin.appendChild(svgEl('title', {
+        text: `${task.title} — ${toISO(due)}${done ? '（完了）' : ''}`,
+      }));
+      const group = svgEl('g', {}, pin,
+        svgEl('line', {
+          x1: cx, y1: cy + size, x2: cx, y2: originY + bodyH,
+          stroke: done ? STATUS_COLOR.done : '#e8912b',
+          'stroke-width': 1, 'stroke-dasharray': '3 3', opacity: 0.45,
+        }),
+        svgEl('text', {
+          x: cx, y: cy + (level ? 30 : 19), 'font-size': 10, 'text-anchor': 'middle',
+          fill: done ? colors.muted : colors.text,
+          'font-weight': done ? 400 : 600,
+          text: truncate(task.title, 14),
+        }),
+        svgEl('text', {
+          x: cx, y: cy + (level ? 39 : 28), 'font-size': 8.5, 'text-anchor': 'middle',
+          fill: colors.muted, text: `${due.getMonth() + 1}/${due.getDate()}`,
+        }));
+      if (interactive) {
+        group.style.cursor = 'pointer';
+        group.addEventListener('click', () => openTaskDetail(task.id));
+      }
+      laneG.appendChild(group);
+    }
+    svg.appendChild(laneG);
+  }
+
   /* ---- dependency arrows ---- */
   const depG = svgEl('g');
   const suffix = Math.random().toString(36).slice(2, 8);
@@ -685,7 +896,7 @@ export function buildGanttSvg({
     svgEl('marker', {
       id: arrowBadId, markerWidth: 7, markerHeight: 7, refX: 6, refY: 3.5, orient: 'auto',
     }, svgEl('path', { d: 'M0,0 L7,3.5 L0,7 Z', fill: '#e14c4c' }))));
-  for (const dep of deps) {
+  for (const dep of roadmap ? [] : deps) {
     const from = barGeom.get(dep.depends_on_id);
     const to = barGeom.get(dep.task_id);
     if (!from || !to) continue;
@@ -752,11 +963,13 @@ export function buildGanttSvg({
 }
 
 /** Pick a day width so the chart fills the target slide width exactly. */
-function fitScale(range, targetWidth, nameWidth) {
+function fitScale(range, targetWidth, nameWidth, roadmap = false) {
   const totalDays = Math.max(1, daysBetween(range.from, range.to) + 1);
   const available = targetWidth - nameWidth - PAD * 2;
   const dayWidth = Math.min(40, Math.max(1.2, available / totalDays));
-  const key = dayWidth >= 14 ? 'day' : dayWidth >= 5 ? 'week' : 'month';
+  // ロードマップは目盛りが細かいと読みにくいので、四半期のまま幅だけ広げる
+  const key = roadmap ? 'quarter'
+    : dayWidth >= 14 ? 'day' : dayWidth >= 5 ? 'week' : 'month';
   return { key, label: SCALES[key].label, dayWidth, minorEvery: SCALES[key].minorEvery };
 }
 

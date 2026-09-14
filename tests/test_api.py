@@ -1767,3 +1767,241 @@ class TestReparenting(ApiTestCase):
         moved_parent = next(t for t in rows if t["id"] == parent["id"])
         self.assertEqual(moved_parent["leaf_total"], 1)
         self.assertEqual(moved_parent["leaf_done"], 1)
+
+
+class TestProjectScoping(ApiTestCase):
+    """所属していないプロジェクトの中身が、どの入口からも見えないこと。"""
+
+    def setUp(self):
+        super().setUp()
+        self.secret = self.make_project("見えてはいけないPJ")
+        self.secret_task = self.make_task(self.secret["id"], "秘密のタスク")
+        self.secret_issue = self.make_issue(self.secret["id"], "秘密の課題")
+        self.mine = self.make_project("参加しているPJ")
+        self.user, email = self.make_user("一般メンバー")
+        self.admin.put("/api/projects/{}/members".format(self.mine["id"]), {
+            "members": [{"principal_type": "user", "principal_id": self.user["id"],
+                         "role": "editor"}]})
+        self.my_task = self.make_task(self.mine["id"], "見えてよいタスク")
+        self.client = self.client_for(email)
+
+    def test_project_list_shows_only_my_projects(self):
+        names = [p["name"] for p in self.client.get("/api/projects")[1]["projects"]]
+        self.assertEqual(names, ["参加しているPJ"])
+
+    def test_cross_project_task_search_is_scoped(self):
+        titles = [t["title"] for t in self.client.get("/api/tasks")[1]["tasks"]]
+        self.assertIn("見えてよいタスク", titles)
+        self.assertNotIn("秘密のタスク", titles)
+
+    def test_a_single_task_from_another_project_is_refused(self):
+        self.assertEqual(
+            self.client.get("/api/tasks/{}".format(self.secret_task["id"]))[0], 403)
+
+    def test_cross_project_issue_list_is_scoped(self):
+        titles = [i["title"] for i in self.client.get("/api/issues")[1]["issues"]]
+        self.assertNotIn("秘密の課題", titles)
+
+    def test_a_single_issue_from_another_project_is_refused(self):
+        self.assertEqual(
+            self.client.get("/api/issues/{}".format(self.secret_issue["id"]))[0], 403)
+
+    def test_project_scoped_endpoints_are_refused(self):
+        for path in ("/api/projects/{}", "/api/projects/{}/tasks",
+                     "/api/projects/{}/issues", "/api/projects/{}/bottlenecks",
+                     "/api/projects/{}/recurrences"):
+            status, _ = self.client.get(path.format(self.secret["id"]))
+            self.assertEqual(status, 403, "{} が漏れています".format(path))
+
+    def test_workload_only_counts_my_projects(self):
+        self.admin.patch("/api/tasks/{}".format(self.secret_task["id"]),
+                         {"assignee_id": self.user["id"], "due_date": "2026-04-10",
+                          "estimate_hours": 8})
+        self.admin.patch("/api/tasks/{}".format(self.my_task["id"]),
+                         {"assignee_id": self.user["id"], "due_date": "2026-04-10",
+                          "estimate_hours": 8})
+        data = self.client.get("/api/workload")[1]
+        blob = json.dumps(data, ensure_ascii=False)
+        self.assertIn("参加しているPJ", blob)
+        self.assertNotIn("見えてはいけないPJ", blob)
+
+    def test_the_daily_screen_does_not_leak_other_projects(self):
+        self.admin.patch("/api/tasks/{}".format(self.secret_task["id"]),
+                         {"assignee_id": self.user["id"], "due_date": "2020-01-01"})
+        blob = json.dumps(self.client.get("/api/daily")[1], ensure_ascii=False)
+        self.assertNotIn("秘密のタスク", blob)
+
+    def test_cannot_create_a_task_in_another_project(self):
+        status, _ = self.client.post("/api/tasks", {
+            "project_id": self.secret["id"], "title": "割り込み"})
+        self.assertEqual(status, 403)
+
+    def test_notification_settings_list_only_my_projects(self):
+        data = self.client.get("/api/me/notification-settings")[1]
+        self.assertEqual([p["name"] for p in data["projects"]], ["参加しているPJ"])
+
+    def join_secret(self):
+        self.admin.put("/api/projects/{}/members".format(self.secret["id"]), {
+            "members": [{"principal_type": "user", "principal_id": self.user["id"],
+                         "role": "viewer"}]})
+
+    def leave_secret(self):
+        self.admin.put("/api/projects/{}/members".format(self.secret["id"]), {"members": []})
+
+    def test_daily_drops_tasks_left_behind_after_leaving_a_project(self):
+        """在籍中に割り当てられ、その後メンバーから外れた場合も見えないこと。"""
+        self.join_secret()
+        self.admin.patch("/api/tasks/{}".format(self.secret_task["id"]),
+                         {"assignee_id": self.user["id"], "due_date": "2020-01-01"})
+        self.assertIn("秘密のタスク",
+                      json.dumps(self.client.get("/api/daily")[1], ensure_ascii=False))
+        self.leave_secret()
+        self.assertNotIn("秘密のタスク",
+                         json.dumps(self.client.get("/api/daily")[1], ensure_ascii=False))
+
+    def test_due_notifications_skip_projects_i_cannot_see(self):
+        self.join_secret()
+        self.admin.patch("/api/tasks/{}".format(self.secret_task["id"]),
+                         {"assignee_id": self.user["id"], "due_date": "2020-01-01"})
+        self.leave_secret()
+        notify.scan_due_tasks()
+        overdue = db.query(
+            "SELECT title FROM notifications WHERE user_id=%s AND type IN ('overdue','due_soon')",
+            (self.user["id"],))
+        self.assertEqual(list(overdue), [])
+
+    def test_cannot_assign_a_task_to_a_non_member(self):
+        outsider, _ = self.make_user("よその人")
+        status, data = self.admin.patch("/api/tasks/{}".format(self.my_task["id"]),
+                                        {"assignee_id": outsider["id"]})
+        self.assertEqual(status, 400, data)
+        self.assertIn("メンバー", data["error"])
+        status, data = self.admin.post("/api/tasks", {
+            "project_id": self.mine["id"], "title": "新規", "assignee_id": outsider["id"]})
+        self.assertEqual(status, 400, data)
+
+    def test_cannot_make_a_non_member_the_issue_owner(self):
+        outsider, _ = self.make_user("よその人2")
+        status, data = self.admin.post("/api/issues", {
+            "project_id": self.mine["id"], "title": "課題", "owner_id": outsider["id"]})
+        self.assertEqual(status, 400, data)
+        self.assertIn("メンバー", data["error"])
+
+    def test_a_member_can_still_be_assigned(self):
+        status, data = self.admin.patch("/api/tasks/{}".format(self.my_task["id"]),
+                                        {"assignee_id": self.user["id"]})
+        self.assertEqual(status, 200, data)
+
+
+class TestTodos(ApiTestCase):
+    """個人 ToDo（プロジェクトに属さない、本人だけの覚え書き）。"""
+
+    def add(self, client, title="牛乳を買う", **kwargs):
+        payload = {"title": title}
+        payload.update(kwargs)
+        status, data = client.post("/api/todos", payload)
+        self.assertEqual(status, 201, data)
+        return data["todo"]
+
+    def test_create_and_list(self):
+        todo = self.add(self.admin, "経費精算を出す", due_date="2026-10-01")
+        self.assertEqual(todo["title"], "経費精算を出す")
+        self.assertEqual(todo["due_date"], "2026-10-01")
+        data = self.admin.get("/api/todos")[1]
+        self.assertIn("経費精算を出す", [t["title"] for t in data["todos"]])
+        self.assertGreaterEqual(data["open_count"], 1)
+
+    def test_only_the_owner_can_see_it(self):
+        self.add(self.admin, "管理者の秘密のメモ")
+        _, email = self.make_user("別の人")
+        other = self.client_for(email)
+        self.assertEqual(other.get("/api/todos")[1]["todos"], [])
+
+    def test_even_an_admin_cannot_see_someone_elses(self):
+        user, email = self.make_user("持ち主")
+        mine = self.add(self.client_for(email), "本人だけのメモ")
+        self.assertEqual(self.admin.get("/api/todos/{}".format(mine["id"]))[0], 404)
+        self.assertEqual(
+            self.admin.patch("/api/todos/{}".format(mine["id"]), {"title": "書き換え"})[0], 404)
+        self.assertEqual(self.admin.delete("/api/todos/{}".format(mine["id"]))[0], 404)
+        blob = json.dumps(self.admin.get("/api/todos")[1], ensure_ascii=False)
+        self.assertNotIn("本人だけのメモ", blob)
+
+    def test_completing_and_reopening(self):
+        todo = self.add(self.admin)
+        data = self.admin.patch("/api/todos/{}".format(todo["id"]), {"is_done": True})[1]
+        self.assertTrue(data["todo"]["is_done"])
+        self.assertIsNotNone(data["todo"]["done_at"])
+        # 既定では未完了だけが返る
+        self.assertNotIn(todo["id"], [t["id"] for t in self.admin.get("/api/todos")[1]["todos"]])
+        self.assertIn(todo["id"],
+                      [t["id"] for t in self.admin.get("/api/todos?include_done=1")[1]["todos"]])
+        data = self.admin.patch("/api/todos/{}".format(todo["id"]), {"is_done": False})[1]
+        self.assertFalse(data["todo"]["is_done"])
+        self.assertIsNone(data["todo"]["done_at"])
+
+    def test_editing_and_deleting(self):
+        todo = self.add(self.admin)
+        data = self.admin.patch("/api/todos/{}".format(todo["id"]),
+                                {"title": "牛乳と卵を買う", "due_date": "2026-11-05"})[1]
+        self.assertEqual(data["todo"]["title"], "牛乳と卵を買う")
+        self.assertEqual(data["todo"]["due_date"], "2026-11-05")
+        self.assertEqual(self.admin.delete("/api/todos/{}".format(todo["id"]))[0], 200)
+        self.assertEqual(self.admin.get("/api/todos/{}".format(todo["id"]))[0], 404)
+
+    def test_a_title_is_required(self):
+        self.assertEqual(self.admin.post("/api/todos", {"title": "  "})[0], 400)
+
+    def test_reorder_is_limited_to_my_own(self):
+        first = self.add(self.admin, "A")
+        second = self.add(self.admin, "B")
+        status, _ = self.admin.post("/api/todos/reorder",
+                                    {"ids": [second["id"], first["id"]]})
+        self.assertEqual(status, 200)
+        titles = [t["title"] for t in self.admin.get("/api/todos")[1]["todos"]]
+        self.assertLess(titles.index("B"), titles.index("A"))
+
+        _, email = self.make_user("よその人")
+        theirs = self.add(self.client_for(email), "他人の ToDo")
+        status, data = self.admin.post("/api/todos/reorder", {"ids": [theirs["id"]]})
+        self.assertEqual(status, 400, data)
+
+    def test_promoting_to_a_project_task(self):
+        project = self.make_project()
+        todo = self.add(self.admin, "設計方針をまとめる", due_date="2026-12-01")
+        status, data = self.admin.post("/api/todos/{}/promote".format(todo["id"]),
+                                       {"project_id": project["id"]})
+        self.assertEqual(status, 201, data)
+        task = data["task"]
+        self.assertEqual(task["title"], "設計方針をまとめる")
+        self.assertEqual(task["due_date"], "2026-12-01")
+        self.assertEqual(task["project_id"], project["id"])
+        # 引き上げた ToDo は残さない
+        self.assertEqual(self.admin.get("/api/todos/{}".format(todo["id"]))[0], 404)
+
+    def test_cannot_promote_into_a_project_i_cannot_edit(self):
+        project = self.make_project()
+        user, email = self.make_user("閲覧者")
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "viewer"}]})
+        client = self.client_for(email)
+        todo = self.add(client, "上げられない")
+        self.assertEqual(client.post("/api/todos/{}/promote".format(todo["id"]),
+                                     {"project_id": project["id"]})[0], 403)
+
+    def test_todos_show_up_on_the_daily_screen(self):
+        self.add(self.admin, "今日の確認に出る ToDo")
+        blob = json.dumps(self.admin.get("/api/daily")[1], ensure_ascii=False)
+        self.assertIn("今日の確認に出る ToDo", blob)
+
+    def test_todos_are_removed_with_the_account(self):
+        user, email = self.make_user("退職者")
+        self.add(self.client_for(email), "消える ToDo")
+        self.admin.delete("/api/users/{}".format(user["id"]))
+        self.assertEqual(
+            db.scalar("SELECT COUNT(*) AS c FROM todos WHERE user_id=%s", (user["id"],),
+                      default=0), 0)
+
+    def test_todos_need_a_login(self):
+        self.assertEqual(Client(self.base).get("/api/todos")[0], 401)

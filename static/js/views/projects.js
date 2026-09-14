@@ -80,6 +80,7 @@ export async function render(container) {
             : null),
         el('div', { class: `progress${percent >= 100 ? ' done' : ''}` },
           el('i', { style: { width: `${percent}%` } })),
+        memberStrip(project, isOwner),
         el('div', { style: { display: 'flex', gap: '6px', marginTop: '12px', flexWrap: 'wrap' } },
           el('a', { class: 'btn btn-sm', href: `#/p/${project.id}/tasks` }, 'タスク'),
           el('a', { class: 'btn btn-sm', href: `#/p/${project.id}/gantt` }, 'ガント'),
@@ -90,6 +91,30 @@ export async function render(container) {
           isOwner
             ? el('button', { class: 'btn btn-sm', onClick: () => editProject(project) }, '設定')
             : null)));
+  }
+
+  /** 誰が参加しているか一目で分かるように、カードに顔を並べる。 */
+  function memberStrip(project, isOwner) {
+    const people = project.members || [];
+    if (!people.length) {
+      return isOwner
+        ? el('div', { class: 'member-strip' },
+          el('button', {
+            class: 'btn btn-sm', onClick: () => manageMembers(project),
+          }, '＋ メンバーを追加'))
+        : null;
+    }
+    const shown = people.slice(0, 6);
+    return el('div', {
+      class: `member-strip${isOwner ? ' clickable' : ''}`,
+      title: people.map((u) => u.name).join('、'),
+      onClick: isOwner ? () => manageMembers(project) : null,
+    },
+    el('span', { class: 'avatar-stack' }, ...shown.map((u) => avatar(u, 'sm'))),
+    people.length > shown.length
+      ? el('span', { class: 'cell-mut', text: `＋${people.length - shown.length}` })
+      : null,
+    el('span', { class: 'cell-mut', text: `${people.length} 名` }));
   }
 
   async function editProject(project) {
@@ -267,6 +292,7 @@ export async function render(container) {
             });
             try {
               await api.put(`/api/projects/${project.id}/members`, { members: payload });
+              store.forgetMembers(project.id);
               toast('メンバーを更新しました', 'ok');
               close(true);
             } catch (error) { toast(error.message, 'error'); }

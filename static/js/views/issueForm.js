@@ -16,7 +16,9 @@ export function taskPicker(tasks, selectedIds = []) {
  * @param {object} options project, issue (edit), tasks, linkedTaskIds
  * @returns {Promise<object|null>} the saved issue
  */
-export function openIssueForm({ project, issue = null, tasks = [], linkedTaskIds = [] }) {
+export function openIssueForm({
+  project, issue = null, tasks = [], linkedTaskIds = [], members = null,
+}) {
   const editing = Boolean(issue);
   const f = {};
   const picker = taskPicker(tasks, linkedTaskIds);
@@ -42,7 +44,7 @@ export function openIssueForm({ project, issue = null, tasks = [], linkedTaskIds
       f.severity = el('select', { class: 'select' },
         ...Object.entries(SEVERITY_LABEL).reverse().map(([value, label]) =>
           option(value, label, String(issue?.severity ?? 1) === value)));
-      f.owner = userSelect(issue?.owner_id, { emptyLabel: '未割当' });
+      f.owner = userSelect(issue?.owner_id, { emptyLabel: '未割当', people: members });
       f.raised = el('input', { class: 'input', type: 'date' });
       f.raised.value = issue?.raised_on || toISO(today());
       f.due = el('input', { class: 'input', type: 'date' });

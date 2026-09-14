@@ -36,7 +36,7 @@ async function renderDetail(instance, taskId, onChange) {
   }
   const {
     task, path, children, comments, attachments, deps, blocking,
-    metrics = {}, impact = [], conflicts = [], issues = [], my_role: role,
+    metrics = {}, impact = [], conflicts = [], issues = [], members = null, my_role: role,
   } = data;
   const canEdit = role === 'owner' || role === 'editor';
   const canComment = canEdit || role === 'commenter';
@@ -62,6 +62,7 @@ async function renderDetail(instance, taskId, onChange) {
           const saved = await openTaskForm({
             project: { id: task.project_id }, task,
             tasks: projectTasks.tasks, deps: projectTasks.deps,
+            members: projectTasks.members,
           });
           if (saved) reload();
         },
@@ -107,7 +108,7 @@ async function renderDetail(instance, taskId, onChange) {
     onChange: (event) => patch({ progress: Number(event.target.value) }),
   });
 
-  const assignee = userSelect(task.assignee_id);
+  const assignee = userSelect(task.assignee_id, { people: members });
   assignee.disabled = !canEdit;
   assignee.addEventListener('change', (event) =>
     patch({ assignee_id: event.target.value ? Number(event.target.value) : null }));
@@ -199,6 +200,7 @@ async function renderDetail(instance, taskId, onChange) {
             const saved = await openTaskForm({
               project: { id: task.project_id }, parentId: task.id,
               tasks: projectTasks.tasks, deps: projectTasks.deps,
+              members: projectTasks.members,
             });
             if (saved) reload();
           },

@@ -557,6 +557,27 @@ def project_stats(project_ids):
     return stats
 
 
+def project_member_users(project_id):
+    """グループ経由を含めて、このプロジェクトを見られる人の一覧（担当者候補）。"""
+    return db.query(
+        """
+        SELECT DISTINCT u.id, u.name, u.email, u.avatar_color
+          FROM users u
+         WHERE u.is_active = 1
+           AND (u.id = (SELECT owner_id FROM projects WHERE id = %s)
+                OR u.role = 'admin'
+                OR EXISTS (SELECT 1 FROM project_members pm
+                            WHERE pm.project_id = %s AND pm.principal_type = 'user'
+                              AND pm.principal_id = u.id)
+                OR EXISTS (SELECT 1 FROM project_members pm
+                            JOIN group_members gm ON gm.group_id = pm.principal_id
+                           WHERE pm.project_id = %s AND pm.principal_type = 'group'
+                             AND gm.user_id = u.id))
+         ORDER BY u.name
+        """,
+        (project_id, project_id, project_id))
+
+
 def project_member_rows(project_id):
     users = db.query(
         "SELECT pm.role, u.id, u.name, u.email, u.avatar_color FROM project_members pm "
@@ -592,6 +613,7 @@ def list_projects(ctx):
     for p in projects:
         p["stats"] = stats.get(p["id"], EMPTY_STATS)
         p["my_role"] = auth.project_role(user, p["id"])
+        p["members"] = project_member_users(p["id"])
     return json_response({"projects": projects})
 
 
@@ -619,7 +641,8 @@ def get_project(ctx, project_id):
     project = project_or_404(user, project_id)
     project["members"] = project_member_rows(project_id)
     project["stats"] = project_stats([project_id]).get(project_id, EMPTY_STATS)
-    return json_response({"project": project})
+    return json_response({"project": project,
+                          "member_users": project_member_users(project_id)})
 
 
 @route("PATCH", r"/api/projects/(\d+)")
@@ -731,6 +754,7 @@ def list_project_tasks(ctx, project_id):
         row.update(analysis["metrics"].get(row["id"], {}))
     return json_response({
         "tasks": rows, "deps": deps, "project": project,
+        "members": project_member_users(project_id),
         "conflicts": analysis["conflicts"],
         "critical_path": analysis["critical_path"],
     })
@@ -928,6 +952,7 @@ def create_task(ctx):
             "SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE project_id=%s",
             (project_id,), default=0) or 0) + 10
     assignee_id = as_int(ctx.body.get("assignee_id"))
+    ensure_member(assignee_id, project_id)
     now = db.now()
     task_id = db.insert(
         "INSERT INTO tasks(project_id, parent_id, title, description, category, status, "
@@ -1005,6 +1030,7 @@ def get_task(ctx, task_id):
         "task": task, "path": path, "children": children, "comments": comments,
         "attachments": attachments, "deps": deps, "blocking": blocking, "issues": issues,
         "metrics": metrics, "impact": impact, "conflicts": conflicts,
+        "members": project_member_users(task["project_id"]),
         "my_role": auth.project_role(user, task["project_id"]),
     })
 
@@ -1070,6 +1096,7 @@ def update_task(ctx, task_id):
     if "assignee_id" in body:
         new_assignee = as_int(body["assignee_id"])
         if new_assignee != current["assignee_id"]:
+            ensure_member(new_assignee, current["project_id"])
             old_name = db.scalar("SELECT name AS n FROM users WHERE id=%s",
                                  (current["assignee_id"],), default="未割当") or "未割当"
             new_name = db.scalar("SELECT name AS n FROM users WHERE id=%s",
@@ -1132,6 +1159,22 @@ def update_task(ctx, task_id):
     if new_assignee and new_assignee != current["assignee_id"] and new_assignee != user["id"]:
         _notify_assignment(task_id, current["title"], new_assignee, user)
     return json_response({"task": db.query_one(TASK_SELECT + " WHERE t.id=%s", (task_id,))})
+
+
+def ensure_member(user_id, project_id, role_label="担当者"):
+    """割り当て先がそのプロジェクトを見られる人か確かめる。
+
+    参加していない人に割り当てると、本人には開けないタスクだけが増えてしまう。
+    """
+    if not user_id:
+        return
+    person = db.query_one("SELECT id, name, role FROM users WHERE id=%s", (user_id,))
+    if not person:
+        raise bad_request("指定された利用者が見つかりません")
+    if auth.project_role(person, project_id) is None:
+        raise bad_request(
+            "{} さんはこのプロジェクトのメンバーではありません。"
+            "先にメンバーに追加してください（{}）".format(person["name"], role_label))
 
 
 def task_label(task_id):
@@ -1517,6 +1560,141 @@ def put_notification_settings(ctx):
 
 
 # --------------------------------------------------------------------------
+# 個人 ToDo（プロジェクトに属さない、自分だけのメモ書き）
+# --------------------------------------------------------------------------
+
+TODO_SELECT = "SELECT id, title, note, due_date, is_done, sort_order, done_at, created_at FROM todos"
+
+
+def todo_or_404(user, todo_id):
+    """自分の ToDo でなければ、存在自体を伏せる。"""
+    todo = db.query_one("SELECT * FROM todos WHERE id=%s AND user_id=%s",
+                        (todo_id, user["id"]))
+    if not todo:
+        raise not_found("ToDo が見つかりません")
+    return todo
+
+
+@route("GET", r"/api/todos")
+def list_todos(ctx):
+    user = me(ctx)
+    sql = TODO_SELECT + " WHERE user_id=%s"
+    params = [user["id"]]
+    if not as_bool(ctx.query.get("include_done")):
+        sql += " AND is_done=0"
+    sql += " ORDER BY is_done, (due_date IS NULL), due_date, sort_order, id"
+    rows = db.query(sql, params)
+    return json_response({
+        "todos": rows,
+        "open_count": db.scalar("SELECT COUNT(*) AS c FROM todos WHERE user_id=%s AND is_done=0",
+                                (user["id"],), default=0),
+    })
+
+
+@route("GET", r"/api/todos/(\d+)")
+def get_todo(ctx, todo_id):
+    user = me(ctx)
+    todo_or_404(user, todo_id)
+    return json_response({"todo": db.query_one(TODO_SELECT + " WHERE id=%s", (todo_id,))})
+
+
+@route("POST", r"/api/todos")
+def create_todo(ctx):
+    user = me(ctx)
+    title = require(ctx.body, "title", "ToDo")
+    now = db.now()
+    todo_id = db.insert(
+        "INSERT INTO todos(user_id, title, note, due_date, sort_order, created_at, updated_at) "
+        "VALUES(%s,%s,%s,%s,%s,%s,%s)",
+        (user["id"], title[:300], str(ctx.body.get("note") or "")[:1000],
+         as_date(ctx.body.get("due_date")), next_todo_order(user["id"]), now, now))
+    return json_response({"todo": db.query_one(TODO_SELECT + " WHERE id=%s", (todo_id,))}, 201)
+
+
+def next_todo_order(user_id):
+    current = db.scalar("SELECT COALESCE(MAX(sort_order), 0) AS m FROM todos WHERE user_id=%s",
+                        (user_id,), default=0)
+    return int(current or 0) + 10
+
+
+@route("PATCH", r"/api/todos/(\d+)")
+def update_todo(ctx, todo_id):
+    user = me(ctx)
+    current = todo_or_404(user, todo_id)
+    fields, params = [], []
+    if "title" in ctx.body:
+        fields.append("title=%s")
+        params.append(require(ctx.body, "title", "ToDo")[:300])
+    if "note" in ctx.body:
+        fields.append("note=%s")
+        params.append(str(ctx.body["note"] or "")[:1000])
+    if "due_date" in ctx.body:
+        fields.append("due_date=%s")
+        params.append(as_date(ctx.body["due_date"]))
+    if "is_done" in ctx.body:
+        done = as_bool(ctx.body["is_done"])
+        fields += ["is_done=%s", "done_at=%s"]
+        params += [1 if done else 0, db.now() if done else None]
+    if "sort_order" in ctx.body:
+        fields.append("sort_order=%s")
+        params.append(as_int(ctx.body["sort_order"], 0))
+    if not fields:
+        raise bad_request("更新する項目がありません")
+    fields.append("updated_at=%s")
+    params += [db.now(), current["id"]]
+    db.execute("UPDATE todos SET {} WHERE id=%s".format(", ".join(fields)), params)
+    return json_response({"todo": db.query_one(TODO_SELECT + " WHERE id=%s", (current["id"],))})
+
+
+@route("DELETE", r"/api/todos/(\d+)")
+def delete_todo(ctx, todo_id):
+    user = me(ctx)
+    todo = todo_or_404(user, todo_id)
+    db.execute("DELETE FROM todos WHERE id=%s", (todo["id"],))
+    return json_response({"ok": True})
+
+
+@route("POST", r"/api/todos/reorder")
+def reorder_todos(ctx):
+    user = me(ctx)
+    ids = ctx.body.get("ids")
+    if not isinstance(ids, list):
+        raise bad_request("ids は配列で指定してください")
+    mine = {r["id"] for r in db.query("SELECT id FROM todos WHERE user_id=%s", (user["id"],))}
+    updates = []
+    for index, value in enumerate(ids):
+        todo_id = as_int(value)
+        if todo_id not in mine:
+            raise bad_request("自分の ToDo だけ並べ替えられます")
+        updates.append(((index + 1) * 10, db.now(), todo_id))
+    if updates:
+        db.executemany("UPDATE todos SET sort_order=%s, updated_at=%s WHERE id=%s", updates)
+    return json_response({"ok": True, "updated": len(updates)})
+
+
+@route("POST", r"/api/todos/(\d+)/promote")
+def promote_todo(ctx, todo_id):
+    """ToDo が大きくなってきたら、プロジェクトのタスクに引き上げる。"""
+    user = me(ctx)
+    todo = todo_or_404(user, todo_id)
+    project_id = as_int(ctx.body.get("project_id"))
+    if not project_id:
+        raise bad_request("project_id は必須です")
+    project_or_404(user, project_id, "editor")
+    ensure_member(user["id"], project_id)
+    now = db.now()
+    task_id = db.insert(
+        "INSERT INTO tasks(project_id, title, description, status, priority, assignee_id, "
+        "due_date, sort_order, created_by, created_at, updated_at) "
+        "VALUES(%s,%s,%s,'todo',1,%s,%s,%s,%s,%s,%s)",
+        (project_id, todo["title"], todo["note"], user["id"], todo["due_date"],
+         next_sort_order(project_id, None), user["id"], now, now))
+    db.execute("DELETE FROM todos WHERE id=%s", (todo["id"],))
+    return json_response(
+        {"task": db.query_one(TASK_SELECT + " WHERE t.id=%s", (task_id,))}, 201)
+
+
+# --------------------------------------------------------------------------
 # daily check-in
 # --------------------------------------------------------------------------
 
@@ -1525,35 +1703,41 @@ def daily(ctx):
     user = me(ctx)
     buckets = notify.daily_summary_for(user["id"])
     today = db.today()
+    # 参加していないプロジェクトのタスクは、担当でも出さない
+    visible = tuple(auth.visible_project_ids(user)) or (0,)
     recent = db.query(
         """
         SELECT t.id, t.title, t.status, t.progress, t.due_date, p.name AS project_name
           FROM tasks t JOIN projects p ON p.id = t.project_id
          WHERE t.assignee_id=%s AND t.status='done' AND t.completed_at >= %s
+           AND t.project_id IN %s
          ORDER BY t.completed_at DESC LIMIT 20
         """,
-        (user["id"], db.now() - timedelta(days=7)))
+        (user["id"], db.now() - timedelta(days=7), visible))
     stale = db.query(
         """
         SELECT t.id, t.title, t.status, t.progress, t.due_date, p.name AS project_name,
                t.updated_at
           FROM tasks t JOIN projects p ON p.id = t.project_id
          WHERE t.assignee_id=%s AND t.status IN %s AND p.archived=0
-           AND t.updated_at < %s
+           AND t.updated_at < %s AND t.project_id IN %s
          ORDER BY t.updated_at LIMIT 20
         """,
-        (user["id"], OPEN_STATUSES, db.now() - timedelta(days=7)))
+        (user["id"], OPEN_STATUSES, db.now() - timedelta(days=7), visible))
     checkin = db.query_one(
         "SELECT * FROM checkins WHERE user_id=%s AND checkin_date=%s", (user["id"], today))
     issues = db.query(
         "SELECT i.id, i.seq, i.title, i.status, i.severity, i.due_date, p.name AS project_name "
         "FROM issues i JOIN projects p ON p.id = i.project_id "
-        "WHERE i.owner_id=%s AND i.status IN %s AND p.archived=0 "
+        "WHERE i.owner_id=%s AND i.status IN %s AND p.archived=0 AND i.project_id IN %s "
         "ORDER BY i.severity DESC, (i.due_date IS NULL), i.due_date LIMIT 20",
-        (user["id"], OPEN_ISSUE_STATUSES))
+        (user["id"], OPEN_ISSUE_STATUSES, visible))
+    todos = db.query(
+        TODO_SELECT + " WHERE user_id=%s AND is_done=0 "
+        "ORDER BY (due_date IS NULL), due_date, sort_order, id LIMIT 20", (user["id"],))
     return json_response({
         "date": today, "buckets": buckets, "recently_done": recent,
-        "stale": stale, "checkin": checkin, "issues": issues,
+        "stale": stale, "checkin": checkin, "issues": issues, "todos": todos,
         "streak": _checkin_streak(user["id"]),
     })
 
@@ -1896,6 +2080,7 @@ def create_issue(ctx):
     title = require(ctx.body, "title", "課題")
     status = issue_status(ctx.body.get("status"), "open")
     raised_on = as_date(ctx.body.get("raised_on")) or db.today().isoformat()
+    ensure_member(as_int(ctx.body.get("owner_id")), project_id, "対応者")
     now = db.now()
     with db.transaction():
         seq = (db.scalar("SELECT COALESCE(MAX(seq), 0) AS m FROM issues WHERE project_id=%s "
@@ -1951,6 +2136,7 @@ def get_issue(ctx, issue_id):
         (issue_id,))
     return json_response({
         "issue": issue, "tasks": tasks, "comments": comments, "attachments": attachments,
+        "members": project_member_users(issue["project_id"]),
         "my_role": auth.project_role(user, issue["project_id"]),
     })
 
@@ -2005,6 +2191,7 @@ def update_issue(ctx, issue_id):
     if "owner_id" in body:
         new_owner = as_int(body["owner_id"])
         if new_owner != current["owner_id"]:
+            ensure_member(new_owner, current["project_id"], "対応者")
             notes.append("対応者: {} → {}".format(
                 db.scalar("SELECT name AS n FROM users WHERE id=%s",
                           (current["owner_id"],), default="未割当") or "未割当",
@@ -2371,6 +2558,7 @@ def create_recurrence(ctx, project_id):
     user = me(ctx)
     project_or_404(user, project_id, "editor")
     values = _recurrence_body(ctx)
+    ensure_member(values["assignee_id"], project_id)
     if values["parent_id"] and auth.task_project_id(values["parent_id"]) != project_id:
         raise bad_request("親タスクが同じプロジェクトにありません")
     now = db.now()

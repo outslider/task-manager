@@ -160,7 +160,8 @@ export async function render(container, route) {
     const target = project || store.projects.find((p) => store.canEdit(p));
     if (!target) { return; }
     const projectTasks = await api.projectTasks(target.id);
-    const saved = await openIssueForm({ project: target, tasks: projectTasks.tasks });
+    const saved = await openIssueForm({
+      project: target, tasks: projectTasks.tasks, members: projectTasks.members });
     if (saved) {
       await store.refreshProjects();
       load();

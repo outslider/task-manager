@@ -8,6 +8,7 @@ export const store = {
   usersById: new Map(),
   groups: [],
   projects: [],
+  memberCache: new Map(),
   unread: 0,
   ui: { accent_default: '#3b6ef5', app_name: 'タスク管理' },
   listeners: new Set(),
@@ -58,6 +59,24 @@ export const store = {
 
   project(id) {
     return this.projects.find((p) => p.id === Number(id)) || null;
+  },
+
+  /** 担当者に指定できる人。プロジェクトのメンバー（グループ経由も含む）。 */
+  async members(projectId) {
+    if (!projectId) return this.users;
+    const key = Number(projectId);
+    if (!this.memberCache.has(key)) {
+      this.memberCache.set(key, api.project(key)
+        .then((data) => data.member_users || this.users)
+        .catch(() => this.users));
+    }
+    return this.memberCache.get(key);
+  },
+
+  /** メンバーを編集したあとに呼ぶ。 */
+  forgetMembers(projectId) {
+    if (projectId) this.memberCache.delete(Number(projectId));
+    else this.memberCache.clear();
   },
 
   userName(id) {
