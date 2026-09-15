@@ -14,13 +14,14 @@ import { indentTarget, openParentPicker, outdentTarget, setParent } from './hier
 
 const collapsedKey = (projectId) => `tm.collapsed.${projectId}`;
 
-function loadCollapsed(projectId) {
+/** 折りたたみ状態はガント画面と共有する（同じプロジェクトなら同じ見え方にする）。 */
+export function loadCollapsed(projectId) {
   try {
     return new Set(JSON.parse(localStorage.getItem(collapsedKey(projectId)) || '[]'));
   } catch { return new Set(); }
 }
 
-function saveCollapsed(projectId, set) {
+export function saveCollapsed(projectId, set) {
   try {
     localStorage.setItem(collapsedKey(projectId), JSON.stringify([...set]));
   } catch { /* private mode */ }

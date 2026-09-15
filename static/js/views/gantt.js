@@ -7,7 +7,7 @@ import {
   addDays, daysBetween, downloadBlob, el, fill, isWeekend, openModal, parseDate, svgEl,
   toISO, toast, today, weekday,
 } from '../util.js';
-import { buildTree } from './tasks.js';
+import { buildTree, loadCollapsed, saveCollapsed } from './tasks.js';
 import { openTaskDetail } from './taskDetail.js';
 import { projectTabs } from './projectNav.js';
 
@@ -57,6 +57,25 @@ const EXPORT_PRESETS = [
   { id: 'natural', label: '原寸（切り取らずそのまま）', w: 0, h: 0 },
 ];
 
+/** バーの横に何を出すか。既定は今までと同じ（担当者と進捗）。 */
+function loadLabels() {
+  const fallback = { date: false, assignee: true, progress: true };
+  try {
+    return { ...fallback, ...JSON.parse(localStorage.getItem('tm.gantt.labels') || '{}') };
+  } catch { return fallback; }
+}
+
+function saveLabels(labels) {
+  try { localStorage.setItem('tm.gantt.labels', JSON.stringify(labels)); } catch { /* private */ }
+}
+
+const GROUPINGS = [
+  { key: 'none', label: 'なし', hint: '階層のまま並べます' },
+  { key: 'phase', label: 'フェーズ', hint: 'トップレベルのタスクごとに区切ります' },
+  { key: 'assignee', label: '担当者', hint: '担当者ごとに区切り行を入れます' },
+  { key: 'category', label: 'カテゴリ', hint: 'カテゴリごとに区切り行を入れます' },
+];
+
 export async function render(container, route) {
   const projectId = route.projectId;
   let data = await api.projectTasks(projectId);
@@ -67,8 +86,12 @@ export async function render(container, route) {
 
   const compact = window.innerWidth < 760;
   const canEdit = store.canEdit(project);
+  const collapsed = loadCollapsed(projectId);      // タスク一覧と共有する
+  const collapsedGroups = new Set();
   const state = {
     mode: localStorage.getItem('tm.gantt.mode') || 'gantt',   // gantt | roadmap
+    group: localStorage.getItem('tm.gantt.group') || 'phase', // none|phase|assignee|category
+    labels: loadLabels(),
     scale: localStorage.getItem('tm.gantt.scale') || (compact ? 'week' : 'day'),
     colorBy: localStorage.getItem('tm.gantt.colorBy') || 'status',
     showDone: true,
@@ -142,6 +165,29 @@ export async function render(container, route) {
   }, ...Object.entries(COLOR_MODES).map(([value, mode]) =>
     el('option', { value, selected: state.colorBy === value ? true : null }, mode.label)));
 
+  const groupSelect = el('select', {
+    class: 'select', style: { maxWidth: '120px' },
+    onChange: (event) => {
+      state.group = event.target.value;
+      localStorage.setItem('tm.gantt.group', state.group);
+      collapsedGroups.clear();
+      draw();
+    },
+  }, ...GROUPINGS.map((g) => el('option', {
+    value: g.key, title: g.hint, selected: state.group === g.key ? true : null,
+  }, g.label)));
+
+  /** バーの横に出す項目のオン/オフ。 */
+  const labelToggle = (key, text) => el('label', { class: 'check' },
+    el('input', {
+      type: 'checkbox', checked: state.labels[key] ? true : null,
+      onChange: (event) => {
+        state.labels = { ...state.labels, [key]: event.target.checked };
+        saveLabels(state.labels);
+        draw();
+      },
+    }), el('span', { text }));
+
   const fromInput = el('input', {
     class: 'input', type: 'date', style: { maxWidth: '150px' },
     onChange: (event) => { state.fromISO = event.target.value || null; draw(); },
@@ -155,6 +201,7 @@ export async function render(container, route) {
     el('span', { class: 'label', style: { margin: 0 }, text: '表示' }), modeSeg,
     el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '表示単位' }), scaleSeg,
     el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '色分け' }), colorSelect,
+    el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '区切り' }), groupSelect,
     el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '期間' }), fromInput, '〜', toInput,
     el('label', { class: 'check' },
       el('input', {
@@ -166,8 +213,32 @@ export async function render(container, route) {
         type: 'checkbox',
         onChange: (event) => { state.onlyMine = event.target.checked; draw(); },
       }), el('span', { text: '自分の担当のみ' })),
+    el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: 'バーの横' }),
+    labelToggle('date', '日付'),
+    labelToggle('assignee', '担当者'),
+    labelToggle('progress', '進捗'),
     el('div', { class: 'spacer' }),
     el('span', { class: 'hint', style: { marginRight: '4px' }, id: 'gantt-hint' }),
+    el('button', {
+      class: 'btn btn-sm', title: 'すべて展開',
+      onClick: () => {
+        collapsed.clear();
+        collapsedGroups.clear();
+        saveCollapsed(projectId, collapsed);
+        draw();
+      },
+    }, '⤢ 展開'),
+    el('button', {
+      class: 'btn btn-sm', title: '子タスクをすべて折りたたむ',
+      onClick: () => {
+        for (const task of data.tasks) {
+          if (data.tasks.some((child) => child.parent_id === task.id)) collapsed.add(task.id);
+        }
+        for (const row of visibleRows()) if (row.group) collapsedGroups.add(row.groupId);
+        saveCollapsed(projectId, collapsed);
+        draw();
+      },
+    }, '⤡ 折りたたみ'),
     el('button', {
       class: 'btn btn-sm',
       onClick: () => { state.fromISO = null; state.toISO = null; syncRangeInputs(); draw(); },
@@ -181,8 +252,8 @@ export async function render(container, route) {
       hint.textContent = state.mode === 'roadmap'
         ? 'フェーズ（トップレベルのタスク）と節目だけを並べています'
         : (canEdit
-          ? 'バーをドラッグで移動、端をドラッグで期間変更。一番下の行をドラッグで新規追加'
-          : '');
+          ? 'バーをドラッグで移動、端をドラッグで期間変更。▼ で折りたたみ'
+          : '▼ をクリックすると折りたためます');
     }
     fill(legend,
       ...COLOR_MODES[state.colorBy].legend().map((entry) => el('span', { class: 'legend-item' },
@@ -224,15 +295,81 @@ export async function render(container, route) {
           task, depth: 0, hasChildren: (children.get(task.id) || []).length > 0,
         }));
     }
+    if (state.group === 'assignee' || state.group === 'category') {
+      return groupedRows(tasks);
+    }
+
+    // 階層のまま。折りたたんだ親の下は出さない
     const rows = [];
     const walk = (parentId, depth) => {
       for (const task of children.get(parentId) || []) {
-        rows.push({ task, depth, hasChildren: (children.get(task.id) || []).length > 0 });
-        walk(task.id, depth + 1);
+        const kids = children.get(task.id) || [];
+        rows.push({
+          task, depth, hasChildren: kids.length > 0,
+          collapsed: collapsed.has(task.id),
+          // フェーズ区切り: トップレベルの行の上に太い線を引く
+          separator: state.group === 'phase' && depth === 0 && rows.length > 0,
+          lead: state.group === 'phase' && depth === 0,
+        });
+        if (!collapsed.has(task.id)) walk(task.id, depth + 1);
       }
     };
     walk(null, 0);
     return rows;
+  }
+
+  /** 担当者・カテゴリごとに区切り行を挟んで並べる。 */
+  function groupedRows(tasks) {
+    const byAssignee = state.group === 'assignee';
+    const buckets = new Map();
+    for (const task of tasks) {
+      const key = byAssignee
+        ? (task.assignee_id ? String(task.assignee_id) : '')
+        : (task.category || '');
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(task);
+    }
+    const label = (key) => {
+      if (byAssignee) return key ? (store.userName(Number(key)) || '不明') : '未割当';
+      return key ? category(key).label : '未分類';
+    };
+    const tint = (key) => {
+      if (byAssignee) return store.usersById.get(Number(key))?.avatar_color || '#98a2b3';
+      return key ? category(key).color : '#98a2b3';
+    };
+    // 中身の多い順。未割当・未分類は最後に回す
+    const keys = [...buckets.keys()].sort((a, b) => {
+      if (!a !== !b) return a ? -1 : 1;
+      return buckets.get(b).length - buckets.get(a).length;
+    });
+    const rows = [];
+    for (const key of keys) {
+      const items = buckets.get(key)
+        .sort((a, b) => (a.sort_order - b.sort_order) || (a.id - b.id));
+      const groupId = `${state.group}:${key}`;
+      const folded = collapsedGroups.has(groupId);
+      rows.push({
+        group: true, groupId, label: label(key), color: tint(key),
+        count: items.length, collapsed: folded, separator: rows.length > 0,
+      });
+      if (folded) continue;
+      for (const task of items) {
+        rows.push({ task, depth: 0, hasChildren: false, inGroup: true });
+      }
+    }
+    return rows;
+  }
+
+  function toggleRow(row) {
+    if (row.group) {
+      if (collapsedGroups.has(row.groupId)) collapsedGroups.delete(row.groupId);
+      else collapsedGroups.add(row.groupId);
+    } else {
+      if (collapsed.has(row.task.id)) collapsed.delete(row.task.id);
+      else collapsed.add(row.task.id);
+      saveCollapsed(projectId, collapsed);
+    }
+    draw();
   }
 
   /** ロードマップの上部レーンに並べる節目。階層のどこにあっても拾う。 */
@@ -264,7 +401,9 @@ export async function render(container, route) {
   function dateRange(rows, milestones = []) {
     let min = null;
     let max = null;
-    for (const { task } of [...rows, ...milestones.map((task) => ({ task }))]) {
+    const entries = [...rows, ...milestones.map((task) => ({ task }))]
+      .filter((row) => row.task);          // 区切り行にはタスクが無い
+    for (const { task } of entries) {
       for (const value of [task.rollup_start || task.start_date, task.rollup_due || task.due_date]) {
         const date = parseDate(value);
         if (!date) continue;
@@ -340,8 +479,9 @@ export async function render(container, route) {
       title: project.name, nameWidth: state.nameWidth, interactive: true,
       // ロードマップは見せるための図なので、ドラッグ編集はガント表示だけにする
       editable: canEdit && !roadmap, onEdit: applyEdit, scroller: scroll,
-      roadmap, milestones, holidays: holidayMap,
+      roadmap, milestones, holidays: holidayMap, labels: state.labels,
       onCreate: canEdit ? addTask : null, onOpenTask: openTask,
+      onToggleRow: toggleRow,
     });
     drawLegend();
     fill(scroll, svg);
@@ -405,7 +545,8 @@ export async function render(container, route) {
           text: state.mode === 'roadmap'
             ? `ロードマップ表示: フェーズ ${rows.length} 件 / 節目 ${milestones.length} 件`
               + ` / 期間 ${toISO(range.from)} 〜 ${toISO(range.to)}`
-            : `対象タスク ${rows.length} 件 / 期間 ${toISO(range.from)} 〜 ${toISO(range.to)}` })),
+            : `対象タスク ${rows.filter((r) => r.task).length} 件`
+              + ` / 期間 ${toISO(range.from)} 〜 ${toISO(range.to)}` })),
       footer: (close) => [
         el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
         el('button', {
@@ -441,7 +582,7 @@ export async function render(container, route) {
         ? `${toISO(range.from)} 〜 ${toISO(range.to)}　作成日: ${toISO(today())}`
         : null,
       nameWidth: NAME_W_DEFAULT, forExport: true,
-      roadmap, milestones: milestoneRows(), holidays: holidayMap,
+      roadmap, milestones: milestoneRows(), holidays: holidayMap, labels: state.labels,
     });
     const stamp = toISO(today());
     const kind = roadmap ? 'ロードマップ' : 'ガント';
@@ -475,10 +616,12 @@ export function buildGanttSvg({
   title = null, subtitle = null, editable = false, onEdit = null, scroller = null,
   nameWidth = NAME_W_DEFAULT, interactive = false, forExport = false,
   roadmap = false, milestones = [], holidays = null, onCreate = null, onOpenTask = null,
+  labels = null, onToggleRow = null,
 }) {
   const colorOf = (COLOR_MODES[colorBy] || COLOR_MODES.status).color;
   // 呼び出し側が渡してくれば、閉じたときにチャートを引き直せる
   const openTask = onOpenTask || ((id) => openTaskDetail(id));
+  const show = { date: false, assignee: true, progress: true, ...(labels || {}) };
   const conflictEdges = new Set(
     conflicts.map((c) => `${c.depends_on_id}->${c.task_id}`));
   const totalDays = Math.max(1, daysBetween(range.from, range.to) + 1);
@@ -532,10 +675,24 @@ export function buildGanttSvg({
   /* ---- background bands and weekend shading ---- */
   const bands = svgEl('g');
   rows.forEach((row, index) => {
-    if (index % 2 === 1) {
+    const y = originY + index * rowH;
+    if (row.group) {
+      // 区切り行は帯で塗り、担当者やカテゴリの色を左端に置く
       bands.appendChild(svgEl('rect', {
-        x: PAD, y: originY + index * rowH, width: nameWidth + chartW, height: rowH,
-        fill: colors.band,
+        x: PAD, y, width: nameWidth + chartW, height: rowH,
+        fill: forExport ? '#eef1f6' : 'var(--surface-3)',
+      }));
+      bands.appendChild(svgEl('rect', {
+        x: PAD, y, width: 4, height: rowH, fill: row.color || colors.gridStrong,
+      }));
+    } else if (row.lead) {
+      bands.appendChild(svgEl('rect', {
+        x: PAD, y, width: nameWidth + chartW, height: rowH,
+        fill: forExport ? '#f4f6f9' : 'var(--surface-2)',
+      }));
+    } else if (index % 2 === 1) {
+      bands.appendChild(svgEl('rect', {
+        x: PAD, y, width: nameWidth + chartW, height: rowH, fill: colors.band,
       }));
     }
   });
@@ -700,9 +857,23 @@ export function buildGanttSvg({
     }));
   }
   rows.forEach((row, index) => {
-    if (index % 2 === 1) {
+    const y = originY + index * rowH;
+    if (row.group) {
       namesG.appendChild(svgEl('rect', {
-        x: PAD, y: originY + index * rowH, width: nameWidth, height: rowH, fill: colors.band,
+        x: PAD, y, width: nameWidth, height: rowH,
+        fill: forExport ? '#eef1f6' : 'var(--surface-3)',
+      }));
+      namesG.appendChild(svgEl('rect', {
+        x: PAD, y, width: 4, height: rowH, fill: row.color || colors.gridStrong,
+      }));
+    } else if (row.lead) {
+      namesG.appendChild(svgEl('rect', {
+        x: PAD, y, width: nameWidth, height: rowH,
+        fill: forExport ? '#f4f6f9' : 'var(--surface-2)',
+      }));
+    } else if (index % 2 === 1) {
+      namesG.appendChild(svgEl('rect', {
+        x: PAD, y, width: nameWidth, height: rowH, fill: colors.band,
       }));
     }
     namesG.appendChild(svgEl('line', {
@@ -712,17 +883,74 @@ export function buildGanttSvg({
   });
 
   rows.forEach((row, index) => {
-    const { task, depth, hasChildren } = row;
     const y = originY + index * rowH;
-    const indent = PAD + 8 + depth * 12;
+
+    // 区切りの太線（フェーズの頭、グループの頭）
+    if (row.separator) {
+      rowsG.appendChild(svgEl('line', {
+        x1: PAD, y1: y, x2: PAD + nameWidth + chartW, y2: y,
+        stroke: colors.gridStrong, 'stroke-width': 1.6,
+      }));
+    }
+
+    if (row.group) {
+      const twisty = svgEl('text', {
+        x: PAD + 12, y: y + rowH / 2 + 4, 'font-size': 9, fill: colors.muted,
+        text: row.collapsed ? '▶' : '▼',
+      });
+      const heading = svgEl('text', {
+        x: PAD + 26, y: y + rowH / 2 + 4, 'font-size': 11.5, 'font-weight': 700,
+        fill: colors.text, text: truncate(row.label, Math.floor((nameWidth - 60) / 12)),
+      });
+      heading.appendChild(svgEl('title', { text: row.label }));
+      const count = svgEl('text', {
+        x: PAD + nameWidth - 8, y: y + rowH / 2 + 4, 'font-size': 10,
+        'text-anchor': 'end', fill: colors.muted, text: `${row.count}件`,
+      });
+      const hit = svgEl('rect', {
+        x: PAD, y, width: nameWidth, height: rowH, fill: 'transparent',
+      });
+      namesG.appendChild(svgEl('g', {}, hit, twisty, heading, count));
+      if (interactive && onToggleRow) {
+        hit.style.cursor = 'pointer';
+        hit.appendChild(svgEl('title', { text: '開く / 閉じる' }));
+        hit.addEventListener('click', () => onToggleRow(row));
+      }
+      rowsG.appendChild(svgEl('line', {
+        x1: originX, y1: y + rowH, x2: PAD + nameWidth + chartW, y2: y + rowH,
+        stroke: colors.grid, 'stroke-width': 1,
+      }));
+      return;
+    }
+
+    const { task, depth, hasChildren } = row;
+    const indent = PAD + 8 + depth * 12 + (hasChildren ? 12 : 0);
     const label = truncate(task.title, Math.max(4, Math.floor((nameWidth - (indent - PAD) - 34) / 12)));
+
+    // 子を持つ行には開閉の三角を出す
+    if (hasChildren && !roadmap) {
+      const twisty = svgEl('text', {
+        x: PAD + 8 + depth * 12, y: y + rowH / 2 + 4, 'font-size': 9,
+        fill: colors.muted, text: row.collapsed ? '▶' : '▼',
+      });
+      if (interactive && onToggleRow) {
+        twisty.style.cursor = 'pointer';
+        twisty.appendChild(svgEl('title', { text: '子タスクを開く / 閉じる' }));
+        twisty.addEventListener('click', (event) => {
+          event.stopPropagation();
+          onToggleRow(row);
+        });
+      }
+      namesG.appendChild(twisty);
+    }
 
     const nameNode = svgEl('text', {
       x: indent, y: y + rowH / 2 + 4, 'font-size': 11.5,
-      'font-weight': hasChildren ? 650 : 400,
+      'font-weight': hasChildren || row.lead ? 650 : 400,
       fill: task.status === 'done' ? colors.muted : colors.text,
       text: (task.is_milestone ? '◆ ' : '')
-        + (task.blocks_open && task.status !== 'done' ? '⛔ ' : '') + label,
+        + (task.blocks_open && task.status !== 'done' ? '⛔ ' : '') + label
+        + (row.collapsed && task.child_count ? ` (${task.child_count})` : ''),
     });
     if (interactive) {
       nameNode.style.cursor = 'pointer';
@@ -757,7 +985,7 @@ export function buildGanttSvg({
       node.appendChild(svgEl('title', { text: `${task.title} — ${dueISO}` }));
       const label = svgEl('text', {
         x: cx + size + 5, y: cy + 4, 'font-size': 10.5, fill: colors.muted,
-        text: truncate(task.title, 18),
+        text: truncate(task.title, 18) + (show.date && dueISO ? ` (${shortDate(dueISO)})` : ''),
       });
       const group = svgEl('g', {}, node, label);
       rowsG.appendChild(group);
@@ -841,7 +1069,7 @@ export function buildGanttSvg({
       });
       barLabel.appendChild(svgEl('title', { text: task.title }));
       group.appendChild(barLabel);
-      if (progress > 0 && bw > 110) {
+      if (show.progress && progress > 0 && bw > 110) {
         group.appendChild(svgEl('text', {
           x: bx + bw - 8, y: by + barH / 2 + 4, 'font-size': 10.5, 'text-anchor': 'end',
           fill: inside && progress >= 95 ? '#ffffff' : colors.muted, text: `${progress}%`,
@@ -852,8 +1080,11 @@ export function buildGanttSvg({
     }
 
     const labelParts = [];
-    if (progress > 0 && progress < 100) labelParts.push(`${progress}%`);
-    if (task.assignee_name) labelParts.push(task.assignee_name);
+    if (show.date && (startISO || dueISO)) {
+      labelParts.push(`${shortDate(startISO)}〜${shortDate(dueISO)}`);
+    }
+    if (show.progress && progress > 0 && progress < 100) labelParts.push(`${progress}%`);
+    if (show.assignee && task.assignee_name) labelParts.push(task.assignee_name);
     let sideLabel = null;
     if (labelParts.length && bx + bw + 6 < originX + chartW) {
       sideLabel = svgEl('text', {
@@ -1107,6 +1338,13 @@ export function buildGanttSvg({
     }));
   }
   return svg;
+}
+
+/** バーの横に添える「9/14」形式の日付。 */
+function shortDate(iso) {
+  if (!iso) return '—';
+  const [, month, day] = String(iso).slice(0, 10).split('-');
+  return `${Number(month)}/${Number(day)}`;
 }
 
 /** Pick a day width so the chart fills the target slide width exactly. */
