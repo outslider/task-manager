@@ -3,6 +3,7 @@
  * トップバーの検索窓（または「/」キー）から開く。結果はその場に重ねて出し、
  * 選ぶとそれぞれの画面へ飛ぶ。 */
 import { api } from '../api.js';
+import { refreshRoute } from '../app.js';
 import { closeAllOverlays, debounce, dueClass, el, fill, formatDate } from '../util.js';
 
 const KIND_ROUTE = {
@@ -71,22 +72,24 @@ function hit(kind, item, input) {
   const open = async () => {
     hide();
     input.value = '';
+    // 検索から開いた場合、後ろの画面が何かは分からないので、変更されたら丸ごと描き直す
+    const onChange = () => refreshRoute();
     if (kind === 'task') {
       closeAllOverlays();
       const { openTaskDetail } = await import('./taskDetail.js');
-      openTaskDetail(item.id);
+      openTaskDetail(item.id, { onChange });
     } else if (kind === 'issue') {
       closeAllOverlays();
       const { openIssueDetail } = await import('./issueDetail.js');
-      openIssueDetail(item.id);
+      openIssueDetail(item.id, { onChange });
     } else if (kind === 'comment') {
       closeAllOverlays();
       if (item.task_id) {
         const { openTaskDetail } = await import('./taskDetail.js');
-        openTaskDetail(item.task_id);
+        openTaskDetail(item.task_id, { onChange });
       } else {
         const { openIssueDetail } = await import('./issueDetail.js');
-        openIssueDetail(item.issue_id);
+        openIssueDetail(item.issue_id, { onChange });
       }
     } else if (kind === 'todo') {
       location.hash = '#/todos';

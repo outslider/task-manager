@@ -140,7 +140,7 @@ async function renderDetail(instance, taskId, onChange) {
   body.append(warnings(task, metrics, conflicts));
   body.append(el('div', { class: 'detail-grid' },
     el('div', { class: 'detail-wide' }, el('span', { class: 'label', text: '親タスク' }),
-      parentControl(task, path, canEdit, reload)),
+      parentControl(task, path, canEdit, reload, onChange)),
     el('div', {}, el('span', { class: 'label', text: '状態' }), statusSelect),
     el('div', {}, el('span', { class: 'label', text: 'カテゴリ' }), categoryInput),
     el('div', {}, el('span', { class: 'label', text: '担当者' }), assignee),
@@ -490,12 +490,12 @@ async function addDependency(task, reload) {
 
 
 /** 親タスクの表示と付け替え。ドラッグの効かない端末でもここから変えられる。 */
-function parentControl(task, path, canEdit, reload) {
+function parentControl(task, path, canEdit, reload, onChange) {
   const parent = path.length ? path[path.length - 1] : null;
   const label = parent
     ? el('a', {
       href: '#', class: 'parent-current',
-      onClick: (event) => { event.preventDefault(); openTaskDetail(parent.id); },
+      onClick: (event) => { event.preventDefault(); openTaskDetail(parent.id, { onChange }); },
       text: parent.title,
     })
     : el('span', { class: 'cell-mut', text: 'トップレベル' });

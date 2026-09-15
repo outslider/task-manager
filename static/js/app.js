@@ -174,6 +174,11 @@ export function setHeader(title, actions = []) {
   document.title = `${title} — ${store.ui.app_name || 'タスク管理'}`;
 }
 
+/** いま表示している画面を描き直す。重なったドロワーから中身を変えたときに使う。 */
+export function refreshRoute() {
+  return renderRoute();
+}
+
 export function contentEl() {
   return shell.content;
 }

@@ -96,8 +96,7 @@ export async function render(container, route) {
       preset: dates,
     });
     if (!saved) return;
-    data = await api.projectTasks(projectId);
-    draw();
+    await refresh();
     toast(`${saved.title} を追加しました`, 'ok');
   }
 
@@ -310,6 +309,24 @@ export async function render(container, route) {
     }
   }
 
+  /** サーバーから読み直して引き直す。見ていた横位置は保つ。 */
+  async function refresh() {
+    const scrollLeft = scroll.scrollLeft;
+    try {
+      data = await api.projectTasks(projectId);
+    } catch (error) {
+      toast(error.message, 'error');
+      return;
+    }
+    draw();
+    scroll.scrollLeft = scrollLeft;
+  }
+
+  /** 詳細ドロワーを開く。中で変更されたら、そのつどチャートを引き直す。 */
+  function openTask(taskId) {
+    openTaskDetail(taskId, { onChange: refresh });
+  }
+
   function draw() {
     const rows = visibleRows();
     const milestones = milestoneRows();
@@ -324,7 +341,7 @@ export async function render(container, route) {
       // ロードマップは見せるための図なので、ドラッグ編集はガント表示だけにする
       editable: canEdit && !roadmap, onEdit: applyEdit, scroller: scroll,
       roadmap, milestones, holidays: holidayMap,
-      onCreate: canEdit ? addTask : null,
+      onCreate: canEdit ? addTask : null, onOpenTask: openTask,
     });
     drawLegend();
     fill(scroll, svg);
@@ -338,17 +355,13 @@ export async function render(container, route) {
 
   /** バーをドラッグして確定した日程を保存する。 */
   async function applyEdit(task, patch) {
-    const scrollLeft = scroll.scrollLeft;
     try {
       await api.patch(`/api/tasks/${task.id}`, patch);
-      data = await api.projectTasks(projectId);
-      draw();
-      scroll.scrollLeft = scrollLeft;     // 見ていた位置を保つ
+      await refresh();
       toast(`${task.title}: ${patch.start_date || '—'} 〜 ${patch.due_date}`, 'ok');
     } catch (error) {
       toast(error.message, 'error');
-      draw();
-      scroll.scrollLeft = scrollLeft;
+      await refresh();                    // 画面を実際の値に戻す
     }
   }
 
@@ -461,9 +474,11 @@ export function buildGanttSvg({
   rows, range, scale, deps = [], conflicts = [], colorBy = 'status',
   title = null, subtitle = null, editable = false, onEdit = null, scroller = null,
   nameWidth = NAME_W_DEFAULT, interactive = false, forExport = false,
-  roadmap = false, milestones = [], holidays = null, onCreate = null,
+  roadmap = false, milestones = [], holidays = null, onCreate = null, onOpenTask = null,
 }) {
   const colorOf = (COLOR_MODES[colorBy] || COLOR_MODES.status).color;
+  // 呼び出し側が渡してくれば、閉じたときにチャートを引き直せる
+  const openTask = onOpenTask || ((id) => openTaskDetail(id));
   const conflictEdges = new Set(
     conflicts.map((c) => `${c.depends_on_id}->${c.task_id}`));
   const totalDays = Math.max(1, daysBetween(range.from, range.to) + 1);
@@ -712,7 +727,7 @@ export function buildGanttSvg({
     if (interactive) {
       nameNode.style.cursor = 'pointer';
       nameNode.appendChild(svgEl('title', { text: task.title }));
-      nameNode.addEventListener('click', () => openTaskDetail(task.id));
+      nameNode.addEventListener('click', () => openTask(task.id));
     }
     namesG.appendChild(nameNode);
 
@@ -748,7 +763,7 @@ export function buildGanttSvg({
       rowsG.appendChild(group);
       if (interactive) {
         group.style.cursor = 'pointer';
-        group.addEventListener('click', () => openTaskDetail(task.id));
+        group.addEventListener('click', () => openTask(task.id));
       }
       if (canDrag(task)) {
         attachDrag({
@@ -804,7 +819,7 @@ export function buildGanttSvg({
     }));
     if (interactive) {
       group.style.cursor = 'pointer';
-      group.addEventListener('click', () => openTaskDetail(task.id));
+      group.addEventListener('click', () => openTask(task.id));
     }
     rowsG.appendChild(group);
 
@@ -1005,7 +1020,7 @@ export function buildGanttSvg({
         }));
       if (interactive) {
         group.style.cursor = 'pointer';
-        group.addEventListener('click', () => openTaskDetail(task.id));
+        group.addEventListener('click', () => openTask(task.id));
       }
       laneG.appendChild(group);
     }
