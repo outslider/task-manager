@@ -1008,3 +1008,23 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .search-sub .overdue { color: var(--danger); font-weight: 600; }
 .search-empty { padding: 18px; text-align: center; color: var(--text-muted); font-size: 13px; }
+
+/* ---------- @メンション ---------- */
+.mention-menu {
+  position: fixed; z-index: 220; width: min(270px, calc(100vw - 16px));
+  max-height: 240px; overflow-y: auto; padding: 5px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+}
+.mention-option {
+  display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left;
+  padding: 6px 9px; border: 0; border-radius: 8px; background: none; color: inherit;
+  font: inherit; cursor: pointer;
+}
+.mention-option:hover, .mention-option.active { background: var(--accent-soft); }
+.mention-name { font-weight: 550; }
+.mention-option .hint { margin: 0; font-size: 11px; }
+.mention {
+  color: var(--accent); font-weight: 650; background: var(--accent-soft);
+  border-radius: 5px; padding: 0 3px;
+}

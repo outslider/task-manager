@@ -29,6 +29,7 @@ DDL = [
         notify_comment  TINYINT(1) NOT NULL DEFAULT 1,   -- 自分が関わるものへのコメント
         notify_due      TINYINT(1) NOT NULL DEFAULT 1,   -- 期限が近い / 超過
         notify_digest   TINYINT(1) NOT NULL DEFAULT 1,   -- 日次レポート
+        notify_mention  TINYINT(1) NOT NULL DEFAULT 1,   -- コメントで名前を呼ばれたとき
         avatar_color  VARCHAR(20)  NOT NULL DEFAULT '#4f8cff',
         ui_theme      VARCHAR(10)  NOT NULL DEFAULT 'auto',   -- auto|light|dark
         ui_accent     VARCHAR(20)  NOT NULL DEFAULT '',       -- 空なら組織の既定色
@@ -484,6 +485,8 @@ MIGRATIONS = [
      "ALTER TABLE users ADD COLUMN notify_due TINYINT(1) NOT NULL DEFAULT 1"),
     ("users", "notify_digest",
      "ALTER TABLE users ADD COLUMN notify_digest TINYINT(1) NOT NULL DEFAULT 1"),
+    ("users", "notify_mention",
+     "ALTER TABLE users ADD COLUMN notify_mention TINYINT(1) NOT NULL DEFAULT 1"),
     ("projects", "notify_enabled",
      "ALTER TABLE projects ADD COLUMN notify_enabled TINYINT(1) NOT NULL DEFAULT 1"),
     ("projects", "slack_events",

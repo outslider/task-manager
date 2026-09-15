@@ -323,6 +323,7 @@ CREATE TABLE `users` (
   `notify_comment` tinyint(1) NOT NULL DEFAULT 1,
   `notify_due` tinyint(1) NOT NULL DEFAULT 1,
   `notify_digest` tinyint(1) NOT NULL DEFAULT 1,
+  `notify_mention` tinyint(1) NOT NULL DEFAULT 1,
   `avatar_color` varchar(20) NOT NULL DEFAULT '#4f8cff',
   `ui_theme` varchar(10) NOT NULL DEFAULT 'auto',
   `ui_accent` varchar(20) NOT NULL DEFAULT '',

@@ -80,8 +80,26 @@ export async function render(container, route) {
 
   const syncHeader = () => setHeader(
     `${project.name} — ${state.mode === 'roadmap' ? 'ロードマップ' : 'ガント'}`,
-    [el('button', { class: 'btn btn-primary', onClick: () => exportDialog() }, '⬇ エクスポート')]);
+    [
+      canEdit
+        ? el('button', { class: 'btn', onClick: () => addTask() }, '＋ タスク')
+        : null,
+      el('button', { class: 'btn btn-primary', onClick: () => exportDialog() }, '⬇ エクスポート'),
+    ]);
   syncHeader();
+
+  /** ガント画面からタスクを足す。期間を渡すとその日程で開く。 */
+  async function addTask(dates = null) {
+    const { openTaskForm } = await import('./taskForm.js');
+    const saved = await openTaskForm({
+      project, tasks: data.tasks, deps: data.deps, members: data.members,
+      preset: dates,
+    });
+    if (!saved) return;
+    data = await api.projectTasks(projectId);
+    draw();
+    toast(`${saved.title} を追加しました`, 'ok');
+  }
 
   const scroll = el('div', { class: 'gantt-scroll' });
 
@@ -163,7 +181,9 @@ export async function render(container, route) {
     if (hint) {
       hint.textContent = state.mode === 'roadmap'
         ? 'フェーズ（トップレベルのタスク）と節目だけを並べています'
-        : (canEdit ? 'バーをドラッグで移動、端をドラッグで期間変更' : '');
+        : (canEdit
+          ? 'バーをドラッグで移動、端をドラッグで期間変更。一番下の行をドラッグで新規追加'
+          : '');
     }
     fill(legend,
       ...COLOR_MODES[state.colorBy].legend().map((entry) => el('span', { class: 'legend-item' },
@@ -304,6 +324,7 @@ export async function render(container, route) {
       // ロードマップは見せるための図なので、ドラッグ編集はガント表示だけにする
       editable: canEdit && !roadmap, onEdit: applyEdit, scroller: scroll,
       roadmap, milestones, holidays: holidayMap,
+      onCreate: canEdit ? addTask : null,
     });
     drawLegend();
     fill(scroll, svg);
@@ -440,7 +461,7 @@ export function buildGanttSvg({
   rows, range, scale, deps = [], conflicts = [], colorBy = 'status',
   title = null, subtitle = null, editable = false, onEdit = null, scroller = null,
   nameWidth = NAME_W_DEFAULT, interactive = false, forExport = false,
-  roadmap = false, milestones = [], holidays = null,
+  roadmap = false, milestones = [], holidays = null, onCreate = null,
 }) {
   const colorOf = (COLOR_MODES[colorBy] || COLOR_MODES.status).color;
   const conflictEdges = new Set(
@@ -451,8 +472,13 @@ export function buildGanttSvg({
   const titleH = title ? 42 : 0;
   const rowH = roadmap ? ROADMAP_ROW_H : ROW_H;
   const laneH = roadmap && milestones.length ? MILESTONE_LANE_H : 0;
+  // 一番下に「ドラッグして追加」の空き行を1つ置く
+  const ghostRows = interactive && editable && onCreate && !roadmap ? 1 : 0;
+  const totalRows = rows.length + ghostRows;
+  // 「タスクがありません」の一文を入れるぶんの余白
+  const noticeH = rows.length === 0 ? 28 : 0;
   const width = nameWidth + chartW + PAD * 2;
-  const height = titleH + HEADER_H + laneH + rows.length * rowH + PAD * 2 + 6;
+  const height = titleH + HEADER_H + laneH + totalRows * rowH + noticeH + PAD * 2 + 6;
 
   const colors = forExport
     ? {
@@ -501,7 +527,7 @@ export function buildGanttSvg({
   svg.appendChild(bands);
 
   const gridG = svgEl('g');
-  const bodyH = rows.length * rowH;
+  const bodyH = totalRows * rowH;
   const holidayName = (date) => (holidays ? holidays.get(toISO(date)) : null) || null;
   if (scale.key === 'day') {
     for (let i = 0; i < totalDays; i += 1) {
@@ -641,7 +667,7 @@ export function buildGanttSvg({
   const barGeom = new Map();
 
   namesG.appendChild(svgEl('rect', {
-    x: PAD - 1, y: titleH + PAD, width: nameWidth + 1, height: HEADER_H + laneH + rows.length * rowH,
+    x: PAD - 1, y: titleH + PAD, width: nameWidth + 1, height: HEADER_H + laneH + totalRows * rowH,
     fill: colors.bg,
   }));
   namesG.appendChild(svgEl('rect', {
@@ -853,6 +879,80 @@ export function buildGanttSvg({
     barGeom.set(task.id, { x1: bx, x2: bx + bw, y: by + barH / 2 });
   });
 
+  /* ---- 一番下の「ドラッグして追加」行 ---- */
+  if (ghostRows) {
+    const y = originY + rows.length * rowH;
+    const laneRect = svgEl('rect', {
+      x: originX, y, width: chartW, height: rowH,
+      fill: 'transparent', style: 'cursor: crosshair',
+    });
+    laneRect.appendChild(svgEl('title', {
+      text: 'ドラッグすると、その期間で新しいタスクを追加できます',
+    }));
+    namesG.appendChild(svgEl('text', {
+      x: PAD + 8, y: y + rowH / 2 + 4, 'font-size': 11.5, fill: colors.muted,
+      text: '＋ 新しいタスク',
+    }));
+    namesG.appendChild(svgEl('rect', {
+      x: PAD, y, width: nameWidth, height: rowH,
+      fill: 'transparent', style: 'cursor: pointer',
+    })).addEventListener('click', () => onCreate({}));
+
+    const preview = svgEl('rect', {
+      y: y + (rowH - 14) / 2, height: 14, rx: 4,
+      fill: 'var(--accent)', opacity: 0.35, stroke: 'var(--accent)', 'stroke-width': 1,
+      visibility: 'hidden',
+    });
+    const hint = svgEl('text', {
+      y: y + rowH / 2 + 4, 'font-size': 10.5, fill: colors.text, visibility: 'hidden',
+    });
+    const group = svgEl('g', {}, laneRect, preview, hint);
+    rowsG.appendChild(group);
+
+    const dayAt = (px) => Math.max(0, Math.min(totalDays - 1,
+      Math.floor((px - originX) / dayWidth)));
+    let anchor = null;
+
+    const paint = (from, to) => {
+      const [a, b] = from <= to ? [from, to] : [to, from];
+      preview.setAttribute('x', originX + a * dayWidth + 1);
+      preview.setAttribute('width', Math.max(2, (b - a + 1) * dayWidth - 2));
+      preview.setAttribute('visibility', 'visible');
+      hint.setAttribute('x', originX + a * dayWidth + 4);
+      hint.setAttribute('visibility', 'visible');
+      hint.textContent = `${toISO(addDays(range.from, a))} 〜 ${toISO(addDays(range.from, b))}`;
+    };
+    const clear = () => {
+      preview.setAttribute('visibility', 'hidden');
+      hint.setAttribute('visibility', 'hidden');
+    };
+
+    laneRect.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      anchor = dayAt(svgPoint(laneRect, event).x);
+      paint(anchor, anchor);
+      laneRect.setPointerCapture(event.pointerId);
+    });
+    laneRect.addEventListener('pointermove', (event) => {
+      if (anchor === null) return;
+      paint(anchor, dayAt(svgPoint(laneRect, event).x));
+    });
+    const finish = (event) => {
+      if (anchor === null) return;
+      const end = dayAt(svgPoint(laneRect, event).x);
+      const [a, b] = anchor <= end ? [anchor, end] : [end, anchor];
+      anchor = null;
+      clear();
+      onCreate({
+        start_date: toISO(addDays(range.from, a)),
+        due_date: toISO(addDays(range.from, b)),
+      });
+    };
+    laneRect.addEventListener('pointerup', finish);
+    laneRect.addEventListener('pointercancel', () => { anchor = null; clear(); });
+  }
+
   /* ---- マイルストーンのレーン（ロードマップ表示） ---- */
   if (laneH) {
     const laneY = titleH + PAD + HEADER_H;
@@ -983,8 +1083,12 @@ export function buildGanttSvg({
 
   if (rows.length === 0) {
     svg.appendChild(svgEl('text', {
-      x: width / 2, y: originY + 30, 'text-anchor': 'middle', 'font-size': 13,
-      fill: colors.muted, text: '表示できるタスクがありません',
+      x: width / 2, y: originY + totalRows * rowH + 20, 'text-anchor': 'middle',
+      'font-size': 13,
+      fill: colors.muted,
+      text: ghostRows
+        ? '表示できるタスクがありません（上の行をドラッグすると追加できます）'
+        : '表示できるタスクがありません',
     }));
   }
   return svg;

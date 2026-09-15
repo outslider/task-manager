@@ -10,6 +10,7 @@ import {
 import { openTaskForm } from './taskForm.js';
 import { categorySelect, userSelect } from './pickers.js';
 import { openParentPicker, setParent } from './hierarchy.js';
+import { attachMentions, commentText } from './mention.js';
 
 let openInstance = null;
 
@@ -300,21 +301,26 @@ async function renderDetail(instance, taskId, onChange) {
     list.append(el('div', { class: 'hint', text: 'まだコメントはありません' }));
   }
   for (const comment of comments) {
-    list.append(commentRow(comment, reload));
+    list.append(commentRow(comment, reload, members));
   }
   body.append(list);
 
   if (canComment) {
     const input = el('textarea', {
-      class: 'textarea', placeholder: '進捗や気づいたことをコメント… (Ctrl+Enter で送信)',
+      class: 'textarea',
+      placeholder: '進捗や気づいたことをコメント…（@ でメンバーを呼べます / Ctrl+Enter で送信）',
       style: { minHeight: '64px' },
     });
+    attachMentions(input, () => members || []);
     const send = async () => {
       const value = input.value.trim();
       if (!value) return;
       try {
-        await api.post(`/api/tasks/${task.id}/comments`, { body: value });
+        const result = await api.post(`/api/tasks/${task.id}/comments`, { body: value });
         input.value = '';
+        if (result.mentioned?.length) {
+          toast(`${result.mentioned.join('、')} さんに通知しました`, 'ok');
+        }
         reload();
       } catch (error) { toast(error.message, 'error'); }
     };
@@ -357,7 +363,7 @@ function sectionTitle(text, action) {
     el('span', { text }), el('span', { class: 'line' }), action || null);
 }
 
-function commentRow(comment, reload) {
+function commentRow(comment, reload, members) {
   const own = comment.user_id === store.user?.id;
   const canDelete = comment.kind !== 'system' && (own || store.isAdmin());
   return el('div', { class: `comment ${comment.kind}` },
@@ -378,7 +384,7 @@ function commentRow(comment, reload) {
             },
           }, '削除')
           : null),
-      el('div', { class: 'comment-text', text: comment.body })));
+      commentText(comment.body, members)));
 }
 
 function attachmentRow(att, canEdit, reload) {

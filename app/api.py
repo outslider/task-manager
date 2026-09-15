@@ -8,8 +8,8 @@ from urllib.parse import quote
 
 import pymysql
 
-from . import (auth, db, graph, holidays, llm, nlp, notify, prefs, recurrence,
-               slack, workload)
+from . import (auth, db, graph, holidays, llm, mentions, nlp, notify, prefs,
+               recurrence, slack, workload)
 from .config import MAX_UPLOAD_BYTES, UPLOAD_DIR
 from .http_util import (HttpError, as_bool, as_date, as_int, bad_request, forbidden,
                         json_response, not_found, require, unauthorized, Response)
@@ -1325,15 +1325,15 @@ def add_comment(ctx, task_id):
         "INSERT INTO comments(task_id, user_id, body, kind, created_at) VALUES(%s,%s,%s,%s,%s)",
         (task_id, user["id"], body, kind, db.now()))
     touch_task(task_id)
-    _notify_comment(task, user, body)
+    notified = _notify_comment(task, user, body)
     row = db.query_one(
         "SELECT c.*, u.name AS user_name, u.avatar_color FROM comments c "
         "LEFT JOIN users u ON u.id = c.user_id WHERE c.id=%s", (comment_id,))
-    return json_response({"comment": row}, 201)
+    return json_response({"comment": row, "mentioned": notified}, 201)
 
 
 def _notify_comment(task, actor, body):
-    """Notify the assignee and everyone who already commented on the task."""
+    """担当者・作成者・すでにコメントした人、それに名前を呼ばれた人へ知らせる。"""
     recipients = set()
     if task["assignee_id"]:
         recipients.add(task["assignee_id"])
@@ -1343,14 +1343,24 @@ def _notify_comment(task, actor, body):
             "SELECT DISTINCT user_id FROM comments WHERE task_id=%s AND kind='comment' "
             "AND user_id IS NOT NULL", (task["id"],)):
         recipients.add(r["user_id"])
+    mentioned, _labels = mentions.find(body, project_member_users(task["project_id"]))
+    mentioned_ids = {m["id"] for m in mentioned} - {actor["id"]}
     recipients.discard(actor["id"])
+    recipients -= mentioned_ids          # 呼ばれた人には専用の通知を出す
     excerpt = body if len(body) <= 300 else body[:300] + "…"
+    for user_id in mentioned_ids:
+        notify.create(
+            user_id, "mention", "{} さんがあなたを呼んでいます: {}".format(
+                actor["name"], task["title"]),
+            "{}\n\n{}".format(excerpt, notify.task_url(task["id"])),
+            task_id=task["id"], project_id=task["project_id"])
     for user_id in recipients:
         notify.create(
             user_id, "comment", "コメント: {}".format(task["title"]),
             "{} さんのコメント\n\n{}\n\n{}".format(
                 actor["name"], excerpt, notify.task_url(task["id"])),
             task_id=task["id"], project_id=task["project_id"])
+    return [m["name"] for m in mentioned if m["id"] in mentioned_ids]
 
 
 @route("DELETE", r"/api/comments/(\d+)")
@@ -2721,11 +2731,11 @@ def add_issue_comment(ctx, issue_id):
         "INSERT INTO comments(issue_id, user_id, body, kind, created_at) "
         "VALUES(%s,%s,%s,'comment',%s)", (issue_id, user["id"], body, db.now()))
     db.execute("UPDATE issues SET updated_at=%s WHERE id=%s", (db.now(), issue_id))
-    _notify_issue_comment(issue, user, body)
+    notified = _notify_issue_comment(issue, user, body)
     row = db.query_one(
         "SELECT c.*, u.name AS user_name, u.avatar_color FROM comments c "
         "LEFT JOIN users u ON u.id = c.user_id WHERE c.id=%s", (comment_id,))
-    return json_response({"comment": row}, 201)
+    return json_response({"comment": row, "mentioned": notified}, 201)
 
 
 def _notify_issue_comment(issue, actor, body):
@@ -2737,14 +2747,22 @@ def _notify_issue_comment(issue, actor, body):
     for r in db.query("SELECT DISTINCT user_id FROM comments WHERE issue_id=%s "
                       "AND kind='comment' AND user_id IS NOT NULL", (issue["id"],)):
         recipients.add(r["user_id"])
+    mentioned, _labels = mentions.find(body, project_member_users(issue["project_id"]))
+    mentioned_ids = {m["id"] for m in mentioned} - {actor["id"]}
     recipients.discard(actor["id"])
+    recipients -= mentioned_ids
     base = db.get_setting("app_base_url", "").rstrip("/")
     link = "{}/#/issue/{}".format(base, issue["id"]) if base else ""
     excerpt = body if len(body) <= 300 else body[:300] + "…"
+    for user_id in mentioned_ids:
+        notify.create(user_id, "mention", "{} さんがあなたを呼んでいます: {}".format(
+            actor["name"], issue["title"]),
+            "{}\n\n{}".format(excerpt, link), project_id=issue["project_id"])
     for user_id in recipients:
         notify.create(user_id, "comment", "課題コメント: {}".format(issue["title"]),
                       "{} さんのコメント\n\n{}\n\n{}".format(actor["name"], excerpt, link),
                       project_id=issue["project_id"])
+    return [m["name"] for m in mentioned if m["id"] in mentioned_ids]
 
 
 @route("POST", r"/api/issues/(\d+)/attachments")

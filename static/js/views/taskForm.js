@@ -21,6 +21,7 @@ export function dependencyPicker(candidates, selectedIds = []) {
  */
 export function openTaskForm({
   project, task = null, parentId = null, tasks = [], deps = [], members = null,
+  preset = null,
 }) {
   const editing = Boolean(task);
   const fields = {};
@@ -53,10 +54,11 @@ export function openTaskForm({
       fields.priority = el('select', { class: 'select' },
         ...Object.entries(IMPORTANCE_LABEL).reverse().map(([value, label]) =>
           option(value, label, String(task?.priority ?? 1) === value)));
+      // ガント上でドラッグして開いた場合は、その期間を初期値にする
       fields.start = el('input', { class: 'input', type: 'date' });
-      fields.start.value = task?.start_date || '';
+      fields.start.value = task?.start_date || preset?.start_date || '';
       fields.due = el('input', { class: 'input', type: 'date' });
-      fields.due.value = task?.due_date || '';
+      fields.due.value = task?.due_date || preset?.due_date || '';
       fields.estimate = el('input', {
         class: 'input', type: 'number', min: 0, step: 0.5, placeholder: '任意',
       });

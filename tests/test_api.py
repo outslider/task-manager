@@ -2336,3 +2336,142 @@ class TestHolidayApi(ApiTestCase):
                         "祝日のある週は使える時間が減ること")
         for week in weeks.values():
             self.assertEqual(week["capacity"], 8.0 * (5 - len(week["holidays"])))
+
+
+class TestCommentMentions(ApiTestCase):
+    """コメントで名前を呼ばれた人への通知。"""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project()
+        self.task = self.make_task(self.project["id"], "メンション対象")
+        self.hanako, self.hanako_mail = self.make_user("佐藤 花子")
+        self.ichiro, self.ichiro_mail = self.make_user("鈴木 一郎")
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": self.hanako["id"],
+                         "role": "editor"},
+                        {"principal_type": "user", "principal_id": self.ichiro["id"],
+                         "role": "editor"}]})
+
+    def notifications_for(self, user_id, ntype=None):
+        sql = "SELECT type, title, body FROM notifications WHERE user_id=%s"
+        params = [user_id]
+        if ntype:
+            sql += " AND type=%s"
+            params.append(ntype)
+        return list(db.query(sql, params))      # db.query はタプルを返す
+
+    def comment(self, body, client=None):
+        status, data = (client or self.admin).post(
+            "/api/tasks/{}/comments".format(self.task["id"]), {"body": body})
+        self.assertEqual(status, 201, data)
+        return data
+
+    def test_a_mentioned_member_is_notified(self):
+        data = self.comment("@佐藤 花子 確認おねがいします")
+        self.assertEqual(data["mentioned"], ["佐藤 花子"])
+        rows = self.notifications_for(self.hanako["id"], "mention")
+        self.assertEqual(len(rows), 1)
+        self.assertIn("あなたを呼んでいます", rows[0]["title"])
+        self.assertIn("確認おねがいします", rows[0]["body"])
+
+    def test_someone_not_mentioned_gets_nothing(self):
+        self.comment("@佐藤 花子 おねがいします")
+        self.assertEqual(self.notifications_for(self.ichiro["id"]), [])
+
+    def test_mentioning_works_even_without_any_other_involvement(self):
+        """担当でも作成者でもコメント済みでもない人を、名前だけで呼べること。"""
+        self.assertEqual(self.notifications_for(self.ichiro["id"]), [])
+        self.comment("@鈴木 一郎 も見ておいてください")
+        self.assertEqual(len(self.notifications_for(self.ichiro["id"], "mention")), 1)
+
+    def test_a_mentioned_person_does_not_also_get_the_plain_comment_notice(self):
+        """担当者を呼んだときに、通知が二重に飛ばないこと。"""
+        self.admin.patch("/api/tasks/{}".format(self.task["id"]),
+                         {"assignee_id": self.hanako["id"]})
+        self.comment("@佐藤 花子 おねがいします")
+        types = [r["type"] for r in self.notifications_for(self.hanako["id"])]
+        self.assertEqual(types.count("mention"), 1)
+        self.assertEqual(types.count("comment"), 0)
+
+    def test_mentioning_yourself_does_nothing(self):
+        client = self.client_for(self.hanako_mail)
+        data = self.comment("@佐藤 花子 メモ", client=client)
+        self.assertEqual(data["mentioned"], [])
+        self.assertEqual(self.notifications_for(self.hanako["id"], "mention"), [])
+
+    def test_a_non_member_cannot_be_mentioned(self):
+        outsider, _ = self.make_user("部外者 太郎")
+        data = self.comment("@部外者 太郎 見て")
+        self.assertEqual(data["mentioned"], [])
+        self.assertEqual(self.notifications_for(outsider["id"]), [])
+
+    def test_mentions_follow_the_notification_preferences(self):
+        client = self.client_for(self.hanako_mail)
+        client.put("/api/me/notification-settings", {"mention": False})
+        self.assertFalse(prefs.email_allowed(self.hanako["id"], "mention",
+                                             self.project["id"]))
+        # 画面の通知には残す
+        self.comment("@佐藤 花子 おねがい")
+        self.assertEqual(len(self.notifications_for(self.hanako["id"], "mention")), 1)
+
+    def test_mention_is_offered_as_a_preference(self):
+        data = self.admin.get("/api/me/notification-settings")[1]
+        self.assertIn("mention", [e["value"] for e in data["events"]])
+        self.assertTrue(data["prefs"]["mention"])
+
+    def test_issue_comments_support_mentions(self):
+        issue = self.make_issue(self.project["id"], "メンションする課題")
+        status, data = self.admin.post("/api/issues/{}/comments".format(issue["id"]),
+                                       {"body": "@鈴木 一郎 対応おねがいします"})
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["mentioned"], ["鈴木 一郎"])
+        rows = self.notifications_for(self.ichiro["id"], "mention")
+        self.assertEqual(len(rows), 1)
+        self.assertIn("メンションする課題", rows[0]["title"])
+
+    def test_a_muted_project_stays_quiet(self):
+        client = self.client_for(self.hanako_mail)
+        client.put("/api/me/notification-settings",
+                   {"muted_project_ids": [self.project["id"]]})
+        self.assertFalse(prefs.email_allowed(self.hanako["id"], "mention",
+                                             self.project["id"]))
+
+
+class TestGanttTaskCreation(ApiTestCase):
+    """ガント画面からの追加は、通常のタスク作成 API をそのまま使う。
+    期間つきで作れることと、ガントが返すデータで画面を組めることを押さえる。"""
+
+    def test_a_task_can_be_created_with_a_span(self):
+        project = self.make_project()
+        status, data = self.admin.post("/api/tasks", {
+            "project_id": project["id"], "title": "ドラッグで作った",
+            "start_date": "2026-11-02", "due_date": "2026-11-06"})
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["task"]["start_date"], "2026-11-02")
+        self.assertEqual(data["task"]["due_date"], "2026-11-06")
+
+    def test_a_single_day_span_is_allowed(self):
+        project = self.make_project()
+        status, data = self.admin.post("/api/tasks", {
+            "project_id": project["id"], "title": "1日だけ",
+            "start_date": "2026-11-02", "due_date": "2026-11-02"})
+        self.assertEqual(status, 201, data)
+
+    def test_the_gantt_payload_has_what_the_form_needs(self):
+        project = self.make_project()
+        self.make_task(project["id"], "既存")
+        data = self.admin.get("/api/projects/{}/tasks".format(project["id"]))[1]
+        for key in ("tasks", "deps", "project", "members"):
+            self.assertIn(key, data, "{} が返っていません".format(key))
+
+    def test_a_viewer_cannot_create_from_the_gantt(self):
+        project = self.make_project()
+        user, email = self.make_user("閲覧のみ")
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "viewer"}]})
+        client = self.client_for(email)
+        self.assertEqual(client.post("/api/tasks", {
+            "project_id": project["id"], "title": "だめ",
+            "start_date": "2026-11-02", "due_date": "2026-11-06"})[0], 403)
