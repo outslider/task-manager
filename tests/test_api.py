@@ -2475,3 +2475,63 @@ class TestGanttTaskCreation(ApiTestCase):
         self.assertEqual(client.post("/api/tasks", {
             "project_id": project["id"], "title": "だめ",
             "start_date": "2026-11-02", "due_date": "2026-11-06"})[0], 403)
+
+
+class TestStaticCaching(ApiTestCase):
+    """更新したソースがブラウザに届くこと（キャッシュで古いままにならないこと）。"""
+
+    def raw(self, path, headers=None):
+        request = urllib.request.Request(self.base + path, headers=headers or {})
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, dict(response.headers), response.read()
+        except urllib.error.HTTPError as error:
+            return error.code, dict(error.headers), error.read()
+
+    def test_scripts_are_revalidated_every_time(self):
+        """期限で寝かせず、毎回サーバーに確認させること。"""
+        status, headers, _body = self.raw("/js/app.js")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Cache-Control"), "no-cache")
+        self.assertNotIn("max-age", headers.get("Cache-Control", ""))
+        self.assertTrue(headers.get("ETag"))
+        self.assertTrue(headers.get("Last-Modified"))
+
+    def test_an_unchanged_file_comes_back_as_304(self):
+        _status, headers, body = self.raw("/js/app.js")
+        etag = headers["ETag"]
+        status, _headers, second = self.raw("/js/app.js", {"If-None-Match": etag})
+        self.assertEqual(status, 304)
+        self.assertEqual(second, b"", "304 に本文を付けないこと")
+        self.assertTrue(body, "初回は本文が返ること")
+
+    def test_a_stale_etag_gets_the_new_file(self):
+        status, _headers, body = self.raw("/js/app.js", {"If-None-Match": '"nonsense"'})
+        self.assertEqual(status, 200)
+        self.assertTrue(body)
+
+    def test_a_weak_etag_is_accepted(self):
+        _status, headers, _body = self.raw("/css/style.css")
+        status, _h, _b = self.raw("/css/style.css",
+                                  {"If-None-Match": "W/" + headers["ETag"]})
+        self.assertEqual(status, 304)
+
+    def test_if_modified_since_is_honoured(self):
+        _status, headers, _body = self.raw("/css/style.css")
+        status, _h, _b = self.raw("/css/style.css",
+                                  {"If-Modified-Since": headers["Last-Modified"]})
+        self.assertEqual(status, 304)
+
+    def test_different_files_have_different_etags(self):
+        _s1, h1, _b1 = self.raw("/js/app.js")
+        _s2, h2, _b2 = self.raw("/js/api.js")
+        self.assertNotEqual(h1["ETag"], h2["ETag"])
+
+    def test_the_page_itself_is_never_stored(self):
+        _status, headers, _body = self.raw("/")
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+
+    def test_api_responses_are_never_stored(self):
+        status, headers, _body = self.raw("/api/meta")
+        self.assertIn(status, (200, 401))
+        self.assertEqual(headers.get("Cache-Control"), "no-store")

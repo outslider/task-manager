@@ -7,12 +7,14 @@
     python server.py --run-digest    # send the daily digest once and exit
 """
 import argparse
+import hashlib
 import logging
 import mimetypes
 import os
 import posixpath
 import re
 import sys
+from email.utils import formatdate, mktime_tz, parsedate_tz
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -60,14 +62,18 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, response: Response):
         body = response.body if isinstance(response.body, bytes) else str(response.body).encode()
         self.send_response(response.status)
-        self.send_header("Content-Type", response.content_type)
-        self.send_header("Content-Length", str(len(body)))
+        if response.status != 304:          # 304 は本文を持たない
+            self.send_header("Content-Type", response.content_type)
+            self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "same-origin")
+        # API の応答など、明示していないものは保存させない（古い内容を掴ませないため）
+        if not any(key.lower() == "cache-control" for key, _v in response.headers):
+            self.send_header("Cache-Control", "no-store")
         for key, value in response.headers:
             self.send_header(key, value)
         self.end_headers()
-        if self.command != "HEAD":
+        if self.command != "HEAD" and response.status != 304:
             self.wfile.write(body)
 
     def _read_body(self):
@@ -162,6 +168,12 @@ class Handler(BaseHTTPRequestHandler):
         return self._file_response(full)
 
     def _file_response(self, full_path, cache=True):
+        """静的ファイルを返す。
+
+        更新したのにブラウザが古いままになるのを避けるため、期限で寝かせるのでは
+        なく「毎回サーバーに確かめる」方式にしている（no-cache）。中身が変わって
+        いなければ 304 だけ返すので、通信量はほとんど増えない。
+        """
         if not os.path.isfile(full_path):
             raise HttpError(404, "ページが見つかりません")
         ext = os.path.splitext(full_path)[1].lower()
@@ -169,8 +181,39 @@ class Handler(BaseHTTPRequestHandler):
             or "application/octet-stream"
         with open(full_path, "rb") as fh:
             data = fh.read()
-        headers = [("Cache-Control", "public, max-age=300" if cache else "no-store")]
+        if not cache:
+            return Response(200, data, ctype, [("Cache-Control", "no-store")])
+
+        etag = '"{}"'.format(hashlib.sha256(data).hexdigest()[:20])
+        mtime = os.path.getmtime(full_path)
+        headers = [
+            ("Cache-Control", "no-cache"),
+            ("ETag", etag),
+            ("Last-Modified", formatdate(mtime, usegmt=True)),
+        ]
+        if self._matches_cache(etag, mtime):
+            return Response(304, b"", ctype, headers)
         return Response(200, data, ctype, headers)
+
+    def _matches_cache(self, etag, mtime):
+        """ブラウザが持っている版と同じかどうか。"""
+        candidates = self.headers.get("If-None-Match")
+        if candidates:
+            # 「W/"..."」や複数指定にも対応する
+            for candidate in candidates.split(","):
+                value = candidate.strip()
+                if value.startswith("W/"):
+                    value = value[2:]
+                if value in ("*", etag):
+                    return True
+            return False
+        since = self.headers.get("If-Modified-Since")
+        if since:
+            try:
+                return int(mtime) <= int(mktime_tz(parsedate_tz(since)))
+            except (TypeError, ValueError):
+                return False
+        return False
 
 
 class Server(ThreadingHTTPServer):

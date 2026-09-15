@@ -721,6 +721,12 @@ sudo systemctl restart task-manager
 設定項目だけを表示します。問題がなければ終了コード 0、差分があれば 1 を返すので
 監視にも使えます。
 
+画面側は**ふつうにリロードすれば新しいものに入れ替わります**（ハードリロードや
+キャッシュ削除は不要です）。JavaScript と CSS には `Cache-Control: no-cache` と
+`ETag` を付けてあり、ブラウザは毎回サーバーに確認し、変わっていなければ
+304（本文なし）で済ませます。期限つきのキャッシュではないので、更新が遅れて
+反映されることはありません。
+
 ```
 接続先: tmapp@127.0.0.1:3306/task_manager
 テーブル数: 19
@@ -892,6 +898,21 @@ sudo systemctl restart task-manager    # 再起動
 社外からアクセスする場合は必ず HTTPS 化してください。
 [`deploy/nginx.conf.example`](deploy/nginx.conf.example) を参考にリバースプロキシを立て、
 `config.ini` の `secure_cookie = 1` を設定します（セッション Cookie に `Secure` 属性が付きます）。
+
+### 静的ファイルのキャッシュ
+
+| 対象 | ヘッダー | ねらい |
+|---|---|---|
+| `index.html` | `Cache-Control: no-store` | 入口は必ず最新を取る |
+| JS / CSS / 画像 | `Cache-Control: no-cache` + `ETag` + `Last-Modified` | 毎回確認し、変わっていなければ 304。更新は即座に反映される |
+| API の応答 | `Cache-Control: no-store` | 古いデータを掴ませない |
+
+`no-cache` は「キャッシュしない」ではなく「**使う前に必ず確認する**」という意味です。
+実測では、変更していないファイルはすべて 304（本文なし）で返るため、
+毎回リロードしても通信量はほとんど増えません。
+
+ビルド工程を持たない構成なので、ファイル名にハッシュを付ける方式は採らず、
+サーバー側での検証に寄せています。
 
 ### セキュリティ上の実装
 
