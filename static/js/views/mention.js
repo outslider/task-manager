@@ -118,17 +118,54 @@ export function attachMentions(input, getPeople) {
   return { close };
 }
 
-/** コメント本文を、@メンバーだけ色を変えて表示する。 */
-export function commentText(body, people) {
-  const node = el('div', { class: 'comment-text' });
+/* URL らしき並び。末尾の句読点や閉じ括弧は URL に含めない。 */
+const URL_PATTERN = /https?:\/\/[^\s　<>"'）］｝】]+/g;
+const TRAILING_JUNK = /[.,;:!?。、）)\]］}｝】”"'…]+$/;
+
+/** 本文の中の URL を、実際に開けるリンクにして返す。 */
+export function linkify(text, into) {
+  const node = into || el('span', {});
+  const source = String(text);
+  let last = 0;
+  for (const match of source.matchAll(URL_PATTERN)) {
+    let url = match[0];
+    // 「(https://example.com)」のように囲まれている場合、閉じ括弧は URL ではない
+    const opened = (url.match(/\(/g) || []).length;
+    const closed = (url.match(/\)/g) || []).length;
+    if (closed > opened) url = url.slice(0, url.lastIndexOf(')'));
+    url = url.replace(TRAILING_JUNK, '');
+    if (!url) continue;
+    if (match.index > last) node.append(source.slice(last, match.index));
+    node.append(el('a', {
+      href: url, target: '_blank', rel: 'noopener noreferrer nofollow',
+      class: 'auto-link', title: url, text: shorten(url),
+    }));
+    last = match.index + url.length;
+  }
+  if (last < source.length) node.append(source.slice(last));
+  return node;
+}
+
+/** 長い URL は途中を省いて表示する（行が崩れないように）。 */
+function shorten(url) {
+  if (url.length <= 60) return url;
+  return `${url.slice(0, 40)}…${url.slice(-15)}`;
+}
+
+/**
+ * メモやコメントの本文を表示用の要素にする。
+ * URL はリンクに、@メンバーは色付きにする。改行はそのまま残す。
+ */
+export function richText(body, people, className = 'comment-text') {
+  const node = el('div', { class: className });
   const text = String(body || '');
   const names = (people || [])
     .map((p) => p.name)
     .filter(Boolean)
     .sort((a, b) => b.length - a.length);
+
   if (!names.length || !/[@＠]/.test(text)) {
-    node.textContent = text;
-    return node;
+    return linkify(text, node);
   }
   let rest = text;
   let guard = 0;
@@ -140,15 +177,18 @@ export function commentText(body, people) {
     const hit = names.find((name) =>
       after.startsWith(name) || after.startsWith(name.replace(/\s|　/g, '')));
     if (hit === undefined) {
-      node.append(rest.slice(0, at + 1));
+      linkify(rest.slice(0, at + 1), node);
       rest = after;
       continue;
     }
     const label = after.startsWith(hit) ? hit : hit.replace(/\s|　/g, '');
-    if (at) node.append(rest.slice(0, at));
+    if (at) linkify(rest.slice(0, at), node);
     node.append(el('span', { class: 'mention', text: `@${label}` }));
     rest = after.slice(label.length);
   }
-  if (rest) node.append(rest);
+  if (rest) linkify(rest, node);
   return node;
 }
+
+/** 以前からの呼び名。中身は richText と同じ。 */
+export const commentText = richText;

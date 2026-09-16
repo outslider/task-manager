@@ -10,7 +10,8 @@ import { openTaskForm } from './taskForm.js';
 import { categoryChip } from './pickers.js';
 import { openTaskDetail } from './taskDetail.js';
 import { projectTabs } from './projectNav.js';
-import { indentTarget, openParentPicker, outdentTarget, setParent } from './hierarchy.js';
+import { indentTarget, openParentPicker, outdentTarget, setParent, siblingsOf }
+  from './hierarchy.js';
 
 const collapsedKey = (projectId) => `tm.collapsed.${projectId}`;
 
@@ -402,6 +403,7 @@ export async function render(container, route) {
     });
     row.addEventListener('dragend', () => {
       dragId = null;
+      hideDropHint();
       row.classList.remove('dragging');
       rowsHost.querySelectorAll('.task-row').forEach((node) =>
         node.classList.remove('drop-before', 'drop-after', 'drop-into'));
@@ -411,20 +413,46 @@ export async function render(container, route) {
       event.preventDefault();
       const rect = row.getBoundingClientRect();
       const offset = (event.clientY - rect.top) / rect.height;
+      // 上下に落とせば並べ替え、真ん中だけが「子にする」。
+      // 並べ替えのほうが使う頻度が高いので、子にする帯は狭くしてある
+      const mode = offset < 0.35 ? 'before' : offset > 0.65 ? 'after' : 'into';
       row.classList.remove('drop-before', 'drop-after', 'drop-into');
-      row.classList.add(offset < 0.28 ? 'drop-before' : offset > 0.72 ? 'drop-after' : 'drop-into');
+      row.classList.add('drop-' + mode);
+      showDropHint(event, mode, task);
     });
     row.addEventListener('dragleave', () => {
       row.classList.remove('drop-before', 'drop-after', 'drop-into');
     });
     row.addEventListener('drop', async (event) => {
       event.preventDefault();
+      hideDropHint();
       if (dragId === null || dragId === task.id) return;
       const mode = row.classList.contains('drop-into') ? 'into'
         : row.classList.contains('drop-before') ? 'before' : 'after';
       row.classList.remove('drop-before', 'drop-after', 'drop-into');
       await moveTask(dragId, task.id, mode);
     });
+  }
+
+  /** ドラッグ中、いま落とすとどうなるかをカーソルの横に出す。 */
+  let hintNode = null;
+  function showDropHint(event, mode, target) {
+    if (!hintNode) {
+      hintNode = el('div', { class: 'drop-hint' });
+      document.body.appendChild(hintNode);
+    }
+    const label = mode === 'into'
+      ? `「${target.title}」の子にする`
+      : (mode === 'before' ? 'この上に移動' : 'この下に移動');
+    hintNode.textContent = label;
+    hintNode.classList.toggle('into', mode === 'into');
+    hintNode.style.left = `${event.clientX + 14}px`;
+    hintNode.style.top = `${event.clientY + 16}px`;
+    hintNode.hidden = false;
+  }
+
+  function hideDropHint() {
+    if (hintNode) hintNode.hidden = true;
   }
 
   async function moveTask(sourceId, targetId, mode) {
@@ -630,6 +658,15 @@ export async function render(container, route) {
     const indentTo = indentTarget(data.tasks, task);
     const outdentTo = outdentTarget(data.tasks, task);
     const items = [];
+    // 上下の入れ替え。ドラッグの効かない端末ではここが頼りになる
+    const siblings = siblingsOf(data.tasks, task.parent_id ?? null);
+    const at = siblings.findIndex((t) => t.id === task.id);
+    if (at > 0) {
+      items.push(menuItem('↑ 上へ移動', () => reorderWithin(task, -1)));
+    }
+    if (at >= 0 && at < siblings.length - 1) {
+      items.push(menuItem('↓ 下へ移動', () => reorderWithin(task, 1)));
+    }
     if (indentTo) {
       items.push(menuItem(`⇥ 「${ellipsis(indentTo.title)}」の子にする`,
         () => reparent(task, indentTo.id)));
@@ -646,6 +683,25 @@ export async function render(container, route) {
       await reparent(task, chosen);
     }));
     return items;
+  }
+
+  /** 同じ階層の中で、ひとつ上（-1）またはひとつ下（+1）へ動かす。 */
+  async function reorderWithin(task, direction) {
+    const siblings = siblingsOf(data.tasks, task.parent_id ?? null);
+    const at = siblings.findIndex((t) => t.id === task.id);
+    const to = at + direction;
+    if (at < 0 || to < 0 || to >= siblings.length) return;
+    const ordered = [...siblings];
+    ordered.splice(to, 0, ordered.splice(at, 1)[0]);
+    try {
+      await api.post('/api/tasks/reorder', {
+        project_id: projectId,
+        items: ordered.map((item, index) => ({
+          id: item.id, parent_id: task.parent_id ?? null, sort_order: (index + 1) * 10,
+        })),
+      });
+      await reload();
+    } catch (error) { toast(error.message, 'error'); }
   }
 
   async function reparent(task, parentId) {

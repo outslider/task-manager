@@ -10,7 +10,7 @@ import {
 import { openTaskForm } from './taskForm.js';
 import { categorySelect, userSelect } from './pickers.js';
 import { openParentPicker, setParent } from './hierarchy.js';
-import { attachMentions, commentText } from './mention.js';
+import { attachMentions, richText } from './mention.js';
 
 let openInstance = null;
 
@@ -165,21 +165,11 @@ async function renderDetail(instance, taskId, onChange) {
 
   /* ---- description ---- */
   body.append(sectionTitle('メモ'));
-  if (canEdit) {
-    const area = el('textarea', { class: 'textarea', placeholder: 'メモを入力…' });
-    area.value = task.description || '';
-    const save = el('button', {
-      class: 'btn btn-sm', hidden: true,
-      onClick: async () => { await patch({ description: area.value }); },
-    }, 'メモを保存');
-    area.addEventListener('input', () => { save.hidden = area.value === (task.description || ''); });
-    body.append(area, el('div', { style: { marginTop: '6px' } }, save));
-  } else {
-    body.append(el('div', {
-      class: 'comment-text',
-      text: task.description || '（メモなし）',
-    }));
-  }
+  body.append(memoEditor({
+    value: task.description, canEdit, people: members,
+    placeholder: 'メモを入力…（URL はそのまま貼るとリンクになります）',
+    onSave: (value) => patch({ description: value }),
+  }));
 
   /* ---- subtasks ---- */
   body.append(sectionTitle(`子タスク (${children.length})`,
@@ -384,7 +374,7 @@ function commentRow(comment, reload, members) {
             },
           }, '削除')
           : null),
-      commentText(comment.body, members)));
+      richText(comment.body, members)));
 }
 
 function attachmentRow(att, canEdit, reload) {
@@ -529,4 +519,61 @@ function parentControl(task, path, canEdit, reload, onChange) {
         },
       }, '⇤ 一つ上へ')
       : null);
+}
+
+
+/**
+ * メモ欄。ふだんは本文を表示し（URL はリンクとして開ける）、
+ * クリックすると編集に切り替わる。
+ */
+export function memoEditor({ value, canEdit, people, placeholder, onSave }) {
+  const host = el('div', { class: 'memo' });
+
+  const showView = () => {
+    const text = value || '';
+    const view = text
+      ? richText(text, people, 'comment-text memo-view')
+      : el('div', { class: 'comment-text memo-view empty',
+        text: canEdit ? 'クリックしてメモを書く' : '（メモなし）' });
+    if (canEdit) {
+      view.classList.add('editable');
+      view.title = 'クリックで編集';
+      // リンクを踏んだときは編集に入らない
+      view.addEventListener('click', (event) => {
+        if (event.target.closest('a')) return;
+        showEdit();
+      });
+    }
+    fill(host, view);
+  };
+
+  const showEdit = () => {
+    const area = el('textarea', { class: 'textarea', placeholder });
+    area.value = value || '';
+    const save = el('button', {
+      class: 'btn btn-sm btn-primary',
+      onClick: async () => {
+        const next = area.value;
+        if (next !== (value || '')) {
+          value = next;
+          await onSave(next);
+        }
+        showView();
+      },
+    }, '保存');
+    const cancel = el('button', { class: 'btn btn-sm', onClick: () => showView() }, 'キャンセル');
+    area.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') showView();
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') save.click();
+    });
+    fill(host, area,
+      el('div', { style: { display: 'flex', gap: '6px', marginTop: '6px' } }, save, cancel,
+        el('span', { class: 'hint', style: { margin: 'auto 0 auto 4px' },
+          text: 'Ctrl+Enter で保存' })));
+    area.focus();
+    area.setSelectionRange(area.value.length, area.value.length);
+  };
+
+  showView();
+  return host;
 }

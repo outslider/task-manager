@@ -9,8 +9,8 @@ import {
 } from '../util.js';
 import { issueCategorySelect, userSelect } from './pickers.js';
 import { openIssueForm, taskPicker } from './issueForm.js';
-import { openTaskDetail } from './taskDetail.js';
-import { attachMentions, commentText } from './mention.js';
+import { memoEditor, openTaskDetail } from './taskDetail.js';
+import { attachMentions, richText } from './mention.js';
 
 let openInstance = null;
 
@@ -142,12 +142,18 @@ async function renderDetail(instance, issueId, onChange) {
       : null));
 
   body.append(sectionTitle('内容・背景'));
-  body.append(editableText(issue.description, canEdit, '内容を入力…',
-    (value) => patch({ description: value })));
+  body.append(memoEditor({
+    value: issue.description, canEdit, people: data.members,
+    placeholder: '内容を入力…（URL はそのまま貼るとリンクになります）',
+    onSave: (value) => patch({ description: value }),
+  }));
 
   body.append(sectionTitle('対応方針・結果'));
-  body.append(editableText(issue.resolution, canEdit, '誰が・いつまでに・何をするか…',
-    (value) => patch({ resolution: value })));
+  body.append(memoEditor({
+    value: issue.resolution, canEdit, people: data.members,
+    placeholder: '誰が・いつまでに・何をするか…',
+    onSave: (value) => patch({ resolution: value }),
+  }));
 
   /* ---- linked tasks ---- */
   body.append(sectionTitle(`関連タスク (${tasks.length})`,
@@ -218,19 +224,6 @@ async function renderDetail(instance, issueId, onChange) {
   fill(instance.drawer, head, body);
 }
 
-function editableText(value, canEdit, placeholder, save) {
-  if (!canEdit) {
-    return el('div', { class: 'comment-text', text: value || '（未記入）' });
-  }
-  const area = el('textarea', { class: 'textarea', placeholder });
-  area.value = value || '';
-  const button = el('button', {
-    class: 'btn btn-sm', hidden: true, onClick: () => save(area.value),
-  }, '保存');
-  area.addEventListener('input', () => { button.hidden = area.value === (value || ''); });
-  return el('div', {}, area, el('div', { style: { marginTop: '6px' } }, button));
-}
-
 function sectionTitle(text, action) {
   return el('div', { class: 'section-title' },
     el('span', { text }), el('span', { class: 'line' }), action || null);
@@ -256,7 +249,7 @@ function commentRow(comment, reload, members) {
             },
           }, '削除')
           : null),
-      commentText(comment.body, members)));
+      richText(comment.body, members)));
 }
 
 function attachmentRow(att, canEdit, reload) {

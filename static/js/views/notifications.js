@@ -2,6 +2,7 @@
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store } from '../store.js';
+import { linkify } from './mention.js';
 import { clear, el, fill, formatDateTime, toast } from '../util.js';
 import { openTaskDetail } from './taskDetail.js';
 
@@ -67,7 +68,7 @@ export async function render(container) {
     el('span', { text: TYPE_ICON[item.type] || '•' }),
     el('div', { class: 'notif-body' },
       el('div', { class: 'notif-title', text: item.title }),
-      item.body ? el('div', { class: 'notif-text', text: item.body }) : null,
+      item.body ? linkify(item.body, el('div', { class: 'notif-text' })) : null,
       el('div', { class: 'hint', text: formatDateTime(item.created_at) })),
     el('button', {
       class: 'icon-btn', title: '削除',

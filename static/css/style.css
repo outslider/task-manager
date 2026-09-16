@@ -635,9 +635,18 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .task-row, .issue-row { transition: background .12s, box-shadow .12s; }
 .task-row.selected { background: var(--accent-soft); }
 .task-row.dragging { opacity: .4; }
-.task-row.drop-into { box-shadow: inset 0 0 0 2px var(--accent); }
-.task-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
-.task-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.task-row.drop-into { box-shadow: inset 0 0 0 2px var(--accent); background: var(--accent-soft); }
+.task-row.drop-before { box-shadow: inset 0 3px 0 var(--accent); }
+.task-row.drop-after { box-shadow: inset 0 -3px 0 var(--accent); }
+
+/* ドラッグ中、いま落とすとどうなるかをカーソルの横に出す */
+.drop-hint {
+  position: fixed; z-index: 300; pointer-events: none;
+  padding: 3px 9px; border-radius: 7px; font-size: 12px; font-weight: 600;
+  background: var(--accent); color: var(--accent-contrast, #fff);
+  box-shadow: var(--shadow-lg); white-space: nowrap;
+}
+.drop-hint.into { background: var(--warn); }
 .task-main { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .task-row > * { min-width: 0; }
 .twisty {
@@ -1028,3 +1037,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
   color: var(--accent); font-weight: 650; background: var(--accent-soft);
   border-radius: 5px; padding: 0 3px;
 }
+
+/* ---------- 本文中の自動リンクと、クリックで編集できるメモ ---------- */
+.auto-link { color: var(--accent); text-decoration: underline; word-break: break-all; }
+.auto-link:hover { text-decoration-thickness: 2px; }
+.memo-view {
+  border: 1px solid transparent; border-radius: 9px; padding: 8px 10px;
+  min-height: 38px; transition: background .12s, border-color .12s;
+}
+.memo-view.empty { color: var(--text-muted); }
+.memo-view.editable { cursor: text; }
+.memo-view.editable:hover { background: var(--surface-2); border-color: var(--border); }
