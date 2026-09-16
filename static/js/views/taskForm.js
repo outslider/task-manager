@@ -1,6 +1,6 @@
 /* Create / edit dialog for a single task. */
 import { api } from '../api.js';
-import { IMPORTANCE_LABEL, STATUS_LABEL } from '../store.js';
+import { store, IMPORTANCE_LABEL, STATUS_LABEL } from '../store.js';
 import { el, openModal, toast } from '../util.js';
 import { categorySelect, chipPicker, option, userSelect } from './pickers.js';
 
@@ -28,8 +28,14 @@ export function openTaskForm({
 
   const parentOptions = tasks
     .filter((t) => !task || (t.id !== task.id && !isDescendant(tasks, t.id, task.id)))
-    .map((t) => option(t.id, `${'　'.repeat(depthOf(tasks, t.id))}${t.title}`,
-      Number(task ? task.parent_id : parentId) === t.id));
+    .map((t) => {
+      // 同じ名前のタスクが他にもあるときは、どこにあるものか添えて見分けられるようにする
+      const twin = tasks.some((o) => o.id !== t.id && o.title === t.title);
+      const path = twin ? parentPath(tasks, t.id) : '';
+      return option(t.id,
+        `${'　'.repeat(depthOf(tasks, t.id))}${t.title}${path ? `（${path}）` : ''}`,
+        Number(task ? task.parent_id : parentId) === t.id);
+    });
 
   const depCandidates = tasks.filter((t) => !task || t.id !== task.id);
   const currentDeps = task
@@ -69,6 +75,10 @@ export function openTaskForm({
       fields.progress.value = String(task?.progress ?? 0);
       fields.milestone = el('input', { type: 'checkbox' });
       fields.milestone.checked = Boolean(task?.is_milestone);
+      // ガント上の記号。マイルストーンと、まとめ行に並ぶ各回の印に使う
+      fields.marker = el('select', { class: 'select', style: { maxWidth: '180px' } },
+        ...(store.meta?.markers || [{ value: '', label: '◆ ひし形（既定）' }]).map((m) =>
+          option(m.value, m.label, (task?.marker || '') === m.value)));
       fields.parent = el('select', { class: 'select' },
         option('', '（トップレベル）', !(task ? task.parent_id : parentId)),
         ...parentOptions);
@@ -90,9 +100,14 @@ export function openTaskForm({
           el('label', { text: '先行タスク（これが終わるまで着手できない）' }),
           depPicker.node),
         el('div', { class: 'field' }, el('label', { text: '親タスク' }), fields.parent),
-        el('div', { class: 'field' },
-          el('label', { class: 'check' }, fields.milestone,
-            el('span', { text: 'マイルストーンとして表示する（ガントで◆）' }))),
+        el('div', { class: 'row' },
+          el('div', { class: 'field' },
+            el('label', { class: 'check' }, fields.milestone,
+              el('span', { text: 'マイルストーンとして表示する' }))),
+          el('div', { class: 'field' },
+            el('label', { text: 'ガントの記号' }), fields.marker,
+            el('div', { class: 'hint',
+              text: 'マイルストーンの印と、折りたたんだ親の行に並ぶ各回の印に使います。' }))),
         el('div', { class: 'field' }, el('label', { text: 'メモ' }), fields.description));
     },
     footer: (close) => [
@@ -112,6 +127,7 @@ export function openTaskForm({
             due_date: fields.due.value || null,
             progress: Number(fields.progress.value || 0),
             is_milestone: fields.milestone.checked,
+            marker: fields.marker.value,
             estimate_hours: fields.estimate.value === '' ? null : Number(fields.estimate.value),
             parent_id: fields.parent.value ? Number(fields.parent.value) : null,
             depends_on: depPicker.ids(),
@@ -132,6 +148,20 @@ export function openTaskForm({
       }, editing ? '保存' : '追加'),
     ],
   });
+}
+
+/** 上位をたどった道のり。トップレベルなら「トップレベル」。 */
+function parentPath(tasks, id) {
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const parts = [];
+  let node = byId.get(byId.get(id)?.parent_id);
+  let guard = 0;
+  while (node && guard < 12) {
+    parts.unshift(node.title);
+    node = byId.get(node.parent_id);
+    guard += 1;
+  }
+  return parts.length ? parts.join(' > ') : 'トップレベル';
 }
 
 function depthOf(tasks, id) {

@@ -29,6 +29,24 @@ export function depthOf(tasks, taskId) {
   return ancestorsOf(tasks, taskId).length;
 }
 
+/**
+ * 「開発フェーズ > バックエンド実装」のような、上位をたどった道のり。
+ * 同じ名前のタスクが複数あるとき、どれのことか見分けるために使う。
+ */
+export function pathLabel(tasks, taskId, { includeSelf = false } = {}) {
+  const parts = ancestorsOf(tasks, taskId).map((t) => t.title);
+  if (includeSelf) {
+    const self = tasks.find((t) => t.id === taskId);
+    if (self) parts.push(self.title);
+  }
+  return parts.join(' > ');
+}
+
+/** 同じ名前のタスクが他にもあるか。 */
+export function hasDuplicateTitle(tasks, task) {
+  return tasks.some((t) => t.id !== task.id && t.title === task.title);
+}
+
 /** taskId とその子孫の ID。親に指定できない相手を除くために使う。 */
 export function subtreeIds(tasks, taskId) {
   const ids = new Set([taskId]);
@@ -126,7 +144,10 @@ export function openParentPicker(task, tasks) {
       const depth = depthOf(tasks, t.id);
       const tooDeep = depth + 2 + height > maxDepth();
       if (keyword && !t.title.toLowerCase().includes(keyword)) continue;
-      rows.push(row(t.id, t.title, depth + 1, tooDeep));
+      const context = hasDuplicateTitle(tasks, t)
+        ? (pathLabel(tasks, t.id) || 'トップレベル')
+        : '';
+      rows.push(row(t.id, t.title, depth + 1, tooDeep, context));
     }
     fill(list, ...rows);
     if (rows.length === 1 && keyword) {
@@ -137,16 +158,21 @@ export function openParentPicker(task, tasks) {
     if (active) active.scrollIntoView({ block: 'nearest' });
   };
 
-  function row(id, label, indent, disabled) {
+  function row(id, label, indent, disabled, context) {
     return el('button', {
       type: 'button',
       class: `parent-pick${chosen === id ? ' active' : ''}${disabled ? ' disabled' : ''}`,
       style: { paddingLeft: `${10 + indent * 16}px` },
       disabled: disabled ? true : null,
-      title: disabled ? `ここに入れると最大 ${maxDepth()} 階層を超えます` : null,
+      title: disabled
+        ? `ここに入れると最大 ${maxDepth()} 階層を超えます`
+        : (context ? `${context} > ${label}` : label),
       onClick: () => { chosen = id; draw(); },
     },
-    el('span', { class: 'parent-pick-label', text: label }),
+    el('span', { class: 'parent-pick-label' },
+      el('span', { text: label }),
+      // 同じ名前のタスクが他にもあるときは、どこにあるものか添える
+      context ? el('span', { class: 'parent-pick-path', text: context } ) : null),
     id === current ? el('span', { class: 'hint', text: '現在の親' }) : null,
     disabled ? el('span', { class: 'hint', text: '階層が深すぎます' }) : null);
   }

@@ -262,6 +262,7 @@ CREATE TABLE `tasks` (
   `estimate_hours` decimal(6,1) DEFAULT NULL,
   `actual_hours` decimal(6,1) NOT NULL DEFAULT 0.0,
   `is_milestone` tinyint(1) NOT NULL DEFAULT 0,
+  `marker` varchar(10) NOT NULL DEFAULT '',
   `sort_order` int(11) NOT NULL DEFAULT 0,
   `created_by` int(11) DEFAULT NULL,
   `created_at` datetime NOT NULL,

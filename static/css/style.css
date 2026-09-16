@@ -745,7 +745,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .parent-pick:hover:not(:disabled) { background: var(--accent-soft); }
 .parent-pick.active { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
 .parent-pick:disabled { opacity: .45; cursor: not-allowed; }
-.parent-pick-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.parent-pick-label {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px;
+  overflow: hidden;
+}
+.parent-pick-label > span {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.parent-pick-path { font-size: 11px; color: var(--text-muted); }
 .parent-pick .hint { margin: 0; flex: 0 0 auto; }
 .section-title {
   font-size: 12px; font-weight: 700; color: var(--text-faint); letter-spacing: .05em;
@@ -1048,3 +1055,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .memo-view.empty { color: var(--text-muted); }
 .memo-view.editable { cursor: text; }
 .memo-view.editable:hover { background: var(--surface-2); border-color: var(--border); }
+
+/* 絞り込みで隠れていることの告知 */
+.filter-notice {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 10px; padding: 7px 12px; border-radius: 10px;
+  background: var(--warn-soft); border: 1px solid var(--warn);
+  font-size: 12.5px; color: var(--text);
+}

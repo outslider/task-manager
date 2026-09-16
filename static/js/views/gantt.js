@@ -20,6 +20,39 @@ const SCALES = {
 
 const IMPORTANCE_COLOR = { 0: '#98a2b3', 1: '#3b6ef5', 2: '#e8912b', 3: '#e14c4c' };
 
+/** ガントに置く記号。中心 (cx, cy) と大きさ r から輪郭を作る。 */
+const MARKER_SHAPES = {
+  '': (cx, cy, r) => `M ${cx} ${cy - r} L ${cx + r} ${cy} L ${cx} ${cy + r} L ${cx - r} ${cy} Z`,
+  circle: (cx, cy, r) => {
+    const k = r * 0.5523;                       // 円をベジェで近似する係数
+    return `M ${cx} ${cy - r} C ${cx + k} ${cy - r} ${cx + r} ${cy - k} ${cx + r} ${cy} `
+      + `C ${cx + r} ${cy + k} ${cx + k} ${cy + r} ${cx} ${cy + r} `
+      + `C ${cx - k} ${cy + r} ${cx - r} ${cy + k} ${cx - r} ${cy} `
+      + `C ${cx - r} ${cy - k} ${cx - k} ${cy - r} ${cx} ${cy - r} Z`;
+  },
+  square: (cx, cy, r) => {
+    const h = r * 0.85;
+    return `M ${cx - h} ${cy - h} H ${cx + h} V ${cy + h} H ${cx - h} Z`;
+  },
+  triangle: (cx, cy, r) => `M ${cx} ${cy - r} L ${cx + r} ${cy + r * 0.8} L ${cx - r} ${cy + r * 0.8} Z`,
+  down: (cx, cy, r) => `M ${cx} ${cy + r} L ${cx + r} ${cy - r * 0.8} L ${cx - r} ${cy - r * 0.8} Z`,
+  star: (cx, cy, r) => {
+    const points = [];
+    for (let i = 0; i < 10; i += 1) {
+      const radius = i % 2 ? r * 0.45 : r;
+      const angle = (Math.PI / 5) * i - Math.PI / 2;
+      points.push(`${(cx + radius * Math.cos(angle)).toFixed(2)} `
+        + `${(cy + radius * Math.sin(angle)).toFixed(2)}`);
+    }
+    return `M ${points.join(' L ')} Z`;
+  },
+};
+
+/** 記号の輪郭を返す。未知の値なら既定のひし形。 */
+export function markerPath(kind, cx, cy, r) {
+  return (MARKER_SHAPES[kind] || MARKER_SHAPES[''])(cx, cy, r);
+}
+
 const COLOR_MODES = {
   status: {
     label: '状態',
@@ -91,6 +124,7 @@ export async function render(container, route) {
   const state = {
     mode: localStorage.getItem('tm.gantt.mode') || 'gantt',   // gantt | roadmap
     group: localStorage.getItem('tm.gantt.group') || 'phase', // none|phase|assignee|category
+    showMarks: localStorage.getItem('tm.gantt.marks') !== '0',
     labels: loadLabels(),
     scale: localStorage.getItem('tm.gantt.scale') || (compact ? 'week' : 'day'),
     colorBy: localStorage.getItem('tm.gantt.colorBy') || 'status',
@@ -213,6 +247,15 @@ export async function render(container, route) {
         type: 'checkbox',
         onChange: (event) => { state.onlyMine = event.target.checked; draw(); },
       }), el('span', { text: '自分の担当のみ' })),
+    el('label', { class: 'check', title: '折りたたんだ親の行に、各回を記号で並べます' },
+      el('input', {
+        type: 'checkbox', checked: state.showMarks ? true : null,
+        onChange: (event) => {
+          state.showMarks = event.target.checked;
+          localStorage.setItem('tm.gantt.marks', state.showMarks ? '1' : '0');
+          draw();
+        },
+      }), el('span', { text: 'たたんだ行に各回' })),
     el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: 'バーの横' }),
     labelToggle('date', '日付'),
     labelToggle('assignee', '担当者'),
@@ -304,9 +347,12 @@ export async function render(container, route) {
     const walk = (parentId, depth) => {
       for (const task of children.get(parentId) || []) {
         const kids = children.get(task.id) || [];
+        const folded = collapsed.has(task.id);
         rows.push({
           task, depth, hasChildren: kids.length > 0,
-          collapsed: collapsed.has(task.id),
+          collapsed: folded,
+          // たたんだ親の行に、隠れている各回を記号で並べる（週次の打ち合わせなど）
+          marks: folded && state.showMarks ? occurrenceDates(task.id) : null,
           // フェーズ区切り: トップレベルの行の上に太い線を引く
           separator: state.group === 'phase' && depth === 0 && rows.length > 0,
           lead: state.group === 'phase' && depth === 0,
@@ -370,6 +416,29 @@ export async function render(container, route) {
       saveCollapsed(projectId, collapsed);
     }
     draw();
+  }
+
+  /** そのタスクの配下にある「回」の期限。たたんだ行に並べる印に使う。 */
+  function occurrenceDates(taskId) {
+    const byParent = new Map();
+    for (const task of data.tasks) {
+      if (!byParent.has(task.parent_id)) byParent.set(task.parent_id, []);
+      byParent.get(task.parent_id).push(task);
+    }
+    const out = [];
+    const walk = (id) => {
+      for (const child of byParent.get(id) || []) {
+        const kids = byParent.get(child.id) || [];
+        if (kids.length) walk(child.id);
+        else if (child.due_date) {
+          out.push({ id: child.id, title: child.title, due: child.due_date,
+            done: child.status === 'done' });
+        }
+      }
+    };
+    walk(taskId);
+    // 数が多すぎると潰れるので、表示は 60 件までに抑える
+    return out.sort((a, b) => a.due.localeCompare(b.due)).slice(0, 60);
   }
 
   /** ロードマップの上部レーンに並べる節目。階層のどこにあっても拾う。 */
@@ -977,7 +1046,7 @@ export function buildGanttSvg({
       const cy = y + rowH / 2;
       const size = 7;
       const node = svgEl('path', {
-        d: `M ${cx} ${cy - size} L ${cx + size} ${cy} L ${cx} ${cy + size} L ${cx - size} ${cy} Z`,
+        d: markerPath(task.marker, cx, cy, size),
         fill: task.status === 'done' ? STATUS_COLOR.done : (colorBy === 'status' ? '#e8912b' : color),
         stroke: critical ? '#e14c4c' : (forExport ? '#ffffff' : 'none'),
         'stroke-width': critical ? 2 : 1,
@@ -999,9 +1068,7 @@ export function buildGanttSvg({
           // マイルストーンは期限だけを持つので、移動のみ
           setGeometry: (offsetX) => {
             const px = cx + offsetX;
-            node.setAttribute('d',
-              `M ${px} ${cy - size} L ${px + size} ${cy} L ${px} ${cy + size} `
-              + `L ${px - size} ${cy} Z`);
+            node.setAttribute('d', markerPath(task.marker, px, cy, size));
             label.setAttribute('x', px + size + 5);
           },
           modeAt: () => 'move',
@@ -1017,9 +1084,60 @@ export function buildGanttSvg({
     const barEnd = due || start;
     const bx = x(barStart);
     const bw = Math.max(dayWidth * 0.8, (daysBetween(barStart, barEnd) + 1) * dayWidth - 2);
+    const progressValue = hasChildren ? (task.rollup_progress ?? task.progress) : task.progress;
+
+    // たたんだ親の行を「├◇──◇──◇──┤」の形で描く
+    if (row.marks && row.marks.length) {
+      const cy = y + rowH / 2;
+      const x1 = x(barStartOf(start, due));
+      const x2 = x(barEndOf(start, due)) + dayWidth;
+      const line = svgEl('g', { opacity: faded ? 0.45 : 1 });
+      line.appendChild(svgEl('line', {
+        x1, y1: cy, x2, y2: cy, stroke: color, 'stroke-width': 2, opacity: 0.55,
+      }));
+      for (const cap of [x1, x2]) {
+        line.appendChild(svgEl('line', {
+          x1: cap, y1: cy - 6, x2: cap, y2: cy + 6, stroke: color, 'stroke-width': 2,
+        }));
+      }
+      for (const mark of row.marks) {
+        const date = parseDate(mark.due);
+        if (!date || date < range.from || date > range.to) continue;
+        const mx = x(date) + dayWidth / 2;
+        const node = svgEl('path', {
+          d: markerPath(task.marker, mx, cy, 5.5),
+          fill: mark.done ? STATUS_COLOR.done : color,
+          stroke: forExport ? '#ffffff' : 'var(--surface)', 'stroke-width': 1,
+        });
+        node.appendChild(svgEl('title', {
+          text: `${mark.title} — ${mark.due}${mark.done ? '（完了）' : ''}`,
+        }));
+        if (interactive) {
+          node.style.cursor = 'pointer';
+          node.addEventListener('click', (event) => {
+            event.stopPropagation();
+            openTask(mark.id);
+          });
+        }
+        line.appendChild(node);
+      }
+      line.appendChild(svgEl('title', {
+        text: `${task.title}\n${row.marks.length} 回（${row.marks.filter((m) => m.done).length} 回完了）`,
+      }));
+      rowsG.appendChild(line);
+      if (show.progress) {
+        rowsG.appendChild(svgEl('text', {
+          x: x2 + 8, y: cy + 4, 'font-size': 10, fill: colors.muted,
+          text: `${row.marks.filter((m) => m.done).length}/${row.marks.length}`,
+        }));
+      }
+      barGeom.set(task.id, { x1, x2, y: cy });
+      return;
+    }
+
     const barH = roadmap ? 22 : (hasChildren ? 9 : 14);
     const by = y + (rowH - barH) / 2;
-    const progress = hasChildren ? (task.rollup_progress ?? task.progress) : task.progress;
+    const progress = progressValue;
 
     const group = svgEl('g', { opacity: faded ? 0.45 : 1 });
     const radius = hasChildren ? 2 : 4;
@@ -1226,7 +1344,7 @@ export function buildGanttSvg({
       const size = 6.5;
       const done = task.status === 'done';
       const pin = svgEl('path', {
-        d: `M ${cx} ${cy - size} L ${cx + size} ${cy} L ${cx} ${cy + size} L ${cx - size} ${cy} Z`,
+        d: markerPath(task.marker, cx, cy, size),
         fill: done ? STATUS_COLOR.done : '#e8912b',
         stroke: forExport ? '#ffffff' : 'none', 'stroke-width': 1,
       });
@@ -1339,6 +1457,9 @@ export function buildGanttSvg({
   }
   return svg;
 }
+
+const barStartOf = (start, due) => start || due;
+const barEndOf = (start, due) => due || start;
 
 /** バーの横に添える「9/14」形式の日付。 */
 function shortDate(iso) {

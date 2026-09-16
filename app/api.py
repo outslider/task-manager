@@ -33,6 +33,23 @@ CATEGORIES = [
 ]
 CATEGORY_VALUES = {c[0] for c in CATEGORIES}
 
+# ガント上の記号。空文字は既定（◆）。
+MARKERS = [
+    ("", "◆ ひし形（既定）"),
+    ("circle", "● 丸"),
+    ("square", "■ 四角"),
+    ("triangle", "▲ 三角"),
+    ("down", "▼ 逆三角"),
+    ("star", "★ 星"),
+]
+MARKER_VALUES = {m[0] for m in MARKERS}
+
+
+def normalize_marker(value):
+    text = str(value or "").strip()
+    return text if text in MARKER_VALUES else ""
+
+
 # ---- 課題管理表 -------------------------------------------------------
 ISSUE_STATUSES = ["open", "doing", "pending", "resolved", "closed"]
 ISSUE_STATUS_LABEL = {
@@ -958,12 +975,13 @@ def create_task(ctx):
     task_id = db.insert(
         "INSERT INTO tasks(project_id, parent_id, title, description, category, status, "
         "priority, assignee_id, start_date, due_date, progress, estimate_hours, is_milestone, "
-        "sort_order, created_by, created_at, updated_at, completed_at) "
-        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "marker, sort_order, created_by, created_at, updated_at, completed_at) "
+        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (project_id, parent_id, title, ctx.body.get("description", ""),
          normalize_category(ctx.body.get("category")), status,
          as_int(ctx.body.get("priority"), 1, 0, 3), assignee_id, start_date, due_date,
-         progress, as_hours(ctx.body.get("estimate_hours")), is_milestone, sort_order,
+         progress, as_hours(ctx.body.get("estimate_hours")), is_milestone,
+         normalize_marker(ctx.body.get("marker")), sort_order,
          user["id"], now, now, now if status == "done" else None))
     if "depends_on" in ctx.body:
         set_task_deps(task_id, project_id, ctx.body["depends_on"])
@@ -1128,6 +1146,9 @@ def update_task(ctx, task_id):
                 # 付け替え先の末尾に置く（前の階層での並び順が残ると混ざるため）
                 fields.append("sort_order=%s")
                 params.append(next_sort_order(current["project_id"], parent_id))
+    if "marker" in body:
+        fields.append("marker=%s")
+        params.append(normalize_marker(body["marker"]))
     if "sort_order" in body:
         fields.append("sort_order=%s")
         params.append(as_int(body["sort_order"], 0))
@@ -1881,6 +1902,10 @@ def import_tasks(ctx, project_id):
         raise bad_request("取り込める行がありませんでした")
 
     created, by_title, stack = [], {}, {}
+    # 同じ名前が複数あると「親タスク名」でどれを指すか決められない
+    seen_titles = {}
+    for item in prepared:
+        seen_titles[item["title"]] = seen_titles.get(item["title"], 0) + 1
     now = db.now()
     base_order = (db.scalar(
         "SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE project_id=%s",
@@ -1889,6 +1914,12 @@ def import_tasks(ctx, project_id):
         for offset, item in enumerate(prepared):
             parent_id = None
             if item["parent"] and item["parent"] in by_title:
+                if seen_titles.get(item["parent"], 0) > 1:
+                    problems.append({
+                        "line": item["line"],
+                        "message": "「{}」という名前のタスクが複数あるため、"
+                                   "直前のものを親にしました".format(item["parent"]),
+                    })
                 parent_id = by_title[item["parent"]]
             else:
                 level = min(item["level"], MAX_TASK_DEPTH - 1)
@@ -2369,6 +2400,7 @@ def meta(ctx):
         "slack_events": [{"value": k, "label": label, "help": help_text}
                          for k, label, help_text in prefs.SLACK_EVENTS],
         "slack_enabled": db.get_setting("slack_enabled", "0") == "1",
+        "markers": [{"value": v, "label": label} for v, label in MARKERS],
         "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
         "max_depth": MAX_TASK_DEPTH,
     })

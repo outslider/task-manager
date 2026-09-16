@@ -2683,3 +2683,108 @@ class TestRecurrenceGrouping(ApiTestCase):
         data = self.admin.patch("/api/recurrences/{}".format(rule["id"]),
                                 {"parent_id": None})[1]
         self.assertIsNone(data["recurrence"]["parent_id"])
+
+
+class TestDuplicateTitles(ApiTestCase):
+    """同じ名前のタスクがあっても、取り違えが起きないこと。"""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project("同名のあるPJ")
+        self.first = self.make_task(self.project["id"], "週次定例")
+        self.second = self.make_task(self.project["id"], "週次定例")
+
+    def tasks(self):
+        return {t["id"]: t for t in self.admin.get(
+            "/api/projects/{}/tasks".format(self.project["id"]))[1]["tasks"]}
+
+    def test_children_stay_with_the_right_parent(self):
+        a = self.make_task(self.project["id"], "議事録", parent_id=self.first["id"])
+        b = self.make_task(self.project["id"], "議事録", parent_id=self.second["id"])
+        rows = self.tasks()
+        self.assertEqual(rows[a["id"]]["parent_id"], self.first["id"])
+        self.assertEqual(rows[b["id"]]["parent_id"], self.second["id"])
+
+    def test_moving_a_child_between_same_named_parents(self):
+        child = self.make_task(self.project["id"], "議事録", parent_id=self.first["id"])
+        status, data = self.admin.patch("/api/tasks/{}".format(child["id"]),
+                                        {"parent_id": self.second["id"]})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(self.tasks()[child["id"]]["parent_id"], self.second["id"])
+        self.assertEqual(self.tasks()[self.first["id"]]["child_count"], 0)
+        self.assertEqual(self.tasks()[self.second["id"]]["child_count"], 1)
+
+    def test_the_history_records_which_one(self):
+        """履歴が「週次定例 → 週次定例」では区別がつかないので、名前は残しつつ
+        どちらへ動いたかは parent_id で追える状態であること。"""
+        child = self.make_task(self.project["id"], "議事録", parent_id=self.first["id"])
+        self.admin.patch("/api/tasks/{}".format(child["id"]),
+                         {"parent_id": self.second["id"]})
+        detail = self.admin.get("/api/tasks/{}".format(child["id"]))[1]
+        self.assertEqual(detail["task"]["parent_id"], self.second["id"])
+        self.assertEqual([p["id"] for p in detail["path"]], [self.second["id"]])
+
+    def test_reordering_same_named_siblings(self):
+        third = self.make_task(self.project["id"], "週次定例")
+        self.admin.post("/api/tasks/reorder", {
+            "project_id": self.project["id"],
+            "items": [{"id": third["id"], "parent_id": None, "sort_order": 10},
+                      {"id": self.first["id"], "parent_id": None, "sort_order": 20},
+                      {"id": self.second["id"], "parent_id": None, "sort_order": 30}]})
+        rows = self.tasks()
+        self.assertEqual(rows[third["id"]]["sort_order"], 10)
+        self.assertEqual(rows[self.first["id"]]["sort_order"], 20)
+        self.assertEqual(rows[self.second["id"]]["sort_order"], 30)
+
+    def test_import_warns_when_a_parent_name_is_ambiguous(self):
+        status, data = self.admin.post(
+            "/api/projects/{}/tasks/import".format(self.project["id"]),
+            {"rows": [{"title": "打合せ"}, {"title": "打合せ"},
+                      {"title": "議事録", "parent": "打合せ"}]})
+        self.assertEqual(status, 201, data)
+        self.assertTrue(any("複数ある" in p["message"] for p in data["problems"]),
+                        "曖昧な親名を知らせること")
+
+    def test_import_without_duplicates_is_quiet(self):
+        data = self.admin.post(
+            "/api/projects/{}/tasks/import".format(self.project["id"]),
+            {"rows": [{"title": "打合せA"}, {"title": "議事録", "parent": "打合せA"}]})[1]
+        self.assertEqual([p for p in data["problems"] if "複数ある" in p["message"]], [])
+
+
+class TestGanttMarkers(ApiTestCase):
+    """ガントで使う記号（◆ / ● / ★ など）。"""
+
+    def test_marker_round_trip(self):
+        project = self.make_project()
+        status, data = self.admin.post("/api/tasks", {
+            "project_id": project["id"], "title": "星にする", "marker": "star"})
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["task"]["marker"], "star")
+        updated = self.admin.patch("/api/tasks/{}".format(data["task"]["id"]),
+                                   {"marker": "circle"})[1]
+        self.assertEqual(updated["task"]["marker"], "circle")
+
+    def test_an_unknown_marker_falls_back_to_the_default(self):
+        project = self.make_project()
+        data = self.admin.post("/api/tasks", {
+            "project_id": project["id"], "title": "でたらめ", "marker": "<script>"})[1]
+        self.assertEqual(data["task"]["marker"], "")
+
+    def test_the_marker_can_be_cleared(self):
+        project = self.make_project()
+        task = self.make_task(project["id"], "記号つき", marker="square")
+        self.assertEqual(task["marker"], "square")
+        data = self.admin.patch("/api/tasks/{}".format(task["id"]), {"marker": ""})[1]
+        self.assertEqual(data["task"]["marker"], "")
+
+    def test_markers_are_listed_in_meta(self):
+        meta = self.admin.get("/api/meta")[1]
+        values = [m["value"] for m in meta["markers"]]
+        self.assertIn("", values)
+        for expected in ("circle", "square", "triangle", "down", "star"):
+            self.assertIn(expected, values)
+
+    def test_default_is_empty(self):
+        project = self.make_project()
+        self.assertEqual(self.make_task(project["id"], "既定")["marker"], "")

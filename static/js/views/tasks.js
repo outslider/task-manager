@@ -179,13 +179,14 @@ export async function render(container, route) {
     el('div', {}));
 
   const alerts = el('div', {});
+  const filterNotice = el('div', {});
 
   fill(container,
     projectTabs(projectId, 'tasks'),
     el('div', { class: 'page-head' },
       el('div', { class: 'grow' },
         el('div', { class: 'page-sub' }, project.description || '　'), summary)),
-    alerts,
+    alerts, filterNotice,
     el('div', { class: 'card' }, toolbar, bulkBar, head,
       el('div', { class: 'card-body tight' }, rowsHost)));
 
@@ -243,10 +244,46 @@ export async function render(container, route) {
     drawBulkBar();
     const done = data.tasks.filter((t) => t.status === 'done').length;
     const overdue = data.tasks.filter((t) => dueClass(t.due_date, t.status) === 'overdue').length;
-    fill(summary, 
+    const hidden = data.tasks.length - rows.length;
+    fill(summary,
       `全 ${data.tasks.length} 件 / 完了 ${done} 件`,
       overdue ? el('span', { class: 'badge overdue', style: { marginLeft: '8px' }, text: `期限超過 ${overdue}` }) : null,
       el('span', { style: { marginLeft: '8px' }, text: `表示 ${rows.length} 件` }));
+    drawFilterNotice(hidden);
+  }
+
+  /** 絞り込みで隠れている件数を知らせる。「作ったのに出てこない」を防ぐため。 */
+  function drawFilterNotice(hidden) {
+    const active = [];
+    if (state.status === 'open') active.push('未完了のみ');
+    else if (state.status !== 'all') active.push(STATUS_LABEL[state.status]);
+    if (state.query) active.push(`「${state.query}」で検索`);
+    if (state.assignee === 'me') active.push('自分の担当のみ');
+    else if (state.assignee === 'none') active.push('未割当のみ');
+    else if (state.assignee) active.push(`担当 ${store.userName(Number(state.assignee))}`);
+    if (state.category === 'none') active.push('未分類のみ');
+    else if (state.category) active.push(category(state.category).label);
+    if (state.attention) active.push('要注意のみ');
+
+    if (!hidden || !active.length) { fill(filterNotice); return; }
+    fill(filterNotice, el('div', { class: 'filter-notice' },
+      el('span', { text: `${active.join(' / ')} で絞り込み中 — ${hidden} 件を隠しています` }),
+      el('button', {
+        class: 'btn btn-sm',
+        onClick: () => {
+          state.status = 'all';
+          state.query = '';
+          state.assignee = '';
+          state.category = '';
+          state.attention = false;
+          searchInput.value = '';
+          statusFilter.value = 'all';
+          assigneeFilter.value = '';
+          categoryFilter.value = '';
+          attentionToggle.querySelector('input').checked = false;
+          draw();
+        },
+      }, 'すべて表示')));
   }
 
   function drawAlerts() {
