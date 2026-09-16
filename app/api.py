@@ -2973,11 +2973,24 @@ def workload_view(ctx):
 # --------------------------------------------------------------------------
 
 RECURRENCE_SELECT = """
-    SELECT r.*, u.name AS assignee_name, p.name AS project_name
+    SELECT r.*, u.name AS assignee_name, p.name AS project_name,
+           pt.title AS parent_title
       FROM recurrences r
       LEFT JOIN users u ON u.id = r.assignee_id
+      LEFT JOIN tasks pt ON pt.id = r.parent_id
       JOIN projects p ON p.id = r.project_id
 """
+
+
+def pick_id(body, current, key):
+    """未指定なら今の値を残し、null が来たら「外す」と解釈する。
+
+    as_int(None, 既定値) だと既定値に戻ってしまい、担当者や親タスクを
+    外せなくなるため、キーの有無で判断する。
+    """
+    if key in body:
+        return as_int(body[key])
+    return current[key] if current else None
 
 
 def _recurrence_body(ctx, current=None):
@@ -3005,11 +3018,10 @@ def _recurrence_body(ctx, current=None):
         "category": normalize_category(body.get("category"),
                                        current["category"] if current else ""),
         "priority": as_int(body.get("priority"), current["priority"] if current else 1, 0, 3),
-        "assignee_id": as_int(body.get("assignee_id"),
-                              current["assignee_id"] if current else None),
+        "assignee_id": pick_id(body, current, "assignee_id"),
         "estimate_hours": as_hours(body.get("estimate_hours")) if "estimate_hours" in body
         else (current["estimate_hours"] if current else None),
-        "parent_id": as_int(body.get("parent_id"), current["parent_id"] if current else None),
+        "parent_id": pick_id(body, current, "parent_id"),
         "freq": freq,
         "interval_n": as_int(body.get("interval_n"),
                              current["interval_n"] if current else 1, 1, 99),
@@ -3063,6 +3075,8 @@ def update_recurrence(ctx, rule_id):
         raise not_found("繰り返し設定が見つかりません")
     project_or_404(user, current["project_id"], "editor")
     values = _recurrence_body(ctx, current)
+    if values["parent_id"] and auth.task_project_id(values["parent_id"]) != current["project_id"]:
+        raise bad_request("親タスクが同じプロジェクトにありません")
     db.execute(
         "UPDATE recurrences SET title=%(title)s, description=%(description)s, "
         "category=%(category)s, priority=%(priority)s, assignee_id=%(assignee_id)s, "
@@ -3100,6 +3114,26 @@ def run_recurrence_now(ctx, rule_id):
     db.execute("UPDATE recurrences SET next_on=%s, last_created_on=%s, updated_at=%s WHERE id=%s",
                (nxt, today, db.now(), rule_id))
     return json_response({"task": db.query_one(TASK_SELECT + " WHERE t.id=%s", (task_id,))}, 201)
+
+
+@route("POST", r"/api/recurrences/(\d+)/skip")
+def skip_recurrence(ctx, rule_id):
+    """今回は作らずに、次回日だけ先へ進める（「来週は休み」用）。"""
+    user = me(ctx)
+    rule = db.query_one("SELECT * FROM recurrences WHERE id=%s", (rule_id,))
+    if not rule:
+        raise not_found("繰り返し設定が見つかりません")
+    project_or_404(user, rule["project_id"], "editor")
+    times = as_int(ctx.body.get("times"), 1, 1, 12)
+    skipped = rule["next_on"]
+    nxt = rule["next_on"]
+    for _ in range(times):
+        nxt = recurrence.next_date(rule, nxt)
+    db.execute("UPDATE recurrences SET next_on=%s, updated_at=%s WHERE id=%s",
+               (nxt, db.now(), rule_id))
+    row = db.query_one(RECURRENCE_SELECT + " WHERE r.id=%s", (rule_id,))
+    row["summary"] = recurrence.describe(row)
+    return json_response({"recurrence": row, "skipped": skipped, "next_on": nxt})
 
 
 @route("POST", r"/api/admin/run-recurrences")

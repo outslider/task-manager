@@ -5,6 +5,7 @@ import { confirmDialog, el, fill, formatDate, openModal, toISO, today, toast } f
 import { categorySelect, option, userSelect } from './pickers.js';
 
 const WEEKDAYS = ['月', '火', '水', '木', '金', '土', '日'];
+const MAX_DEPTH = 8;
 const FREQ = [['weekly', '毎週'], ['monthly', '毎月'], ['daily', '毎日']];
 
 /** 一覧と編集をまとめたダイアログ。 */
@@ -39,7 +40,8 @@ export async function openRecurrenceManager(project, { onChange } = {}) {
         `次回の期限 ${formatDate(rule.next_on)}`,
         rule.lead_days ? `（${rule.lead_days}日前に作成）` : '（当日に作成）',
         rule.assignee_name ? ` ・ 担当 ${rule.assignee_name}` : ' ・ 担当未設定',
-        rule.estimate_hours ? ` ・ 見積 ${Number(rule.estimate_hours)}h` : '')),
+        rule.estimate_hours ? ` ・ 見積 ${Number(rule.estimate_hours)}h` : '',
+        rule.parent_title ? ` ・ まとめ先 ${rule.parent_title}` : '')),
     canEdit
       ? el('div', { style: { display: 'flex', gap: '6px' } },
         el('button', {
@@ -54,6 +56,24 @@ export async function openRecurrenceManager(project, { onChange } = {}) {
             } catch (error) { toast(error.message, 'error'); }
           },
         }, '今すぐ作る'),
+        el('button', {
+          class: 'btn btn-sm',
+          title: '今回は作らずに、次回へ送る',
+          onClick: async (event) => {
+            const button = event.currentTarget;
+            button.disabled = true;
+            try {
+              const result = await api.post(`/api/recurrences/${rule.id}/skip`, {});
+              toast(`${formatDate(result.skipped)} を飛ばしました`
+                + `（次回 ${formatDate(result.next_on)}）`, 'ok');
+              changed = true;
+              load();
+            } catch (error) {
+              toast(error.message, 'error');
+              button.disabled = false;
+            }
+          },
+        }, '⏭ 次回を飛ばす'),
         el('button', {
           class: 'btn btn-sm',
           onClick: async () => {
@@ -98,11 +118,43 @@ export async function openRecurrenceManager(project, { onChange } = {}) {
   return changed;
 }
 
+/** 親に指定できるタスク。階層順に並べ、これ以上深くできないものは外す。 */
+export function parentCandidates(tasks) {
+  const children = new Map();
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  for (const task of tasks) {
+    const key = byId.has(task.parent_id) ? task.parent_id : null;
+    if (!children.has(key)) children.set(key, []);
+    children.get(key).push(task);
+  }
+  for (const list of children.values()) {
+    list.sort((a, b) => (a.sort_order - b.sort_order) || (a.id - b.id));
+  }
+  const out = [];
+  const walk = (parentId, depth) => {
+    for (const task of children.get(parentId) || []) {
+      // 子を1段ぶら下げる余地が要る。マイルストーンは束ね役に向かない
+      if (depth + 2 <= MAX_DEPTH && !task.is_milestone) {
+        out.push({ id: task.id, title: task.title, depth });
+      }
+      walk(task.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return out;
+}
+
 /**
  * 規則の作成・編集。task を渡すと、そのタスクの内容を初期値にする。
  */
 export async function openRecurrenceForm(project, rule = null, task = null) {
   const members = await store.members(project.id);
+  // 「毎週の打ち合わせ」をひとまとまりで扱えるよう、束ねる親タスクを選べるようにする
+  let candidates = [];
+  try {
+    const data = await api.projectTasks(project.id);
+    candidates = parentCandidates(data.tasks);
+  } catch { /* 取れなくても規則自体は編集できる */ }
   const source = rule || task || {};
   const state = {
     freq: rule?.freq || 'weekly',
@@ -170,6 +222,10 @@ export async function openRecurrenceForm(project, rule = null, task = null) {
         class: 'input', type: 'date',
         value: rule?.next_on || task?.due_date || toISO(today()),
       });
+      f.parent = el('select', { class: 'select' },
+        option('', '（まとめない）', !source.parent_id),
+        ...candidates.map((t) => option(
+          t.id, `${'　'.repeat(t.depth)}${t.title}`, Number(source.parent_id) === t.id)));
       f.active = el('input', { type: 'checkbox', checked: rule ? Boolean(rule.active) : true });
       drawFreqExtra();
 
@@ -190,6 +246,11 @@ export async function openRecurrenceForm(project, rule = null, task = null) {
           el('div', { class: 'field' }, el('label', { text: '重要度' }), f.priority),
           el('div', { class: 'field' }, el('label', { text: '見積 (h)' }), f.estimate)),
         el('div', { class: 'field' }, el('label', { text: 'メモ' }), f.description),
+        el('div', { class: 'field' },
+          el('label', { text: 'まとめる親タスク' }), f.parent,
+          el('div', { class: 'hint',
+            text: '指定すると、毎回のタスクがその子として作られます。'
+              + 'ガントでは親を折りたたんで1行にでき、進捗も自動で集計されます。' })),
         el('div', { class: 'field' },
           el('label', { class: 'check' }, f.active, el('span', { text: '有効にする' }))));
     },
@@ -212,6 +273,7 @@ export async function openRecurrenceForm(project, rule = null, task = null) {
             month_day: f.monthDay ? Number(f.monthDay.value) : null,
             lead_days: Number(f.lead.value || 0),
             next_on: f.next.value,
+            parent_id: f.parent.value ? Number(f.parent.value) : null,
             active: f.active.checked,
           };
           if (!payload.title) { toast('タスク名を入力してください', 'error'); return; }

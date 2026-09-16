@@ -104,6 +104,9 @@ def run(today=None):
 
 def _create_task(rule, today):
     now = db.now()
+    # 開始日は「今日」。ただし予定日がすでに過ぎている場合（バッチが止まっていて
+    # さかのぼって作るときなど）は、開始が期限より後になってしまうので合わせる。
+    start = min(today, rule["next_on"]) if rule["next_on"] else today
     order = (db.scalar("SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE project_id=%s",
                        (rule["project_id"],), default=0) or 0) + 10
     task_id = db.insert(
@@ -112,7 +115,7 @@ def _create_task(rule, today):
         "created_by, created_at, updated_at) "
         "VALUES(%s,%s,%s,%s,%s,'todo',%s,%s,%s,%s,0,%s,0,%s,%s,%s,%s)",
         (rule["project_id"], rule["parent_id"], rule["title"], rule["description"] or "",
-         rule["category"], rule["priority"], rule["assignee_id"], today, rule["next_on"],
+         rule["category"], rule["priority"], rule["assignee_id"], start, rule["next_on"],
          rule["estimate_hours"], order, rule["created_by"], now, now))
     db.insert(
         "INSERT INTO comments(task_id, user_id, body, kind, created_at) VALUES(%s,%s,%s,'system',%s)",

@@ -2535,3 +2535,151 @@ class TestStaticCaching(ApiTestCase):
         status, headers, _body = self.raw("/api/meta")
         self.assertIn(status, (200, 401))
         self.assertEqual(headers.get("Cache-Control"), "no-store")
+
+
+class TestRecurrenceGrouping(ApiTestCase):
+    """週1の打ち合わせを、1つの親タスクにまとめて扱う。"""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project("定例のあるPJ")
+        self.parent = self.make_task(self.project["id"], "週次定例（9月〜12月）",
+                                     start_date="2026-09-01", due_date="2026-12-25")
+
+    def make_rule(self, **kwargs):
+        payload = {
+            "title": "週次定例", "freq": "weekly", "weekdays": "0", "interval_n": 1,
+            "lead_days": 0, "next_on": "2026-09-07", "category": "meeting",
+        }
+        payload.update(kwargs)
+        status, data = self.admin.post(
+            "/api/projects/{}/recurrences".format(self.project["id"]), payload)
+        self.assertEqual(status, 201, data)
+        return data["recurrence"]
+
+    def tasks(self):
+        return self.admin.get(
+            "/api/projects/{}/tasks".format(self.project["id"]))[1]["tasks"]
+
+    def test_occurrences_are_created_under_the_parent(self):
+        rule = self.make_rule(parent_id=self.parent["id"])
+        self.assertEqual(rule["parent_id"], self.parent["id"])
+        self.assertEqual(rule["parent_title"], "週次定例（9月〜12月）")
+        status, data = self.admin.post("/api/recurrences/{}/run".format(rule["id"]), {})
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["task"]["parent_id"], self.parent["id"])
+
+    def test_the_parent_keeps_its_own_span_and_rolls_up(self):
+        rule = self.make_rule(parent_id=self.parent["id"])
+        for _ in range(3):
+            self.admin.post("/api/recurrences/{}/run".format(rule["id"]), {})
+        parent = next(t for t in self.tasks() if t["id"] == self.parent["id"])
+        self.assertEqual(parent["child_count"], 3)
+        self.assertEqual(parent["leaf_total"], 3)
+        # 親自身の期間は保たれる（先の予定まで引いたバーが縮まないこと）
+        self.assertEqual(parent["rollup_start"], "2026-09-01")
+        self.assertEqual(parent["rollup_due"], "2026-12-25")
+
+    def test_completing_occurrences_moves_the_parent_progress(self):
+        rule = self.make_rule(parent_id=self.parent["id"])
+        made = [self.admin.post("/api/recurrences/{}/run".format(rule["id"]), {})[1]["task"]
+                for _ in range(4)]
+        self.admin.post("/api/tasks/bulk", {"ids": [made[0]["id"], made[1]["id"]],
+                                            "status": "done"})
+        parent = next(t for t in self.tasks() if t["id"] == self.parent["id"])
+        self.assertEqual(parent["leaf_done"], 2)
+        self.assertEqual(parent["rollup_progress"], 50)
+
+    def test_an_occurrence_can_be_moved_without_touching_the_rule(self):
+        """今週だけ日程がずれても、翌週以降は元の規則どおりに出ること。"""
+        rule = self.make_rule(parent_id=self.parent["id"])
+        task = self.admin.post("/api/recurrences/{}/run".format(rule["id"]), {})[1]["task"]
+        status, data = self.admin.patch("/api/tasks/{}".format(task["id"]),
+                                        {"due_date": "2026-09-09"})
+        self.assertEqual(status, 200, data)
+        moved = self.admin.get("/api/tasks/{}".format(task["id"]))[1]["task"]
+        self.assertEqual(moved["due_date"], "2026-09-09")
+        self.assertEqual(moved["parent_id"], self.parent["id"], "親からは外れない")
+        rules = self.admin.get(
+            "/api/projects/{}/recurrences".format(self.project["id"]))[1]["recurrences"]
+        self.assertEqual(rules[0]["next_on"], "2026-09-14", "規則の次回は動かない")
+
+    def test_a_backfilled_occurrence_does_not_get_inverted_dates(self):
+        """予定日が過ぎている回を作っても、開始日が期限より後にならないこと。"""
+        rule = self.make_rule(next_on="2026-01-05")     # 過去の日付
+        task = self.admin.post("/api/recurrences/{}/run".format(rule["id"]), {})[1]["task"]
+        self.assertEqual(task["due_date"], "2026-01-05")
+        self.assertLessEqual(task["start_date"], task["due_date"],
+                             "開始日が期限より後になっている")
+        # 逆転していると、その後の日程変更が弾かれてしまう
+        status, data = self.admin.patch("/api/tasks/{}".format(task["id"]),
+                                        {"due_date": "2026-01-07"})
+        self.assertEqual(status, 200, data)
+
+    def test_deleting_an_occurrence_does_not_bring_it_back(self):
+        rule = self.make_rule(parent_id=self.parent["id"])
+        task = self.admin.post("/api/recurrences/{}/run".format(rule["id"]), {})[1]["task"]
+        gone = task["due_date"]
+        self.admin.delete("/api/tasks/{}".format(task["id"]))
+        self.assertEqual(
+            [t for t in self.tasks() if t["parent_id"] == self.parent["id"]], [])
+        notify.run_daily_digest(force=True)      # 定例の自動起票もここで走る
+        children = [t for t in self.tasks() if t["parent_id"] == self.parent["id"]]
+        # 次の回が作られるのは正しい。消した回そのものが戻らないことを見る
+        self.assertNotIn(gone, [t["due_date"] for t in children],
+                         "消した回が復活しないこと")
+
+    def test_an_ad_hoc_meeting_can_be_added_by_hand(self):
+        rule = self.make_rule(parent_id=self.parent["id"])
+        self.admin.post("/api/recurrences/{}/run".format(rule["id"]), {})
+        extra = self.make_task(self.project["id"], "臨時打ち合わせ",
+                               parent_id=self.parent["id"], due_date="2026-09-10")
+        parent = next(t for t in self.tasks() if t["id"] == self.parent["id"])
+        self.assertEqual(parent["child_count"], 2)
+        self.assertEqual(extra["parent_id"], self.parent["id"])
+
+    # -- 次回を飛ばす ----------------------------------------------------
+    def test_skip_moves_the_next_date_without_creating_a_task(self):
+        rule = self.make_rule(parent_id=self.parent["id"])
+        before = len(self.tasks())
+        status, data = self.admin.post("/api/recurrences/{}/skip".format(rule["id"]), {})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["skipped"], "2026-09-07")
+        self.assertEqual(data["next_on"], "2026-09-14")
+        self.assertEqual(len(self.tasks()), before, "タスクは作られないこと")
+
+    def test_skip_can_jump_several_times(self):
+        rule = self.make_rule()
+        data = self.admin.post("/api/recurrences/{}/skip".format(rule["id"]),
+                               {"times": 3})[1]
+        self.assertEqual(data["next_on"], "2026-09-28")
+
+    def test_skip_needs_edit_rights(self):
+        rule = self.make_rule()
+        user, email = self.make_user("閲覧のみ")
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "viewer"}]})
+        client = self.client_for(email)
+        self.assertEqual(
+            client.post("/api/recurrences/{}/skip".format(rule["id"]), {})[0], 403)
+
+    def test_a_parent_from_another_project_is_refused(self):
+        other = self.make_project("よそのPJ")
+        outsider = self.make_task(other["id"], "よそのタスク")
+        status, data = self.admin.post(
+            "/api/projects/{}/recurrences".format(self.project["id"]),
+            {"title": "だめ", "freq": "weekly", "weekdays": "0", "next_on": "2026-09-07",
+             "parent_id": outsider["id"]})
+        self.assertEqual(status, 400, data)
+        self.assertIn("プロジェクト", data["error"])
+
+    def test_the_parent_can_be_changed_later(self):
+        rule = self.make_rule()
+        self.assertIsNone(rule["parent_id"])
+        data = self.admin.patch("/api/recurrences/{}".format(rule["id"]),
+                                {"parent_id": self.parent["id"]})[1]
+        self.assertEqual(data["recurrence"]["parent_id"], self.parent["id"])
+        data = self.admin.patch("/api/recurrences/{}".format(rule["id"]),
+                                {"parent_id": None})[1]
+        self.assertIsNone(data["recurrence"]["parent_id"])
