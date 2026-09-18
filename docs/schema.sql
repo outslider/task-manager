@@ -241,6 +241,7 @@ CREATE TABLE `shared_links` (
   `title` varchar(200) NOT NULL,
   `url` varchar(2000) NOT NULL,
   `note` varchar(500) NOT NULL DEFAULT '',
+  `category` varchar(40) NOT NULL DEFAULT '',
   `sort_order` int(11) NOT NULL DEFAULT 0,
   `created_by` int(11) DEFAULT NULL,
   `created_at` datetime NOT NULL,

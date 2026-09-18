@@ -3121,3 +3121,150 @@ class TestSharedLinks(ApiTestCase):
 
     def test_it_needs_a_login(self):
         self.assertEqual(Client(self.base).get("/api/links")[0], 401)
+
+
+class TestLinkCategories(ApiTestCase):
+    """リンクの分類。"""
+
+    def add(self, **kwargs):
+        payload = {"title": "リンク", "url": "https://example.co.jp/x"}
+        payload.update(kwargs)
+        status, data = self.admin.post("/api/links", payload)
+        self.assertEqual(status, 201, data)
+        return data["link"]
+
+    def test_a_category_is_stored(self):
+        link = self.add(title="経費精算", category="社内システム")
+        self.assertEqual(link["category"], "社内システム")
+
+    def test_a_category_is_optional(self):
+        self.assertEqual(self.add(title="分類なし")["category"], "")
+
+    def test_existing_categories_are_offered_as_suggestions(self):
+        self.add(title="A", category="手順書")
+        self.add(title="B", category="申請")
+        self.add(title="C", category="手順書")
+        data = self.admin.get("/api/links")[1]
+        self.assertIn("手順書", data["categories"])
+        self.assertIn("申請", data["categories"])
+        self.assertEqual(len(data["categories"]), len(set(data["categories"])),
+                         "同じ分類が重複して出ないこと")
+
+    def test_the_category_can_be_changed_and_cleared(self):
+        link = self.add(category="旧分類")
+        data = self.admin.patch("/api/links/{}".format(link["id"]),
+                                {"category": "新分類"})[1]
+        self.assertEqual(data["link"]["category"], "新分類")
+        data = self.admin.patch("/api/links/{}".format(link["id"]), {"category": ""})[1]
+        self.assertEqual(data["link"]["category"], "")
+
+    def test_links_come_back_grouped_by_category(self):
+        self.add(title="B", category="申請")
+        self.add(title="A", category="社内")
+        self.add(title="C", category="")
+        titles = [l["title"] for l in self.admin.get("/api/links")[1]["links"]]
+        # 分類のあるものが先、無いものは最後
+        self.assertEqual(titles[-1], "C")
+
+
+class TestNotificationBatching(ApiTestCase):
+    """通知の一括処理。件数が増えても問い合わせ回数が増えすぎないこと。"""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project("大量のPJ")
+        self.user, self.email = self.make_user("担当者")
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": self.user["id"],
+                         "role": "editor"}]})
+        for i in range(40):
+            self.make_task(self.project["id"], "遅れタスク{}".format(i),
+                           assignee_id=self.user["id"], due_date="2020-01-01")
+
+    def count_queries(self, fn):
+        calls = {"n": 0}
+        originals = {name: getattr(db, name)
+                     for name in ("query", "query_one", "scalar", "execute",
+                                  "executemany", "insert")}
+
+        def wrap(original):
+            def inner(*args, **kwargs):
+                calls["n"] += 1
+                return original(*args, **kwargs)
+            return inner
+
+        for name, original in originals.items():
+            setattr(db, name, wrap(original))
+        try:
+            result = fn()
+        finally:
+            for name, original in originals.items():
+                setattr(db, name, original)
+        return result, calls["n"]
+
+    def test_the_due_scan_does_not_query_per_task(self):
+        created, queries = self.count_queries(notify.scan_due_tasks)
+        self.assertGreaterEqual(created, 40)
+        self.assertLess(queries, 40,
+                        "40 件の通知で {} 回も問い合わせています".format(queries))
+
+    def test_the_scan_is_still_idempotent(self):
+        first = notify.scan_due_tasks()
+        self.assertGreaterEqual(first, 40)
+        self.assertEqual(notify.scan_due_tasks(), 0, "同じ日に二重に作らないこと")
+
+    def test_notifications_actually_land(self):
+        notify.scan_due_tasks()
+        rows = db.query(
+            "SELECT COUNT(*) AS c FROM notifications WHERE user_id=%s AND type='overdue'",
+            (self.user["id"],))
+        self.assertGreaterEqual(rows[0]["c"], 40)
+
+    def test_muted_projects_are_still_skipped_in_batch(self):
+        self.client_for(self.email).put("/api/me/notification-settings",
+                                        {"muted_project_ids": [self.project["id"]]})
+        notify.scan_due_tasks()
+        # 画面の通知は残るが、メール可否は落ちていること
+        self.assertFalse(prefs.email_allowed(self.user["id"], "overdue",
+                                             self.project["id"]))
+
+    def test_the_memo_does_not_leak_between_batches(self):
+        """まとめ判定の覚え書きが、あとの判定に残らないこと。"""
+        with prefs.batch():
+            prefs.email_prefs(self.user["id"])
+        self.client_for(self.email).put("/api/me/notification-settings",
+                                        {"email_notify": False})
+        self.assertFalse(prefs.email_prefs(self.user["id"])["email_notify"])
+
+
+class TestProjectListQueries(ApiTestCase):
+    """プロジェクト一覧が、件数に比例して問い合わせを増やさないこと。"""
+
+    def test_queries_do_not_grow_with_the_number_of_projects(self):
+        def measure(count):
+            for i in range(count):
+                self.make_project("計測用{}-{}".format(count, i))
+            calls = {"n": 0}
+            originals = {name: getattr(db, name)
+                         for name in ("query", "query_one", "scalar")}
+
+            def wrap(original):
+                def inner(*args, **kwargs):
+                    calls["n"] += 1
+                    return original(*args, **kwargs)
+                return inner
+
+            for name, original in originals.items():
+                setattr(db, name, wrap(original))
+            try:
+                self.admin.get("/api/projects")
+            finally:
+                for name, original in originals.items():
+                    setattr(db, name, original)
+            return calls["n"]
+
+        few = measure(2)
+        many = measure(12)
+        self.assertLessEqual(many, few + 2,
+                             "プロジェクトが増えると問い合わせも増えています "
+                             "({} → {})".format(few, many))

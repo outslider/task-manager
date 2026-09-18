@@ -1124,6 +1124,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-weight: 700; font-size: 13px; border-bottom: 1px solid var(--border);
 }
 .link-group-head .hint { margin: 0 0 0 auto; }
+.link-cat {
+  display: flex; align-items: center; gap: 6px; padding: 8px 4px 3px;
+  font-size: 12px; font-weight: 650; color: var(--text-muted);
+}
+.link-cat .hint { margin: 0; }
 .link-row {
   display: flex; align-items: center; gap: 10px; padding: 8px 4px;
   border-bottom: 1px solid var(--border);

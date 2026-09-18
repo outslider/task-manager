@@ -117,6 +117,32 @@ def project_role(user, project_id):
     return max(roles, key=lambda r: ROLE_ORDER.get(r, 0))
 
 
+def project_roles(user, project_ids):
+    """複数プロジェクトぶんの権限をまとめて返す。一覧画面で 1 件ずつ引かないため。"""
+    ids = [i for i in project_ids if i]
+    if not user or not ids:
+        return {}
+    if is_admin(user):
+        return {i: "owner" for i in ids}
+    scope = tuple(ids)
+    best = {}
+    for row in db.query(
+            """
+            SELECT pm.project_id, pm.role FROM project_members pm
+             WHERE pm.project_id IN %s
+               AND ( (pm.principal_type='user'  AND pm.principal_id = %s)
+                  OR (pm.principal_type='group' AND pm.principal_id IN
+                        (SELECT group_id FROM group_members WHERE user_id = %s)) )
+            """, (scope, user["id"], user["id"])):
+        current = best.get(row["project_id"])
+        if current is None or ROLE_ORDER.get(row["role"], 0) > ROLE_ORDER.get(current, 0):
+            best[row["project_id"]] = row["role"]
+    for row in db.query("SELECT id FROM projects WHERE id IN %s AND owner_id=%s",
+                        (scope, user["id"])):
+        best[row["id"]] = "owner"
+    return best
+
+
 def has_project_access(user, project_id, minimum="viewer") -> bool:
     role = project_role(user, project_id)
     if role is None:

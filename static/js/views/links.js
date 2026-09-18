@@ -54,7 +54,7 @@ export async function render(container) {
         state.query ? '一致するリンクがありません' : 'まだリンクがありません'));
       return;
     }
-    // 全体 → プロジェクトごと の順にまとめる
+    // 全体 → プロジェクトごと に分け、その中をさらに分類でまとめる
     const groups = new Map();
     for (const link of links) {
       const key = link.project_id ? String(link.project_id) : '';
@@ -62,17 +62,30 @@ export async function render(container) {
         groups.set(key, {
           label: link.project_id ? link.project_name : '全体で共有',
           color: link.project_id ? link.project_color : 'var(--accent)',
-          items: [],
+          buckets: new Map(),
         });
       }
-      groups.get(key).items.push(link);
+      const buckets = groups.get(key).buckets;
+      const cat = link.category || '';
+      if (!buckets.has(cat)) buckets.set(cat, []);
+      buckets.get(cat).push(link);
     }
-    fill(listHost, ...[...groups.values()].map((group) => el('div', { class: 'link-group' },
-      el('div', { class: 'link-group-head' },
-        el('span', { class: 'dot', style: { background: group.color } }),
-        el('span', { text: group.label }),
-        el('span', { class: 'hint', text: `${group.items.length} 件` })),
-      ...group.items.map(row))));
+    fill(listHost, ...[...groups.values()].map((group) => {
+      const count = [...group.buckets.values()].reduce((n, list) => n + list.length, 0);
+      return el('div', { class: 'link-group' },
+        el('div', { class: 'link-group-head' },
+          el('span', { class: 'dot', style: { background: group.color } }),
+          el('span', { text: group.label }),
+          el('span', { class: 'hint', text: `${count} 件` })),
+        ...[...group.buckets.entries()].map(([cat, items]) => el('div', {},
+          // 分類が 1 つも付いていないときは、余計な見出しを出さない
+          group.buckets.size > 1 || cat
+            ? el('div', { class: 'link-cat' },
+              el('span', { text: cat || 'その他' }),
+              el('span', { class: 'hint', text: `${items.length}` }))
+            : null,
+          ...items.map(row))));
+    }));
   }
 
   function row(link) {
@@ -118,6 +131,14 @@ export async function render(container) {
       placeholder: 'https://… または \\\\server\\share\\…' });
     const note = el('input', { class: 'input', value: link?.note || '',
       placeholder: '補足（任意）' });
+    // 表記ゆれを避けるため、すでに使われている分類を候補に出す
+    const listId = 'link-cats';
+    const category = el('input', {
+      class: 'input', value: link?.category || '', maxlength: 40, list: listId,
+      placeholder: '例）手順書、共有フォルダ、申請（任意）',
+    });
+    const suggestions = el('datalist', { id: listId },
+      ...(data.categories || []).map((c) => el('option', { value: c })));
     const scope = el('select', { class: 'select' },
       data.can_add_shared
         ? el('option', { value: '', selected: link && !link.project_id ? true : null },
@@ -135,6 +156,9 @@ export async function render(container) {
           el('div', { class: 'hint',
             text: '社内ファイルサーバーのパスも登録できます（環境により開けない場合があります）。' })),
         el('div', { class: 'field' }, el('label', { text: '補足' }), note),
+        el('div', { class: 'field' }, el('label', { text: '分類' }), category, suggestions,
+          el('div', { class: 'hint',
+            text: '同じ言葉を使うとまとまります。入力欄で既存の分類から選べます。' })),
         el('div', { class: 'field' }, el('label', { text: '公開範囲' }), scope,
           el('div', { class: 'hint',
             text: '全体で共有すると全員に見えます。プロジェクトを選ぶと、'
@@ -149,6 +173,7 @@ export async function render(container) {
               title: title.value.trim(),
               url: url.value.trim(),
               note: note.value.trim(),
+              category: category.value.trim(),
               project_id: scope.value ? Number(scope.value) : null,
             };
             if (!payload.title) { toast('タイトルを入力してください', 'error'); return; }

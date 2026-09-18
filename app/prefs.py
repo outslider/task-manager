@@ -8,7 +8,34 @@
 
 Slack はチャンネル宛なので個人設定は関係なく、1 とイベント選択だけを見る。
 """
+import threading
+from contextlib import contextmanager
+
 from . import db
+
+# まとめて判定するとき用の一時的な覚え書き。日次バッチのように同じ人・同じ
+# プロジェクトを何百回も見るとき、毎回問い合わせると効かなくなるため。
+_local = threading.local()
+
+
+@contextmanager
+def batch():
+    """この中では、同じ問い合わせを 1 回に抑える。"""
+    previous = getattr(_local, "memo", None)
+    _local.memo = {} if previous is None else previous
+    try:
+        yield
+    finally:
+        _local.memo = previous
+
+
+def _memo(key, produce):
+    memo = getattr(_local, "memo", None)
+    if memo is None:
+        return produce()
+    if key not in memo:
+        memo[key] = produce()
+    return memo[key]
 
 # メール（＝個人宛）のイベント。UI のチェックボックスもこの順に並ぶ。
 EMAIL_EVENTS = [
@@ -60,23 +87,20 @@ def format_events(values, allowed):
 def project_notify_enabled(project_id):
     if not project_id:
         return True
-    value = db.scalar("SELECT notify_enabled AS v FROM projects WHERE id=%s",
-                      (project_id,), default=1)
-    return bool(value)
+    return _memo(("project", project_id), lambda: bool(db.scalar(
+        "SELECT notify_enabled AS v FROM projects WHERE id=%s", (project_id,), default=1)))
 
 
 def project_muted_by(user_id, project_id):
     if not (user_id and project_id):
         return False
-    return db.query_one(
-        "SELECT 1 AS x FROM notification_mutes WHERE user_id=%s AND project_id=%s",
-        (user_id, project_id)) is not None
+    return project_id in set(muted_projects(user_id))
 
 
 def muted_projects(user_id):
-    return [r["project_id"] for r in db.query(
+    return _memo(("muted", user_id), lambda: [r["project_id"] for r in db.query(
         "SELECT project_id FROM notification_mutes WHERE user_id=%s ORDER BY project_id",
-        (user_id,))]
+        (user_id,))])
 
 
 def set_muted_projects(user_id, project_ids):
@@ -87,6 +111,7 @@ def set_muted_projects(user_id, project_ids):
             wanted.add(int(value))
         except (TypeError, ValueError):
             continue
+    forget()
     db.execute("DELETE FROM notification_mutes WHERE user_id=%s", (user_id,))
     for project_id in sorted(wanted):
         if db.query_one("SELECT 1 AS x FROM projects WHERE id=%s", (project_id,)):
@@ -101,6 +126,10 @@ def set_muted_projects(user_id, project_ids):
 # --------------------------------------------------------------------------
 
 def email_prefs(user_id):
+    return _memo(("prefs", user_id), lambda: _load_email_prefs(user_id))
+
+
+def _load_email_prefs(user_id):
     columns = ", ".join(EMAIL_COLUMNS[key] for key in EMAIL_EVENT_KEYS)
     row = db.query_one(
         "SELECT email_notify, {} FROM users WHERE id=%s".format(columns), (user_id,))
@@ -125,12 +154,23 @@ def save_email_prefs(user_id, values):
     if sets:
         params.append(user_id)
         db.execute("UPDATE users SET {} WHERE id=%s".format(", ".join(sets)), params)
+    forget()
     return email_prefs(user_id)
 
 
-def email_allowed(user_id, ntype, project_id=None):
-    """この人にこの通知メールを送ってよいか。"""
-    if not project_notify_enabled(project_id):
+def forget():
+    """覚え書きを捨てる。設定を書き換えたあとに呼ぶ。"""
+    memo = getattr(_local, "memo", None)
+    if memo is not None:
+        memo.clear()
+
+
+def email_allowed(user_id, ntype, project_id=None, project_checked=False):
+    """この人にこの通知メールを送ってよいか。
+
+    project_checked=True なら、プロジェクト側の可否は呼び出し元で確認済みとみなす。
+    """
+    if not project_checked and not project_notify_enabled(project_id):
         return False
     prefs = email_prefs(user_id)
     if not prefs or not prefs["email_notify"]:

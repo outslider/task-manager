@@ -37,7 +37,7 @@ def create(user_id, ntype, title, body="", task_id=None, dedupe_key=None, email=
         )
     except pymysql.err.IntegrityError:
         return False  # already sent
-    if email and prefs.email_allowed(user_id, ntype, project_id):
+    if email and prefs.email_allowed(user_id, ntype, project_id, project_checked=True):
         user = db.query_one("SELECT email, name FROM users WHERE id=%s", (user_id,))
         if user:
             send_email_async(user["email"], title, body, user["name"])
@@ -117,22 +117,36 @@ def _send_and_close(to_address, subject, body, to_name):
 
 def visible_project_ids(user_id):
     """その人が閲覧できるプロジェクト。担当でも参加していなければ見えない。"""
-    user = db.query_one("SELECT id, role FROM users WHERE id=%s", (user_id,))
-    return set(auth.visible_project_ids(user)) if user else set()
+    def load():
+        user = db.query_one("SELECT id, role FROM users WHERE id=%s", (user_id,))
+        return set(auth.visible_project_ids(user)) if user else set()
+    return prefs._memo(("visible", user_id), load)
 
 
 def visible_to(user_id, project_id):
     return project_id in visible_project_ids(user_id)
 
 
-def task_url(task_id):
-    base = db.get_setting("app_base_url", "").rstrip("/")
+def task_url(task_id, base=None):
+    """タスクへのリンク。まとめて作るときは base を渡して設定の引き直しを避ける。"""
+    if base is None:
+        base = db.get_setting("app_base_url", "")
+    base = (base or "").rstrip("/")
     return "{}/#/task/{}".format(base, task_id) if base else ""
 
 
 def scan_due_tasks():
-    """Create overdue / due-soon notifications for assignees.  Idempotent per day."""
+    """Create overdue / due-soon notifications for assignees.  Idempotent per day.
+
+    対象が数百件になるので、同じ人・同じプロジェクトの設定は覚えたまま回す。
+    """
+    with prefs.batch():
+        return _scan_due_tasks()
+
+
+def _scan_due_tasks():
     today = db.today()
+    base_url = db.get_setting("app_base_url", "")      # 件数ぶん引き直さない
     soon_days = int(db.get_setting("due_soon_days", "3") or 3)
     horizon = today + timedelta(days=soon_days)
     created = 0
@@ -151,6 +165,8 @@ def scan_due_tasks():
         """,
         (OPEN_STATUSES, horizon),
     )
+    # 1 件ずつ INSERT すると対象が数百件で効かなくなるので、まとめて入れる
+    pending = []
     for t in rows:
         # 参加していないプロジェクトのタスクは、開いても 403 になるので通知しない
         if not visible_to(t["assignee_id"], t["project_id"]):
@@ -169,11 +185,44 @@ def scan_due_tasks():
             ntype, key = "due_soon", "due{}:{}:{}".format(days, t["id"], today.isoformat())
         body = "プロジェクト: {}\n期限: {}\n状態: {}\n{}".format(
             t["project_name"], due.isoformat(),
-            taxonomy.status_label(t["status"]), task_url(t["id"]),
+            taxonomy.status_label(t["status"]), task_url(t["id"], base_url),
         )
-        if create(t["assignee_id"], ntype, title, body, task_id=t["id"], dedupe_key=key,
-                  project_id=t["project_id"]):
-            created += 1
+        pending.append({
+            "user_id": t["assignee_id"], "task_id": t["id"], "type": ntype,
+            "title": title, "body": body, "dedupe_key": key,
+            "project_id": t["project_id"],
+        })
+    if not pending:
+        return 0
+
+    # すでに送ったぶんを一度に調べる（重複判定を 1 件ずつ投げないため）
+    keys = tuple({item["dedupe_key"] for item in pending})
+    already = {(r["user_id"], r["dedupe_key"]) for r in db.query(
+        "SELECT user_id, dedupe_key FROM notifications WHERE dedupe_key IN %s", (keys,))}
+    fresh = [i for i in pending if (i["user_id"], i["dedupe_key"]) not in already]
+    if not fresh:
+        return 0
+
+    now = db.now()
+    db.executemany(
+        "INSERT IGNORE INTO notifications(user_id, task_id, type, title, body, dedupe_key, "
+        "created_at) VALUES(%s,%s,%s,%s,%s,%s,%s)",
+        [(i["user_id"], i["task_id"], i["type"], i["title"], i["body"], i["dedupe_key"], now)
+         for i in fresh])
+    created = len(fresh)
+
+    # メールは設定を見てから。宛先はまとめて引く
+    wanted = [i for i in fresh
+              if prefs.email_allowed(i["user_id"], i["type"], i["project_id"],
+                                     project_checked=True)]
+    if wanted and email_configured():
+        people = {r["id"]: r for r in db.query(
+            "SELECT id, email, name FROM users WHERE id IN %s",
+            (tuple({i["user_id"] for i in wanted}),))}
+        for item in wanted:
+            person = people.get(item["user_id"])
+            if person:
+                send_email_async(person["email"], item["title"], item["body"], person["name"])
     return created
 
 
@@ -250,6 +299,11 @@ def run_daily_digest(force=False):
     """Send each active user their daily summary.  Safe to call repeatedly."""
     if not force and db.get_setting("daily_digest_enabled", "1") != "1":
         return {"sent": 0, "skipped": "digest disabled"}
+    with prefs.batch():
+        return _run_daily_digest()
+
+
+def _run_daily_digest():
     today = db.today().isoformat()
     from . import recurrence          # 循環 import を避けるため遅延読み込み
     recurring = recurrence.run()

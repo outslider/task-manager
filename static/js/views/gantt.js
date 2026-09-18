@@ -73,6 +73,10 @@ const COLOR_MODES = {
   },
 };
 
+// 1 枚に描ける行数の上限。これを超えると描画も読み取りも重くなるので、
+// 黙って遅くするのではなく「絞ってください」と伝える。
+const MAX_ROWS = 600;
+
 const ROW_H = 26;
 const ROADMAP_ROW_H = 40;      // ロードマップは帯を太くして、名前をバーの中に書く
 const MILESTONE_LANE_H = 44;   // 節目を並べる、チャート上部の専用レーン
@@ -298,6 +302,15 @@ export async function render(container, route) {
     }, '期間リセット'));
 
   const legend = el('div', { class: 'gantt-legend' });
+  const rowNotice = el('div', {});
+
+  /** 行数が上限を超えたことを伝える。 */
+  function drawRowNotice(total) {
+    if (total <= MAX_ROWS) { fill(rowNotice); return; }
+    fill(rowNotice, el('div', { class: 'filter-notice' },
+      el('span', { text: `表示は ${MAX_ROWS} 行までです（該当 ${total} 行）。`
+        + 'プロジェクトや親タスクをたたむか、絞り込んでください。' })));
+  }
 
   function drawLegend() {
     const hint = document.getElementById('gantt-hint');
@@ -328,7 +341,7 @@ export async function render(container, route) {
   fill(container,
     el('div', { class: 'gantt-wrap' },
       overview ? overviewHead() : projectTabs(projectId, 'gantt'),
-      toolbar, scroll, legend));
+      toolbar, rowNotice, scroll, legend));
 
   /** 俯瞰のときの見出し。どのプロジェクトが対象かを示す。 */
   function overviewHead() {
@@ -568,6 +581,16 @@ export async function render(container, route) {
     }
   }
 
+  // 俯瞰は件数が多くなりがちなので、初めて開いたときは親をたたんでおく。
+  // 全部広げると数千行になり、描画も読み取りも重くなるため。
+  if (overview && !collapsed.size) {
+    const hasChild = new Set(data.tasks.map((t) => t.parent_id).filter(Boolean));
+    for (const task of data.tasks) {
+      if (hasChild.has(task.id)) collapsed.add(task.id);
+    }
+    saveCollapsed('all', collapsed);
+  }
+
   /** サーバーから読み直して引き直す。見ていた横位置は保つ。 */
   async function refresh() {
     const scrollLeft = scroll.scrollLeft;
@@ -587,7 +610,9 @@ export async function render(container, route) {
   }
 
   function draw() {
-    const rows = visibleRows();
+    const all = visibleRows();
+    const rows = all.length > MAX_ROWS ? all.slice(0, MAX_ROWS) : all;
+    drawRowNotice(all.length);
     const milestones = milestoneRows();
     const range = dateRange(rows, milestones);
     ensureHolidays(range).then((changed) => { if (changed) draw(); });

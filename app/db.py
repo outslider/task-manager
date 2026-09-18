@@ -309,6 +309,7 @@ DDL = [
         title      VARCHAR(200)  NOT NULL,
         url        VARCHAR(2000) NOT NULL,
         note       VARCHAR(500)  NOT NULL DEFAULT '',
+        category   VARCHAR(40)   NOT NULL DEFAULT '',   -- 手順書・共有フォルダ など
         sort_order INT           NOT NULL DEFAULT 0,
         created_by INT NULL,
         created_at DATETIME      NOT NULL,
@@ -523,6 +524,8 @@ MIGRATIONS = [
      "ALTER TABLE users ADD COLUMN notify_mention TINYINT(1) NOT NULL DEFAULT 1"),
     ("tasks", "marker",
      "ALTER TABLE tasks ADD COLUMN marker VARCHAR(10) NOT NULL DEFAULT ''"),
+    ("shared_links", "category",
+     "ALTER TABLE shared_links ADD COLUMN category VARCHAR(40) NOT NULL DEFAULT ''"),
     ("projects", "notify_enabled",
      "ALTER TABLE projects ADD COLUMN notify_enabled TINYINT(1) NOT NULL DEFAULT 1"),
     ("projects", "slack_events",

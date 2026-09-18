@@ -569,23 +569,36 @@ def project_stats(project_ids):
 
 def project_member_users(project_id):
     """グループ経由を含めて、このプロジェクトを見られる人の一覧（担当者候補）。"""
-    return db.query(
+    return project_member_users_map([project_id]).get(project_id, [])
+
+
+def project_member_users_map(project_ids):
+    """複数プロジェクトぶんをまとめて引く。一覧画面で 1 件ずつ引かないため。"""
+    ids = [i for i in project_ids if i]
+    if not ids:
+        return {}
+    scope = tuple(ids)
+    rows = db.query(
         """
-        SELECT DISTINCT u.id, u.name, u.email, u.avatar_color
-          FROM users u
-         WHERE u.is_active = 1
-           AND (u.id = (SELECT owner_id FROM projects WHERE id = %s)
+        SELECT p.id AS project_id, u.id, u.name, u.email, u.avatar_color
+          FROM projects p
+          JOIN users u ON u.is_active = 1
+           AND (u.id = p.owner_id
                 OR u.role = 'admin'
                 OR EXISTS (SELECT 1 FROM project_members pm
-                            WHERE pm.project_id = %s AND pm.principal_type = 'user'
+                            WHERE pm.project_id = p.id AND pm.principal_type = 'user'
                               AND pm.principal_id = u.id)
                 OR EXISTS (SELECT 1 FROM project_members pm
                             JOIN group_members gm ON gm.group_id = pm.principal_id
-                           WHERE pm.project_id = %s AND pm.principal_type = 'group'
+                           WHERE pm.project_id = p.id AND pm.principal_type = 'group'
                              AND gm.user_id = u.id))
-         ORDER BY u.name
-        """,
-        (project_id, project_id, project_id))
+         WHERE p.id IN %s
+         ORDER BY p.id, u.name
+        """, (scope,))
+    out = {}
+    for row in rows:
+        out.setdefault(row.pop("project_id"), []).append(row)
+    return out
 
 
 def project_member_rows(project_id):
@@ -619,11 +632,14 @@ def list_projects(ctx):
         sql += " AND p.archived=0"
     sql += " ORDER BY p.archived, p.name"
     projects = db.query(sql, params)
-    stats = project_stats([p["id"] for p in projects])
+    ids = [p["id"] for p in projects]
+    stats = project_stats(ids)
+    members = project_member_users_map(ids)
+    roles = auth.project_roles(user, ids)
     for p in projects:
         p["stats"] = stats.get(p["id"], EMPTY_STATS)
-        p["my_role"] = auth.project_role(user, p["id"])
-        p["members"] = project_member_users(p["id"])
+        p["my_role"] = roles.get(p["id"])
+        p["members"] = members.get(p["id"], [])
     return json_response({"projects": projects})
 
 
@@ -761,13 +777,26 @@ def list_project_tasks(ctx, project_id):
     deps = project_deps(project_id)
     analysis = graph.analyze(rows, deps)
     for row in rows:
-        row.update(analysis["metrics"].get(row["id"], {}))
+        row.update(slim_metrics(analysis["metrics"].get(row["id"], {})))
     return json_response({
         "tasks": rows, "deps": deps, "project": project,
         "members": project_member_users(project_id),
         "conflicts": analysis["conflicts"],
         "critical_path": analysis["critical_path"],
     })
+
+
+# 俯瞰ガントは件数が多くなるので、図を描くのに要る列だけにする
+GANTT_SELECT = """
+    SELECT t.id, t.project_id, t.parent_id, t.title, t.status, t.priority, t.category,
+           t.assignee_id, t.start_date, t.due_date, t.progress, t.estimate_hours,
+           t.is_milestone, t.marker, t.sort_order,
+           u.name AS assignee_name, u.avatar_color AS assignee_color,
+           p.name AS project_name, p.color AS project_color
+      FROM tasks t
+      LEFT JOIN users u ON u.id = t.assignee_id
+      JOIN projects p ON p.id = t.project_id
+"""
 
 
 @route("GET", r"/api/gantt")
@@ -785,7 +814,7 @@ def gantt_overview(ctx):
 
     scope = tuple(ids)
     rows = db.query(
-        TASK_SELECT + " WHERE t.project_id IN %s AND p.archived=0 "
+        GANTT_SELECT + " WHERE t.project_id IN %s AND p.archived=0 "
         "ORDER BY p.name, t.sort_order, t.id", (scope,))
     task_rows_with_rollup(rows)
     deps = db.query(
@@ -794,7 +823,7 @@ def gantt_overview(ctx):
     # 依存はプロジェクトの中で閉じているので、まとめて解析しても混ざらない
     analysis = graph.analyze(rows, deps)
     for row in rows:
-        row.update(analysis["metrics"].get(row["id"], {}))
+        row.update(slim_metrics(analysis["metrics"].get(row["id"], {})))
     projects = db.query(
         "SELECT id, name, color FROM projects WHERE id IN %s AND archived=0 ORDER BY name",
         (scope,))
@@ -804,6 +833,12 @@ def gantt_overview(ctx):
         "tasks": rows, "deps": deps, "projects": projects,
         "conflicts": analysis["conflicts"], "critical_path": analysis["critical_path"],
     })
+
+
+def slim_metrics(metrics):
+    """一覧やガントに載せる指標。影響範囲の id 一覧は重いので外す
+    （必要になるのはタスク詳細だけで、そこでは改めて計算している）。"""
+    return {k: v for k, v in metrics.items() if k != "downstream_ids"}
 
 
 def project_deps(project_id):
@@ -1784,7 +1819,8 @@ def list_links(ctx):
     if ids:
         sql += " OR l.project_id IN %s"
         params.append(tuple(ids))
-    sql += " ORDER BY (l.project_id IS NOT NULL), p.name, l.sort_order, l.id"
+    sql += (" ORDER BY (l.project_id IS NOT NULL), p.name, (l.category = ''), "
+            "l.category, l.sort_order, l.id")
     rows = db.query(sql, params)
     for row in rows:
         row["can_edit"] = bool(
@@ -1792,6 +1828,10 @@ def list_links(ctx):
             else auth.project_role(user, row["project_id"]) in ("owner", "editor"))
     return json_response({
         "links": rows,
+        # 入力の表記ゆれを減らすため、すでに使われている分類を候補として渡す
+        "categories": [r["category"] for r in db.query(
+            "SELECT DISTINCT category FROM shared_links WHERE category <> '' "
+            "ORDER BY category")],
         "can_add_shared": auth.is_admin(user),
         "projects": db.query(
             "SELECT id, name, color FROM projects WHERE id IN %s AND archived=0 ORDER BY name",
@@ -1815,10 +1855,10 @@ def create_link(ctx):
         + ("project_id=%s" if project_id else "project_id IS NULL"),
         (project_id,) if project_id else (), default=0) or 0) + 10
     link_id = db.insert(
-        "INSERT INTO shared_links(project_id, title, url, note, sort_order, created_by, "
-        "created_at, updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
+        "INSERT INTO shared_links(project_id, title, url, note, category, sort_order, "
+        "created_by, created_at, updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (project_id, title[:200], url, str(ctx.body.get("note") or "")[:500],
-         order, user["id"], now, now))
+         str(ctx.body.get("category") or "").strip()[:40], order, user["id"], now, now))
     return json_response({"link": db.query_one(LINK_SELECT + " WHERE l.id=%s", (link_id,))}, 201)
 
 
@@ -1836,6 +1876,9 @@ def update_link(ctx, link_id):
     if "note" in ctx.body:
         fields.append("note=%s")
         params.append(str(ctx.body["note"] or "")[:500])
+    if "category" in ctx.body:
+        fields.append("category=%s")
+        params.append(str(ctx.body["category"] or "").strip()[:40])
     if "sort_order" in ctx.body:
         fields.append("sort_order=%s")
         params.append(as_int(ctx.body["sort_order"], 0))
