@@ -12,6 +12,7 @@ const NAV = [
   { id: 'mytasks', icon: '✓', label: 'マイタスク', hash: '#/mytasks' },
   { id: 'todos', icon: '📝', label: 'マイ ToDo', hash: '#/todos' },
   { id: 'projects', icon: '📁', label: 'プロジェクト', hash: '#/projects' },
+  { id: 'gantt', icon: '📊', label: '全体ガント', hash: '#/gantt' },
   { id: 'issues', icon: '📌', label: '課題', hash: '#/issues' },
   { id: 'notifications', icon: '🔔', label: '通知', hash: '#/notifications', badge: true },
 ];
@@ -111,7 +112,8 @@ function renderSidebar() {
     el('div', { class: 'sidebar-section' },
       el('div', { class: 'sidebar-title', text: 'プロジェクト' }),
       ...projects.map((p) => navItem({
-        icon: '', label: p.name, hash: `#/p/${p.id}/tasks`, dot: p.color,
+        // プロジェクトを切り替えても、いま見ていた画面のまま移りたい
+        icon: '', label: p.name, hash: `#/p/${p.id}/${lastProjectTab()}`, dot: p.color,
       }, active.startsWith(`#/p/${p.id}`))),
       projects.length === 0
         ? el('div', { class: 'hint', style: { padding: '4px 10px' },
@@ -174,6 +176,22 @@ export function setHeader(title, actions = []) {
   document.title = `${title} — ${store.ui.app_name || 'タスク管理'}`;
 }
 
+const PROJECT_TABS = ['tasks', 'gantt', 'workload', 'bottlenecks', 'issues'];
+const LAST_TAB_KEY = 'tm.lastProjectTab';
+
+/** 直前に開いていたプロジェクト内の画面。既定はタスク一覧。 */
+export function lastProjectTab() {
+  try {
+    const saved = localStorage.getItem(LAST_TAB_KEY);
+    return PROJECT_TABS.includes(saved) ? saved : 'tasks';
+  } catch { return 'tasks'; }
+}
+
+function rememberProjectTab(view) {
+  if (!PROJECT_TABS.includes(view)) return;
+  try { localStorage.setItem(LAST_TAB_KEY, view); } catch { /* private mode */ }
+}
+
 /** いま表示している画面を描き直す。重なったドロワーから中身を変えたときに使う。 */
 export function refreshRoute() {
   return renderRoute();
@@ -211,6 +229,7 @@ const ROUTES = [
   [/^#\/projects$/, () => ({ view: 'projects' })],
   [/^#\/p\/(\d+)\/tasks$/, (m) => ({ view: 'tasks', projectId: Number(m[1]) })],
   [/^#\/p\/(\d+)\/gantt$/, (m) => ({ view: 'gantt', projectId: Number(m[1]) })],
+  [/^#\/gantt$/, () => ({ view: 'gantt', projectId: null })],
   [/^#\/p\/(\d+)\/bottlenecks$/, (m) => ({ view: 'bottlenecks', projectId: Number(m[1]) })],
   [/^#\/p\/(\d+)\/issues$/, (m) => ({ view: 'issues', projectId: Number(m[1]) })],
   [/^#\/p\/(\d+)\/workload$/, (m) => ({ view: 'workload', projectId: Number(m[1]) })],
@@ -254,6 +273,7 @@ async function renderRoute() {
   const route = parseRoute();
   const token = ++renderToken;
   currentRoute = route;
+  if (route.projectId) rememberProjectTab(route.view);
   closeAllOverlays();
   renderSidebar();
   renderMobileNav();

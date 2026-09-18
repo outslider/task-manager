@@ -104,9 +104,10 @@ def run(today=None):
 
 def _create_task(rule, today):
     now = db.now()
-    # 開始日は「今日」。ただし予定日がすでに過ぎている場合（バッチが止まっていて
-    # さかのぼって作るときなど）は、開始が期限より後になってしまうので合わせる。
-    start = min(today, rule["next_on"]) if rule["next_on"] else today
+    # 定例は会議のようにその日だけで終わるものが多いので、開始日は予定日に合わせる。
+    # 以前は「今日」にしていたため、先に作った回がどれも同じ開始日になり、
+    # ガントで長い帯が何本も重なって見えていた。
+    start = rule["next_on"] or today
     order = (db.scalar("SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE project_id=%s",
                        (rule["project_id"],), default=0) or 0) + 10
     task_id = db.insert(

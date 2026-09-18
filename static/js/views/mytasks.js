@@ -3,7 +3,8 @@ import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store, STATUS_LABEL, CATEGORIES } from '../store.js';
 import {
-  avatar, clear, debounce, dueClass, dueLabel, el, fill, formatDate,
+  addDays, avatar, clear, debounce, dueClass, dueLabel, el, fill, formatDate,
+  parseDate, toISO, today,
 } from '../util.js';
 import { openTaskDetail } from './taskDetail.js';
 import { categoryChip } from './pickers.js';
@@ -12,12 +13,14 @@ export async function render(container) {
   const state = {
     scope: 'mine', status: 'open', q: '', project_id: '', category: '',
     overdue: false, milestone: false, blocked: false,
+    week: null,          // 山グラフで選んだ週（その週だけ表示）
   };
 
   setHeader('マイタスク');
 
   const listHost = el('div', {});
   const summary = el('div', { class: 'page-sub' });
+  const timeline = el('div', { class: 'card', style: { marginBottom: '14px' } });
 
   const search = el('input', {
     class: 'input', type: 'search', placeholder: 'キーワード検索…',
@@ -73,8 +76,9 @@ export async function render(container) {
     }, label);
   }
 
-  fill(container, 
+  fill(container,
     el('div', { class: 'page-head' }, el('div', { class: 'grow' }, summary)),
+    timeline,
     el('div', { class: 'card' },
       el('div', { class: 'toolbar' },
         scopeSeg, search, statusSelect, projectSelect, categoryFilter,
@@ -93,16 +97,128 @@ export async function render(container) {
       limit: 500,
     });
     const tasks = data.tasks;
-    summary.textContent = `${tasks.length} 件`;
+    drawTimeline(tasks);
+    const shown = state.week
+      ? tasks.filter((t) => weekKeyOf(t) === state.week)
+      : tasks;
+    summary.textContent = state.week
+      ? `${shown.length} 件（${formatDate(state.week)} の週）／全 ${tasks.length} 件`
+      : `${tasks.length} 件`;
     clear(listHost);
-    if (tasks.length === 0) {
+    if (shown.length === 0) {
       listHost.append(el('div', { class: 'empty' },
         el('div', { class: 'big', text: '🔍' }), '条件に一致するタスクがありません'));
       return;
     }
-    for (const task of tasks) {
-      listHost.append(row(task));
+    // 時期ごとにまとめて出す。「いつごろ詰まっているか」が一覧からも分かるように
+    for (const bucket of bucketize(shown)) {
+      listHost.append(el('div', { class: 'period-head' },
+        el('span', { text: `${bucket.icon} ${bucket.label}` }),
+        el('span', { class: `badge ${bucket.tone}`.trim(), text: `${bucket.items.length} 件` })));
+      for (const task of bucket.items) listHost.append(row(task));
     }
+  }
+
+  const weekStart = (date) => addDays(date, -((date.getDay() + 6) % 7));
+
+  function weekKeyOf(task) {
+    const due = parseDate(task.due_date);
+    return due ? toISO(weekStart(due)) : '';
+  }
+
+  /** 期限を「いつごろか」で分ける。 */
+  function bucketize(tasks) {
+    const now = today();
+    const endOfWeek = addDays(weekStart(now), 6);
+    const endOfNext = addDays(endOfWeek, 7);
+    const inMonth = addDays(now, 30);
+    const defs = [
+      { key: 'overdue', label: '期限超過', icon: '🔥', tone: 'overdue' },
+      { key: 'today', label: '今日', icon: '📌', tone: 'soon' },
+      { key: 'week', label: '今週中', icon: '🗓', tone: '' },
+      { key: 'next', label: '来週', icon: '🗓', tone: '' },
+      { key: 'month', label: '1か月以内', icon: '📆', tone: '' },
+      { key: 'later', label: 'それ以降', icon: '🕰', tone: '' },
+      { key: 'none', label: '期限なし', icon: '—', tone: '' },
+    ];
+    const pick = (task) => {
+      const due = parseDate(task.due_date);
+      if (!due) return 'none';
+      if (due < now) return 'overdue';
+      if (due.getTime() === now.getTime()) return 'today';
+      if (due <= endOfWeek) return 'week';
+      if (due <= endOfNext) return 'next';
+      if (due <= inMonth) return 'month';
+      return 'later';
+    };
+    const groups = new Map(defs.map((d) => [d.key, []]));
+    for (const task of tasks) groups.get(pick(task)).push(task);
+    return defs.map((d) => ({ ...d, items: groups.get(d.key) }))
+      .filter((d) => d.items.length);
+  }
+
+  /** 週ごとの件数を棒で並べ、いつ山が来るかを見せる。 */
+  function drawTimeline(tasks) {
+    const now = today();
+    const first = weekStart(now);
+    const weeks = Array.from({ length: 12 }, (_, i) => addDays(first, i * 7));
+    const counts = weeks.map(() => ({ total: 0, overdue: 0, milestone: 0 }));
+    let past = 0;
+    let none = 0;
+    let beyond = 0;
+    for (const task of tasks) {
+      const due = parseDate(task.due_date);
+      if (!due) { none += 1; continue; }
+      if (due < first) { past += 1; continue; }
+      const index = Math.floor((due - first) / (7 * 86400000));
+      if (index >= weeks.length) { beyond += 1; continue; }
+      counts[index].total += 1;
+      if (due < now) counts[index].overdue += 1;
+      if (task.is_milestone) counts[index].milestone += 1;
+    }
+    const peak = Math.max(1, ...counts.map((c) => c.total));
+
+    const bar = (week, count, index) => {
+      const key = toISO(week);
+      const height = Math.round((count.total / peak) * 46);
+      const selected = state.week === key;
+      return el('button', {
+        type: 'button',
+        class: `tl-week${selected ? ' active' : ''}${index === 0 ? ' now' : ''}`,
+        title: `${formatDate(key)} の週: ${count.total} 件`
+          + (count.milestone ? ` / ◆ ${count.milestone}` : ''),
+        onClick: () => {
+          state.week = selected ? null : key;
+          load();
+        },
+      },
+      el('span', { class: 'tl-count', text: count.total ? String(count.total) : '' }),
+      el('span', { class: 'tl-bar-wrap' },
+        el('span', {
+          class: `tl-bar${count.overdue ? ' late' : ''}${count.total >= peak && peak > 2 ? ' peak' : ''}`,
+          style: { height: `${Math.max(count.total ? 4 : 0, height)}px` },
+        })),
+      el('span', { class: 'tl-label', text: `${week.getMonth() + 1}/${week.getDate()}` }));
+    };
+
+    fill(timeline,
+      el('div', { class: 'card-head' },
+        el('h2', {}, 'これからの山'),
+        el('span', { class: 'hint',
+          text: peak > 1
+            ? `いちばん多い週で ${peak} 件。棒をクリックするとその週だけ表示します`
+            : '棒をクリックするとその週だけ表示します' })),
+      el('div', { class: 'card-body' },
+        el('div', { class: 'tl-strip' }, ...weeks.map((w, i) => bar(w, counts[i], i))),
+        el('div', { class: 'tl-notes' },
+          past ? el('span', { class: 'badge overdue', text: `期限切れ ${past} 件` }) : null,
+          beyond ? el('span', { class: 'badge', text: `3か月より先 ${beyond} 件` }) : null,
+          none ? el('span', { class: 'badge', text: `期限なし ${none} 件` }) : null,
+          state.week
+            ? el('button', {
+              class: 'btn btn-sm', onClick: () => { state.week = null; load(); },
+            }, '週の絞り込みを解除')
+            : null)));
   }
 
   function row(task) {

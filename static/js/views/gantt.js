@@ -104,26 +104,36 @@ function saveLabels(labels) {
 
 const GROUPINGS = [
   { key: 'none', label: 'なし', hint: '階層のまま並べます' },
+  { key: 'project', label: 'プロジェクト', hint: 'プロジェクトごとに区切ります',
+    overviewOnly: true },
   { key: 'phase', label: 'フェーズ', hint: 'トップレベルのタスクごとに区切ります' },
   { key: 'assignee', label: '担当者', hint: '担当者ごとに区切り行を入れます' },
   { key: 'category', label: 'カテゴリ', hint: 'カテゴリごとに区切り行を入れます' },
 ];
 
 export async function render(container, route) {
-  const projectId = route.projectId;
-  let data = await api.projectTasks(projectId);
-  const project = data.project;
+  const projectId = route.projectId || null;
+  const overview = !projectId;               // プロジェクトを横断して見るモード
+  let data = overview ? await api.get('/api/gantt') : await api.projectTasks(projectId);
+  const project = overview
+    ? { id: null, name: '全プロジェクト' }
+    : data.project;
   /** 日付 (ISO) → 祝日名。ガントの網掛けに使う。 */
   const holidayMap = new Map();
   let holidayRange = null;
 
   const compact = window.innerWidth < 760;
-  const canEdit = store.canEdit(project);
-  const collapsed = loadCollapsed(projectId);      // タスク一覧と共有する
+  // 俯瞰では、どれか 1 つでも編集できれば日程を動かせる（保存時に権限は再判定される）
+  const canEdit = overview
+    ? (data.projects || []).some((p) => ['owner', 'editor'].includes(p.my_role))
+    : store.canEdit(project);
+  const collapsed = loadCollapsed(projectId || 'all');   // タスク一覧と共有する
   const collapsedGroups = new Set();
   const state = {
     mode: localStorage.getItem('tm.gantt.mode') || 'gantt',   // gantt | roadmap
-    group: localStorage.getItem('tm.gantt.group') || 'phase', // none|phase|assignee|category
+    group: overview
+      ? (localStorage.getItem('tm.gantt.groupAll') || 'project')
+      : (localStorage.getItem('tm.gantt.group') || 'phase'),
     showMarks: localStorage.getItem('tm.gantt.marks') !== '0',
     labels: loadLabels(),
     scale: localStorage.getItem('tm.gantt.scale') || (compact ? 'week' : 'day'),
@@ -136,9 +146,9 @@ export async function render(container, route) {
   };
 
   const syncHeader = () => setHeader(
-    `${project.name} — ${state.mode === 'roadmap' ? 'ロードマップ' : 'ガント'}`,
+    `${project.name}${overview ? '' : ' —'} ${state.mode === 'roadmap' ? 'ロードマップ' : 'ガント'}`,
     [
-      canEdit
+      canEdit && !overview
         ? el('button', { class: 'btn', onClick: () => addTask() }, '＋ タスク')
         : null,
       el('button', { class: 'btn btn-primary', onClick: () => exportDialog() }, '⬇ エクスポート'),
@@ -203,11 +213,11 @@ export async function render(container, route) {
     class: 'select', style: { maxWidth: '120px' },
     onChange: (event) => {
       state.group = event.target.value;
-      localStorage.setItem('tm.gantt.group', state.group);
+      localStorage.setItem(overview ? 'tm.gantt.groupAll' : 'tm.gantt.group', state.group);
       collapsedGroups.clear();
       draw();
     },
-  }, ...GROUPINGS.map((g) => el('option', {
+  }, ...GROUPINGS.filter((g) => overview || !g.overviewOnly).map((g) => el('option', {
     value: g.key, title: g.hint, selected: state.group === g.key ? true : null,
   }, g.label)));
 
@@ -317,7 +327,18 @@ export async function render(container, route) {
   container.className = 'content flush';
   fill(container,
     el('div', { class: 'gantt-wrap' },
-      projectTabs(projectId, 'gantt'), toolbar, scroll, legend));
+      overview ? overviewHead() : projectTabs(projectId, 'gantt'),
+      toolbar, scroll, legend));
+
+  /** 俯瞰のときの見出し。どのプロジェクトが対象かを示す。 */
+  function overviewHead() {
+    const names = (data.projects || []).map((p) => p.name);
+    return el('div', { class: 'proj-tabs' },
+      el('span', { class: 'hint', style: { padding: '8px 12px' },
+        text: names.length
+          ? `${names.length} プロジェクトを並べています: ${names.join(' / ')}`
+          : '表示できるプロジェクトがありません' }));
+  }
 
   function filteredTasks() {
     return data.tasks.filter((task) => {
@@ -338,7 +359,7 @@ export async function render(container, route) {
           task, depth: 0, hasChildren: (children.get(task.id) || []).length > 0,
         }));
     }
-    if (state.group === 'assignee' || state.group === 'category') {
+    if (['assignee', 'category', 'project'].includes(state.group)) {
       return groupedRows(tasks);
     }
 
@@ -364,23 +385,29 @@ export async function render(container, route) {
     return rows;
   }
 
-  /** 担当者・カテゴリごとに区切り行を挟んで並べる。 */
+  /** 担当者・カテゴリ・プロジェクトごとに区切り行を挟んで並べる。 */
   function groupedRows(tasks) {
-    const byAssignee = state.group === 'assignee';
+    const mode = state.group;
+    const keyOf = (task) => {
+      if (mode === 'assignee') return task.assignee_id ? String(task.assignee_id) : '';
+      if (mode === 'project') return String(task.project_id);
+      return task.category || '';
+    };
     const buckets = new Map();
     for (const task of tasks) {
-      const key = byAssignee
-        ? (task.assignee_id ? String(task.assignee_id) : '')
-        : (task.category || '');
+      const key = keyOf(task);
       if (!buckets.has(key)) buckets.set(key, []);
       buckets.get(key).push(task);
     }
+    const projects = new Map((data.projects || []).map((p) => [String(p.id), p]));
     const label = (key) => {
-      if (byAssignee) return key ? (store.userName(Number(key)) || '不明') : '未割当';
+      if (mode === 'assignee') return key ? (store.userName(Number(key)) || '不明') : '未割当';
+      if (mode === 'project') return projects.get(key)?.name || '（不明なプロジェクト）';
       return key ? category(key).label : '未分類';
     };
     const tint = (key) => {
-      if (byAssignee) return store.usersById.get(Number(key))?.avatar_color || '#98a2b3';
+      if (mode === 'assignee') return store.usersById.get(Number(key))?.avatar_color || '#98a2b3';
+      if (mode === 'project') return projects.get(key)?.color || '#98a2b3';
       return key ? category(key).color : '#98a2b3';
     };
     // 中身の多い順。未割当・未分類は最後に回す
@@ -392,18 +419,42 @@ export async function render(container, route) {
     for (const key of keys) {
       const items = buckets.get(key)
         .sort((a, b) => (a.sort_order - b.sort_order) || (a.id - b.id));
-      const groupId = `${state.group}:${key}`;
+      const groupId = `${mode}:${key}`;
       const folded = collapsedGroups.has(groupId);
       rows.push({
         group: true, groupId, label: label(key), color: tint(key),
         count: items.length, collapsed: folded, separator: rows.length > 0,
       });
       if (folded) continue;
-      for (const task of items) {
-        rows.push({ task, depth: 0, hasChildren: false, inGroup: true });
+      if (mode === 'project') {
+        // プロジェクト単位なら、その中の親子関係はそのまま見せる
+        rows.push(...hierarchyRows(items, 1));
+      } else {
+        for (const task of items) {
+          rows.push({ task, depth: 0, hasChildren: false, inGroup: true });
+        }
       }
     }
     return rows;
+  }
+
+  /** タスクの集合を、親子の順に並べた行にする。 */
+  function hierarchyRows(tasks, baseDepth) {
+    const { children } = buildTree(tasks);
+    const out = [];
+    const walk = (parentId, depth) => {
+      for (const task of children.get(parentId) || []) {
+        const kids = children.get(task.id) || [];
+        const folded = collapsed.has(task.id);
+        out.push({
+          task, depth, hasChildren: kids.length > 0, collapsed: folded, inGroup: true,
+          marks: folded && state.showMarks ? occurrenceDates(task.id) : null,
+        });
+        if (!folded) walk(task.id, depth + 1);
+      }
+    };
+    walk(null, baseDepth - baseDepth);
+    return out.map((row) => ({ ...row, depth: row.depth + baseDepth }));
   }
 
   function toggleRow(row) {
@@ -521,7 +572,7 @@ export async function render(container, route) {
   async function refresh() {
     const scrollLeft = scroll.scrollLeft;
     try {
-      data = await api.projectTasks(projectId);
+      data = overview ? await api.get('/api/gantt') : await api.projectTasks(projectId);
     } catch (error) {
       toast(error.message, 'error');
       return;
@@ -549,7 +600,7 @@ export async function render(container, route) {
       // ロードマップは見せるための図なので、ドラッグ編集はガント表示だけにする
       editable: canEdit && !roadmap, onEdit: applyEdit, scroller: scroll,
       roadmap, milestones, holidays: holidayMap, labels: state.labels,
-      onCreate: canEdit ? addTask : null, onOpenTask: openTask,
+      onCreate: canEdit && !overview ? addTask : null, onOpenTask: openTask,
       onToggleRow: toggleRow,
     });
     drawLegend();

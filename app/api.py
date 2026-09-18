@@ -778,6 +778,42 @@ def list_project_tasks(ctx, project_id):
     })
 
 
+@route("GET", r"/api/gantt")
+def gantt_overview(ctx):
+    """参加しているプロジェクトをまとめて 1 枚のガントにするためのデータ。"""
+    user = me(ctx)
+    ids = auth.visible_project_ids(user)
+    wanted = ctx.query.get("project_ids")
+    if wanted:
+        chosen = {as_int(v) for v in str(wanted).split(",") if as_int(v)}
+        ids = [i for i in ids if i in chosen]
+    if not ids:
+        return json_response({"tasks": [], "deps": [], "projects": [], "conflicts": [],
+                              "critical_path": [], "members": []})
+
+    scope = tuple(ids)
+    rows = db.query(
+        TASK_SELECT + " WHERE t.project_id IN %s AND p.archived=0 "
+        "ORDER BY p.name, t.sort_order, t.id", (scope,))
+    task_rows_with_rollup(rows)
+    deps = db.query(
+        "SELECT d.task_id, d.depends_on_id FROM task_deps d "
+        "JOIN tasks t ON t.id = d.task_id WHERE t.project_id IN %s", (scope,))
+    # 依存はプロジェクトの中で閉じているので、まとめて解析しても混ざらない
+    analysis = graph.analyze(rows, deps)
+    for row in rows:
+        row.update(analysis["metrics"].get(row["id"], {}))
+    projects = db.query(
+        "SELECT id, name, color FROM projects WHERE id IN %s AND archived=0 ORDER BY name",
+        (scope,))
+    for project in projects:
+        project["my_role"] = auth.project_role(user, project["id"])
+    return json_response({
+        "tasks": rows, "deps": deps, "projects": projects,
+        "conflicts": analysis["conflicts"], "critical_path": analysis["critical_path"],
+    })
+
+
 def project_deps(project_id):
     return db.query(
         "SELECT d.task_id, d.depends_on_id FROM task_deps d "

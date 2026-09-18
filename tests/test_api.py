@@ -2788,3 +2788,106 @@ class TestGanttMarkers(ApiTestCase):
     def test_default_is_empty(self):
         project = self.make_project()
         self.assertEqual(self.make_task(project["id"], "既定")["marker"], "")
+
+
+class TestRecurrenceSingleDay(ApiTestCase):
+    """定例タスクは会議が多いので、開始日と期限を同じ日にする。"""
+
+    def make_rule(self, **kwargs):
+        project = kwargs.pop("project", None) or self.make_project()
+        payload = {"title": "定例", "freq": "weekly", "weekdays": "0",
+                   "lead_days": 7, "next_on": "2026-12-07"}
+        payload.update(kwargs)
+        status, data = self.admin.post(
+            "/api/projects/{}/recurrences".format(project["id"]), payload)
+        self.assertEqual(status, 201, data)
+        return project, data["recurrence"]
+
+    def test_the_occurrence_starts_and_ends_on_the_same_day(self):
+        _project, rule = self.make_rule()
+        task = self.admin.post("/api/recurrences/{}/run".format(rule["id"]), {})[1]["task"]
+        self.assertEqual(task["start_date"], "2026-12-07")
+        self.assertEqual(task["due_date"], "2026-12-07")
+
+    def test_occurrences_do_not_share_one_start_date(self):
+        """まとめて作っても、回ごとに違う日付になること。"""
+        project, rule = self.make_rule()
+        made = [self.admin.post("/api/recurrences/{}/run".format(rule["id"]), {})[1]["task"]
+                for _ in range(4)]
+        starts = [t["start_date"] for t in made]
+        self.assertEqual(len(set(starts)), 4, "開始日が全部同じになっている: {}".format(starts))
+        for task in made:
+            self.assertEqual(task["start_date"], task["due_date"])
+
+    def test_a_past_occurrence_is_still_consistent(self):
+        _project, rule = self.make_rule(next_on="2026-01-05")
+        task = self.admin.post("/api/recurrences/{}/run".format(rule["id"]), {})[1]["task"]
+        self.assertEqual(task["start_date"], "2026-01-05")
+        self.assertEqual(task["due_date"], "2026-01-05")
+
+
+class TestGanttOverview(ApiTestCase):
+    """全プロジェクトを 1 枚のガントにまとめるためのデータ。"""
+
+    def setUp(self):
+        super().setUp()
+        self.a = self.make_project("俯瞰A")
+        self.b = self.make_project("俯瞰B")
+        self.ta = self.make_task(self.a["id"], "A のタスク", due_date="2026-10-10")
+        self.tb = self.make_task(self.b["id"], "B のタスク", due_date="2026-10-20")
+
+    def test_tasks_from_every_project_are_returned(self):
+        data = self.admin.get("/api/gantt")[1]
+        titles = [t["title"] for t in data["tasks"]]
+        self.assertIn("A のタスク", titles)
+        self.assertIn("B のタスク", titles)
+        names = [p["name"] for p in data["projects"]]
+        self.assertIn("俯瞰A", names)
+        self.assertIn("俯瞰B", names)
+
+    def test_each_task_carries_its_project(self):
+        data = self.admin.get("/api/gantt")[1]
+        task = next(t for t in data["tasks"] if t["title"] == "A のタスク")
+        self.assertEqual(task["project_name"], "俯瞰A")
+        self.assertTrue(task["project_color"])
+
+    def test_rollup_is_applied(self):
+        child = self.make_task(self.a["id"], "子", parent_id=self.ta["id"],
+                               due_date="2026-11-30", progress=100)
+        data = self.admin.get("/api/gantt")[1]
+        parent = next(t for t in data["tasks"] if t["id"] == self.ta["id"])
+        self.assertEqual(parent["child_count"], 1)
+        self.assertEqual(parent["rollup_due"], "2026-11-30")
+        self.assertIn(child["id"], [t["id"] for t in data["tasks"]])
+
+    def test_only_my_projects_are_included(self):
+        user, email = self.make_user("片方だけの人")
+        self.admin.put("/api/projects/{}/members".format(self.a["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "viewer"}]})
+        data = self.client_for(email).get("/api/gantt")[1]
+        self.assertEqual([p["name"] for p in data["projects"]], ["俯瞰A"])
+        self.assertEqual([t["title"] for t in data["tasks"]], ["A のタスク"])
+
+    def test_it_can_be_narrowed_to_some_projects(self):
+        data = self.admin.get("/api/gantt?project_ids={}".format(self.b["id"]))[1]
+        self.assertEqual([p["name"] for p in data["projects"]], ["俯瞰B"])
+
+    def test_archived_projects_are_left_out(self):
+        self.admin.patch("/api/projects/{}".format(self.b["id"]), {"archived": True})
+        data = self.admin.get("/api/gantt")[1]
+        self.assertNotIn("俯瞰B", [p["name"] for p in data["projects"]])
+
+    def test_my_role_is_included_so_the_screen_knows_what_is_editable(self):
+        data = self.admin.get("/api/gantt")[1]
+        for project in data["projects"]:
+            self.assertIn(project["my_role"], ("owner", "editor", "commenter", "viewer"))
+
+    def test_someone_with_no_projects_gets_an_empty_chart(self):
+        _user, email = self.make_user("どこにも属さない人")
+        data = self.client_for(email).get("/api/gantt")[1]
+        self.assertEqual(data["tasks"], [])
+        self.assertEqual(data["projects"], [])
+
+    def test_it_needs_a_login(self):
+        self.assertEqual(Client(self.base).get("/api/gantt")[0], 401)
