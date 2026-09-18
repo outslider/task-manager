@@ -20,14 +20,38 @@ MODELS = [
     ("claude-haiku-4-5", "Claude Haiku 4.5（高速・低コスト）"),
 ]
 
-CATEGORY_VALUES = ["research", "design", "build", "docs", "meeting", "admin", "incident", ""]
+def category_values():
+    """カテゴリは画面から増やせるので、スキーマもそのつど組み立てる。"""
+    from . import taxonomy
+    return [c["value"] for c in taxonomy.categories()] + [""]
+
+def with_categories(schema):
+    """スキーマの category に、いま登録されているカテゴリを enum として入れる。"""
+    import copy
+    values = category_values()
+    filled = copy.deepcopy(schema)
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "category" and isinstance(value, dict):
+                    value["enum"] = values
+                else:
+                    walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(filled)
+    return filled
+
 
 PARSE_SCHEMA = {
     "type": "object",
     "properties": {
         "title": {"type": "string", "description": "タスク名。依頼文ではなく簡潔な名詞句にする"},
         "description": {"type": "string", "description": "補足。なければ空文字"},
-        "category": {"type": "string", "enum": CATEGORY_VALUES},
+        "category": {"type": "string"},
         "priority": {"type": "integer", "enum": [0, 1, 2, 3],
                      "description": "重要度 0=低 1=中 2=高 3=最重要"},
         "assignee_name": {"type": "string", "description": "担当者名。不明なら空文字"},
@@ -51,7 +75,7 @@ DECOMPOSE_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "子タスク名（簡潔な名詞句）"},
-                    "category": {"type": "string", "enum": CATEGORY_VALUES},
+                    "category": {"type": "string"},
                     # 構造化出力のスキーマは integer の minimum/maximum を受け付けないため
                     # 取りうる値を enum で列挙する
                     "weight": {"type": "integer", "enum": [1, 2, 3, 4, 5],
@@ -166,7 +190,7 @@ def parse(text, users=(), projects=(), base=None):
     data = _ask(
         PARSE_SYSTEM,
         "{}\n\n---\n登録したい内容:\n{}".format(_context_block(users, projects, base), text),
-        PARSE_SCHEMA, effort="low")
+        with_categories(PARSE_SCHEMA), effort="low")
 
     by_name = {u["name"]: u["id"] for u in users}
     projects_by_name = {p["name"]: p["id"] for p in projects}
@@ -197,7 +221,7 @@ def decompose(title, description="", start_date=None, due_date=None):
         DECOMPOSE_SYSTEM,
         "分解したいタスク: {}{}{}".format(
             title, "\n補足: " + description if description else "", period),
-        DECOMPOSE_SCHEMA, effort="medium")
+        with_categories(DECOMPOSE_SCHEMA), effort="medium")
 
     steps = [(s.get("title", "").strip(), s.get("category", ""), int(s.get("weight", 1)))
              for s in data.get("steps", []) if s.get("title")]

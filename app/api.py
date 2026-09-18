@@ -9,29 +9,17 @@ from urllib.parse import quote
 import pymysql
 
 from . import (auth, db, graph, holidays, llm, mentions, nlp, notify, prefs,
-               recurrence, slack, workload)
+               recurrence, slack, taxonomy, workload)
 from .config import MAX_UPLOAD_BYTES, UPLOAD_DIR
 from .http_util import (HttpError, as_bool, as_date, as_int, bad_request, forbidden,
                         json_response, not_found, require, unauthorized, Response)
 
-STATUSES = ["todo", "doing", "review", "done", "blocked"]
-STATUS_LABEL = notify.STATUS_LABEL
+# 状態のキーは判定に使うので固定。表示名と色は画面から変えられる（taxonomy）。
+STATUSES = taxonomy.STATUS_KEYS
 # 重要度。緊急度は期限から自動的に決まるので、ここは純粋な重要度だけを持つ。
 IMPORTANCE_LABEL = {0: "低", 1: "中", 2: "高", 3: "最重要"}
 OPEN_STATUSES = notify.OPEN_STATUSES
 MAX_TASK_DEPTH = 8
-
-# value, 表示名, 色, 記号
-CATEGORIES = [
-    ("research", "調査・リサーチ", "#6366f1", "🔍"),
-    ("design", "設計・企画", "#8b5cf6", "✏️"),
-    ("build", "実装・構築", "#3b6ef5", "🔧"),
-    ("docs", "ドキュメント作成", "#0ea5e9", "📄"),
-    ("meeting", "会議・打ち合わせ", "#14b8a6", "👥"),
-    ("admin", "事務・申請系", "#a1a1aa", "📋"),
-    ("incident", "トラブル対応・障害対応", "#ef4444", "🚨"),
-]
-CATEGORY_VALUES = {c[0] for c in CATEGORIES}
 
 # ガント上の記号。空文字は既定（◆）。
 MARKERS = [
@@ -72,11 +60,15 @@ ISSUE_CATEGORIES = [
 ]
 ISSUE_CATEGORY_VALUES = {c[0] for c in ISSUE_CATEGORIES}
 ISSUE_CATEGORY_LABEL = {c[0]: c[1] for c in ISSUE_CATEGORIES}
-CATEGORY_LABEL = {c[0]: c[1] for c in CATEGORIES}
+
+
+
+def status_label(key):
+    return taxonomy.status_label(key)
 
 
 def category_label(value):
-    return CATEGORY_LABEL.get(value or "", "未分類")
+    return taxonomy.category_label(value)
 
 _ROUTES = []
 
@@ -927,7 +919,7 @@ def normalize_category(value, current=""):
     value = str(value).strip()
     if value == "":
         return ""
-    if value not in CATEGORY_VALUES:
+    if value not in taxonomy.category_values():
         raise bad_request("不明なカテゴリです: {}".format(value))
     return value
 
@@ -1138,8 +1130,7 @@ def update_task(ctx, task_id):
         status, progress = _apply_status_progress(body, current)
         if status != current["status"]:
             notes.append("状態: {} → {}".format(
-                STATUS_LABEL.get(current["status"], current["status"]),
-                STATUS_LABEL.get(status, status)))
+                status_label(current["status"]), status_label(status)))
             fields.append("completed_at=%s")
             params.append(db.now() if status == "done" else None)
         if progress != current["progress"]:
@@ -1713,6 +1704,166 @@ def search(ctx):
 
 
 # --------------------------------------------------------------------------
+# 状態とカテゴリの設定
+# --------------------------------------------------------------------------
+
+@route("GET", r"/api/admin/taxonomy")
+def get_taxonomy(ctx):
+    admin_only(ctx)
+    used = {r["category"]: r["c"] for r in db.query(
+        "SELECT category, COUNT(*) AS c FROM tasks WHERE category <> '' GROUP BY category")}
+    categories = [dict(c, used=used.get(c["value"], 0)) for c in taxonomy.categories()]
+    return json_response({
+        "statuses": taxonomy.statuses(),
+        "categories": categories,
+        "palettes": taxonomy.STATUS_PALETTES,
+        "icons": taxonomy.ICON_CHOICES,
+        "status_note": "状態は完了・未完了の判定に使うため、名前と色だけ変えられます。",
+    })
+
+
+@route("PUT", r"/api/admin/taxonomy")
+def put_taxonomy(ctx):
+    admin_only(ctx)
+    result = {}
+    if "statuses" in ctx.body:
+        result["statuses"] = taxonomy.save_statuses(ctx.body["statuses"])
+    if "categories" in ctx.body:
+        items = ctx.body["categories"]
+        if not isinstance(items, list):
+            raise bad_request("categories は配列で指定してください")
+        if len(items) > 40:
+            raise bad_request("カテゴリは 40 件までにしてください")
+        saved = taxonomy.save_categories(items)
+        result["categories"] = saved["categories"]
+        result["removed"] = saved["removed"]
+    if not result:
+        raise bad_request("更新する項目がありません")
+    return json_response(result)
+
+
+# --------------------------------------------------------------------------
+# 共有リンク集
+# --------------------------------------------------------------------------
+
+LINK_SELECT = """
+    SELECT l.*, p.name AS project_name, p.color AS project_color, u.name AS created_by_name
+      FROM shared_links l
+      LEFT JOIN projects p ON p.id = l.project_id
+      LEFT JOIN users u ON u.id = l.created_by
+"""
+
+
+def link_or_404(user, link_id, write=False):
+    link = db.query_one(LINK_SELECT + " WHERE l.id=%s", (link_id,))
+    if not link:
+        raise not_found("リンクが見つかりません")
+    if link["project_id"]:
+        project_or_404(user, link["project_id"], "editor" if write else "viewer")
+    elif write and not auth.is_admin(user):
+        raise forbidden("全体のリンクを編集できるのは管理者だけです")
+    return link
+
+
+def normalize_link_url(value):
+    url = str(value or "").strip()
+    if not url:
+        raise bad_request("URL を入力してください")
+    if not re.match(r"^(https?://|mailto:|file://|\\\\)", url, re.IGNORECASE):
+        raise bad_request("URL は http(s):// などで始めてください")
+    return url[:2000]
+
+
+@route("GET", r"/api/links")
+def list_links(ctx):
+    """全体で共有しているリンクと、参加しているプロジェクトのリンク。"""
+    user = me(ctx)
+    ids = auth.visible_project_ids(user)
+    sql = LINK_SELECT + " WHERE l.project_id IS NULL"
+    params = []
+    if ids:
+        sql += " OR l.project_id IN %s"
+        params.append(tuple(ids))
+    sql += " ORDER BY (l.project_id IS NOT NULL), p.name, l.sort_order, l.id"
+    rows = db.query(sql, params)
+    for row in rows:
+        row["can_edit"] = bool(
+            auth.is_admin(user) if row["project_id"] is None
+            else auth.project_role(user, row["project_id"]) in ("owner", "editor"))
+    return json_response({
+        "links": rows,
+        "can_add_shared": auth.is_admin(user),
+        "projects": db.query(
+            "SELECT id, name, color FROM projects WHERE id IN %s AND archived=0 ORDER BY name",
+            (tuple(ids),)) if ids else [],
+    })
+
+
+@route("POST", r"/api/links")
+def create_link(ctx):
+    user = me(ctx)
+    project_id = as_int(ctx.body.get("project_id"))
+    if project_id:
+        project_or_404(user, project_id, "editor")
+    else:
+        admin_only(ctx)
+    title = require(ctx.body, "title", "タイトル")
+    url = normalize_link_url(ctx.body.get("url"))
+    now = db.now()
+    order = (db.scalar(
+        "SELECT COALESCE(MAX(sort_order), 0) AS m FROM shared_links WHERE "
+        + ("project_id=%s" if project_id else "project_id IS NULL"),
+        (project_id,) if project_id else (), default=0) or 0) + 10
+    link_id = db.insert(
+        "INSERT INTO shared_links(project_id, title, url, note, sort_order, created_by, "
+        "created_at, updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
+        (project_id, title[:200], url, str(ctx.body.get("note") or "")[:500],
+         order, user["id"], now, now))
+    return json_response({"link": db.query_one(LINK_SELECT + " WHERE l.id=%s", (link_id,))}, 201)
+
+
+@route("PATCH", r"/api/links/(\d+)")
+def update_link(ctx, link_id):
+    user = me(ctx)
+    current = link_or_404(user, link_id, write=True)
+    fields, params = [], []
+    if "title" in ctx.body:
+        fields.append("title=%s")
+        params.append(require(ctx.body, "title", "タイトル")[:200])
+    if "url" in ctx.body:
+        fields.append("url=%s")
+        params.append(normalize_link_url(ctx.body["url"]))
+    if "note" in ctx.body:
+        fields.append("note=%s")
+        params.append(str(ctx.body["note"] or "")[:500])
+    if "sort_order" in ctx.body:
+        fields.append("sort_order=%s")
+        params.append(as_int(ctx.body["sort_order"], 0))
+    if "project_id" in ctx.body:
+        target = as_int(ctx.body["project_id"])
+        if target:
+            project_or_404(user, target, "editor")
+        else:
+            admin_only(ctx)
+        fields.append("project_id=%s")
+        params.append(target)
+    if not fields:
+        raise bad_request("更新する項目がありません")
+    fields.append("updated_at=%s")
+    params += [db.now(), current["id"]]
+    db.execute("UPDATE shared_links SET {} WHERE id=%s".format(", ".join(fields)), params)
+    return json_response({"link": db.query_one(LINK_SELECT + " WHERE l.id=%s", (current["id"],))})
+
+
+@route("DELETE", r"/api/links/(\d+)")
+def delete_link(ctx, link_id):
+    user = me(ctx)
+    link = link_or_404(user, link_id, write=True)
+    db.execute("DELETE FROM shared_links WHERE id=%s", (link["id"],))
+    return json_response({"ok": True})
+
+
+# --------------------------------------------------------------------------
 # 休日（祝日 + 会社の休業日）
 # --------------------------------------------------------------------------
 
@@ -1783,9 +1934,11 @@ IMPORT_FIELDS = [
 IMPORT_FIELD_KEYS = [f[0] for f in IMPORT_FIELDS]
 
 TRUE_WORDS = {"1", "true", "yes", "y", "はい", "○", "◯", "〇", "◎", "有", "あり", "true"}
-STATUS_BY_LABEL = {label: value for value, label in STATUS_LABEL.items()}
+def status_by_label():
+    return {row["label"]: row["value"] for row in taxonomy.statuses()}
 IMPORTANCE_BY_LABEL = {label: value for value, label in IMPORTANCE_LABEL.items()}
-CATEGORY_BY_LABEL = {label: value for value, label, _c, _i in CATEGORIES}
+def category_by_label():
+    return {row["label"]: row["value"] for row in taxonomy.categories()}
 
 
 def _import_text(value):
@@ -1847,8 +2000,8 @@ def import_fields(ctx):
     return json_response({
         "fields": [{"value": v, "label": label, "help": help_text}
                    for v, label, help_text in IMPORT_FIELDS],
-        "statuses": list(STATUS_BY_LABEL),
-        "categories": list(CATEGORY_BY_LABEL),
+        "statuses": list(status_by_label()),
+        "categories": list(category_by_label()),
         "importance": list(IMPORTANCE_BY_LABEL),
     })
 
@@ -1893,15 +2046,16 @@ def import_tasks(ctx, project_id):
                 })
 
         status_text = _import_text(raw.get("status"))
-        status = STATUS_BY_LABEL.get(status_text, status_text if status_text in STATUSES else "todo")
+        status = status_by_label().get(
+            status_text, status_text if status_text in STATUSES else "todo")
         priority_text = _import_text(raw.get("priority"))
         if priority_text in IMPORTANCE_BY_LABEL:
             priority = IMPORTANCE_BY_LABEL[priority_text]
         else:
             priority = int(_import_number(priority_text, 0, 3) or 1)
         category_text = _import_text(raw.get("category"))
-        category = CATEGORY_BY_LABEL.get(category_text, "")
-        if not category and category_text in CATEGORY_VALUES:
+        category = category_by_label().get(category_text, "")
+        if not category and category_text in taxonomy.category_values():
             category = category_text
 
         start_date = _import_date(raw.get("start_date"))
@@ -2058,7 +2212,7 @@ def bulk_update_tasks(ctx):
         params += [status, db.now() if status == "done" else None]
         if status == "done":
             fields.append("progress=100")
-        notes.append("状態: {}".format(STATUS_LABEL[status]))
+        notes.append("状態: {}".format(status_label(status)))
     if "category" in body:
         fields.append("category=%s")
         params.append(normalize_category(body["category"]))
@@ -2316,8 +2470,7 @@ def daily_update(ctx):
             params = [status, progress, db.now()]
             if status != current["status"]:
                 notes.append("状態: {} → {}".format(
-                    STATUS_LABEL.get(current["status"], current["status"]),
-                    STATUS_LABEL.get(status, status)))
+                    status_label(current["status"]), status_label(status)))
                 fields.append("completed_at=%s")
                 params.append(db.now() if status == "done" else None)
             if progress != current["progress"]:
@@ -2416,11 +2569,10 @@ def run_digest(ctx):
 @route("GET", r"/api/meta")
 def meta(ctx):
     return json_response({
-        "statuses": [{"value": s, "label": STATUS_LABEL[s]} for s in STATUSES],
+        "statuses": taxonomy.statuses(),
         "importance": [{"value": k, "label": v}
                        for k, v in sorted(IMPORTANCE_LABEL.items(), reverse=True)],
-        "categories": [{"value": v, "label": label, "color": color, "icon": icon}
-                       for v, label, color, icon in CATEGORIES],
+        "categories": taxonomy.categories(),
         "project_roles": [
             {"value": "owner", "label": "オーナー（設定変更・削除）"},
             {"value": "editor", "label": "編集者（タスク追加・編集）"},
@@ -2940,7 +3092,7 @@ def _steps_to_items(steps, start_date, due_date):
     for index, ((title, category, _weight), dates) in enumerate(zip(steps, spread)):
         items.append({
             "title": title,
-            "category": category if category in CATEGORY_VALUES else "",
+            "category": category if category in taxonomy.category_values() else "",
             "start_date": dates[0].isoformat() if dates[0] else None,
             "due_date": dates[1].isoformat() if dates[1] else None,
             "sort_order": (index + 1) * 10,

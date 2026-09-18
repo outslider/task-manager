@@ -13,10 +13,14 @@ export async function render(container, route) {
     return;
   }
   const tab = route.tab || 'users';
-  const titles = { users: 'ユーザー管理', groups: 'グループ管理', settings: 'システム設定' };
+  const titles = {
+    users: 'ユーザー管理', groups: 'グループ管理', settings: 'システム設定',
+    taxonomy: '状態とカテゴリ',
+  };
   setHeader(titles[tab]);
   if (tab === 'users') await renderUsers(container);
   else if (tab === 'groups') await renderGroups(container);
+  else if (tab === 'taxonomy') await renderTaxonomy(container);
   else await renderSettings(container);
 }
 
@@ -541,4 +545,189 @@ async function renderSettings(container) {
     for (const [key, read] of Object.entries(fields)) payload[key] = read();
     await api.put('/api/settings', { settings: payload });
   }
+}
+
+
+/* ------------------------------------------------------- 状態とカテゴリ */
+
+async function renderTaxonomy(container) {
+  const data = await api.get('/api/admin/taxonomy');
+  const statuses = data.statuses.map((s) => ({ ...s }));
+  const categories = data.categories.map((c) => ({ ...c }));
+
+  const statusHost = el('div', {});
+  const categoryHost = el('div', {});
+
+  /** 色見本。並べて選べるようにして、色がばらけないようにする。 */
+  const swatches = (current, onPick) => {
+    const options = ['#98a2b3', '#3b6ef5', '#9061f9', '#17a673', '#e14c4c',
+      '#e8912b', '#0ea5e9', '#14b8a6', '#8b5cf6', '#ef4444', '#64748b', '#1e293b'];
+    const row = el('div', { class: 'swatch-row' });
+    const draw = (value) => {
+      fill(row, ...options.map((color) => el('button', {
+        type: 'button', class: `swatch sm${color === value ? ' active' : ''}`,
+        style: { background: color }, title: color,
+        onClick: () => { onPick(color); draw(color); },
+      })), custom);
+    };
+    const custom = el('input', {
+      type: 'color', class: 'input', value: current,
+      style: { width: '38px', height: '26px', padding: '1px' },
+      onInput: (event) => { onPick(event.target.value); },
+    });
+    draw(current);
+    return row;
+  };
+
+  function drawStatuses() {
+    fill(statusHost, ...statuses.map((status, index) => {
+      const label = el('input', { class: 'input', value: status.label, maxlength: 40 });
+      label.addEventListener('input', () => { status.label = label.value; });
+      const chip = el('span', { class: 'badge', style: { background: status.color, color: '#fff' },
+        text: status.label || status.value });
+      label.addEventListener('input', () => { chip.textContent = label.value || status.value; });
+      return el('div', { class: 'tx-row' },
+        el('div', { class: 'tx-key' }, chip),
+        label,
+        swatches(status.color, (color) => {
+          status.color = color;
+          chip.style.background = color;
+        }),
+        el('div', { style: { display: 'flex', gap: '2px' } },
+          el('button', {
+            class: 'icon-btn', title: '上へ', disabled: index === 0 ? true : null,
+            onClick: () => { move(statuses, index, -1); drawStatuses(); },
+          }, '↑'),
+          el('button', {
+            class: 'icon-btn', title: '下へ',
+            disabled: index === statuses.length - 1 ? true : null,
+            onClick: () => { move(statuses, index, 1); drawStatuses(); },
+          }, '↓')));
+    }));
+  }
+
+  function drawCategories() {
+    fill(categoryHost, ...categories.map((cat, index) => {
+      const label = el('input', { class: 'input', value: cat.label, maxlength: 60,
+        placeholder: 'カテゴリ名' });
+      label.addEventListener('input', () => { cat.label = label.value; });
+      const iconButton = el('button', {
+        class: 'tx-icon', type: 'button', title: '記号を選ぶ',
+        onClick: () => pickIcon(cat, iconButton),
+      }, cat.icon || '＋');
+      return el('div', { class: 'tx-row' },
+        el('div', { class: 'tx-key' }, iconButton),
+        label,
+        swatches(cat.color, (color) => { cat.color = color; }),
+        el('div', { style: { display: 'flex', gap: '2px', alignItems: 'center' } },
+          cat.used ? el('span', { class: 'hint', text: `${cat.used}件` }) : null,
+          el('button', {
+            class: 'icon-btn', title: '上へ', disabled: index === 0 ? true : null,
+            onClick: () => { move(categories, index, -1); drawCategories(); },
+          }, '↑'),
+          el('button', {
+            class: 'icon-btn', title: '下へ',
+            disabled: index === categories.length - 1 ? true : null,
+            onClick: () => { move(categories, index, 1); drawCategories(); },
+          }, '↓'),
+          el('button', {
+            class: 'icon-btn', title: '削除',
+            onClick: async () => {
+              if (cat.used && !await confirmDialog(
+                `「${cat.label}」は ${cat.used} 件のタスクで使われています。\n`
+                + '削除すると、それらは「未分類」に戻ります。',
+                { danger: true, okLabel: '削除する' })) return;
+              categories.splice(index, 1);
+              drawCategories();
+            },
+          }, '×')));
+    }));
+    if (!categories.length) {
+      fill(categoryHost, el('div', { class: 'hint', text: 'カテゴリがありません' }));
+    }
+  }
+
+  async function pickIcon(cat, button) {
+    const chosen = await openModal({
+      title: '記号を選ぶ',
+      build: (close) => el('div', {},
+        el('p', { class: 'page-sub',
+          text: '見た目を揃えるため、ここに用意した記号から選びます。' }),
+        el('div', { class: 'icon-grid' },
+          ...data.icons.map((icon) => el('button', {
+            type: 'button', class: `icon-pick${icon === cat.icon ? ' active' : ''}`,
+            onClick: () => close(icon),
+          }, icon)))),
+      footer: (close) => [
+        el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
+      ],
+    });
+    if (chosen) {
+      cat.icon = chosen;
+      button.textContent = chosen;
+    }
+  }
+
+  const move = (list, index, direction) => {
+    const to = index + direction;
+    if (to < 0 || to >= list.length) return;
+    list.splice(to, 0, list.splice(index, 1)[0]);
+  };
+
+  drawStatuses();
+  drawCategories();
+
+  const paletteSelect = el('select', { class: 'select', style: { maxWidth: '200px' } },
+    el('option', { value: '' }, '配色をまとめて選ぶ…'),
+    ...data.palettes.map((p) => el('option', { value: p.key }, p.label)));
+  paletteSelect.addEventListener('change', () => {
+    const palette = data.palettes.find((p) => p.key === paletteSelect.value);
+    if (!palette) return;
+    for (const status of statuses) {
+      if (palette.colors[status.value]) status.color = palette.colors[status.value];
+    }
+    paletteSelect.value = '';
+    drawStatuses();
+  });
+
+  const save = async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await api.put('/api/admin/taxonomy', { statuses, categories });
+      await store.loadBase();
+      toast(result.removed?.length
+        ? `保存しました（${result.removed.length} 件のカテゴリを削除）`
+        : '保存しました', 'ok');
+      renderTaxonomy(container);
+    } catch (error) {
+      toast(error.message, 'error');
+      button.disabled = false;
+    }
+  };
+
+  fill(container,
+    el('div', { class: 'card' },
+      el('div', { class: 'card-head' }, el('h2', {}, '状態'), paletteSelect),
+      el('div', { class: 'card-body' },
+        el('p', { class: 'page-sub', text: data.status_note }),
+        statusHost)),
+    el('div', { class: 'card', style: { marginTop: '14px' } },
+      el('div', { class: 'card-head' },
+        el('h2', {}, 'カテゴリ'),
+        el('button', {
+          class: 'btn btn-sm',
+          onClick: () => {
+            categories.push({ value: '', label: '新しいカテゴリ', color: '#3b6ef5',
+              icon: data.icons[0], used: 0 });
+            drawCategories();
+          },
+        }, '＋ 追加')),
+      el('div', { class: 'card-body' },
+        el('p', { class: 'page-sub',
+          text: '並び順・名前・色・記号を変えられます。'
+            + '削除したカテゴリを使っていたタスクは「未分類」に戻ります。' }),
+        categoryHost)),
+    el('div', { style: { marginTop: '14px' } },
+      el('button', { class: 'btn btn-primary', onClick: save }, '保存')));
 }

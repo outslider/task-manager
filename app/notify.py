@@ -9,15 +9,12 @@ from email.utils import formataddr
 
 import pymysql
 
-from . import auth, db, prefs, slack
+from . import auth, db, prefs, slack, taxonomy
 
 log = logging.getLogger("tm.notify")
 
-STATUS_LABEL = {
-    "todo": "未着手", "doing": "進行中", "review": "レビュー中",
-    "done": "完了", "blocked": "ブロック中",
-}
-OPEN_STATUSES = ("todo", "doing", "review", "blocked")
+# 表示名は画面から変えられるので、使うときに取りに行く（taxonomy）
+OPEN_STATUSES = taxonomy.OPEN_STATUS_KEYS
 
 
 # --------------------------------------------------------------------------
@@ -172,7 +169,7 @@ def scan_due_tasks():
             ntype, key = "due_soon", "due{}:{}:{}".format(days, t["id"], today.isoformat())
         body = "プロジェクト: {}\n期限: {}\n状態: {}\n{}".format(
             t["project_name"], due.isoformat(),
-            STATUS_LABEL.get(t["status"], t["status"]), task_url(t["id"]),
+            taxonomy.status_label(t["status"]), task_url(t["id"]),
         )
         if create(t["assignee_id"], ntype, title, body, task_id=t["id"], dedupe_key=key,
                   project_id=t["project_id"]):

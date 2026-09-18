@@ -1093,3 +1093,46 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border-bottom: 1px solid var(--border);
 }
 .period-head:not(:first-child) { margin-top: 10px; }
+
+/* ---------- 状態とカテゴリの設定 ---------- */
+.tx-row {
+  display: flex; align-items: center; gap: 10px; padding: 7px 0;
+  border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.tx-row:last-child { border-bottom: none; }
+.tx-key { flex: 0 0 auto; min-width: 74px; }
+.tx-row .input { flex: 1 1 160px; min-width: 140px; max-width: 280px; }
+.tx-icon {
+  width: 34px; height: 30px; font-size: 16px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); cursor: pointer;
+}
+.tx-icon:hover { border-color: var(--accent); }
+.swatch-row { display: flex; gap: 3px; align-items: center; flex-wrap: wrap; }
+.swatch.sm { width: 20px; height: 20px; border-radius: 5px; }
+.icon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); gap: 6px; }
+.icon-pick {
+  font-size: 20px; padding: 8px 0; border-radius: 9px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface);
+}
+.icon-pick:hover { background: var(--accent-soft); }
+.icon-pick.active { border-color: var(--accent); background: var(--accent-soft); }
+
+/* ---------- リンク集 ---------- */
+.link-group { margin-bottom: 16px; }
+.link-group-head {
+  display: flex; align-items: center; gap: 8px; padding: 6px 2px;
+  font-weight: 700; font-size: 13px; border-bottom: 1px solid var(--border);
+}
+.link-group-head .hint { margin: 0 0 0 auto; }
+.link-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.link-row:last-child { border-bottom: none; }
+.link-row:hover { background: var(--surface-2); }
+.link-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.link-title { font-weight: 600; }
+.link-url { font-size: 11.5px; color: var(--text-muted); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.link-note { font-size: 12px; color: var(--text-muted); flex: 0 1 auto; }
+.link-actions { display: flex; gap: 2px; flex: 0 0 auto; }

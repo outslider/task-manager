@@ -13,6 +13,7 @@ const NAV = [
   { id: 'todos', icon: '📝', label: 'マイ ToDo', hash: '#/todos' },
   { id: 'projects', icon: '📁', label: 'プロジェクト', hash: '#/projects' },
   { id: 'gantt', icon: '📊', label: '全体ガント', hash: '#/gantt' },
+  { id: 'links', icon: '🔗', label: 'リンク集', hash: '#/links' },
   { id: 'issues', icon: '📌', label: '課題', hash: '#/issues' },
   { id: 'notifications', icon: '🔔', label: '通知', hash: '#/notifications', badge: true },
 ];
@@ -20,6 +21,7 @@ const NAV = [
 const ADMIN_NAV = [
   { id: 'users', icon: '👥', label: 'ユーザー', hash: '#/admin/users' },
   { id: 'groups', icon: '🏷️', label: 'グループ', hash: '#/admin/groups' },
+  { id: 'taxonomy', icon: '🎨', label: '状態とカテゴリ', hash: '#/admin/taxonomy' },
   { id: 'settings', icon: '⚙️', label: 'システム設定', hash: '#/admin/settings' },
 ];
 
@@ -238,10 +240,12 @@ const ROUTES = [
   [/^#\/issue\/(\d+)$/, (m) => ({ view: 'issue', issueId: Number(m[1]) })],
   [/^#\/p\/(\d+)$/, (m) => ({ view: 'tasks', projectId: Number(m[1]) })],
   [/^#\/task\/(\d+)$/, (m) => ({ view: 'task', taskId: Number(m[1]) })],
+  [/^#\/links$/, () => ({ view: 'links' })],
   [/^#\/notifications$/, () => ({ view: 'notifications' })],
   [/^#\/profile$/, () => ({ view: 'profile' })],
   [/^#\/admin\/users$/, () => ({ view: 'admin', tab: 'users' })],
   [/^#\/admin\/groups$/, () => ({ view: 'admin', tab: 'groups' })],
+  [/^#\/admin\/taxonomy$/, () => ({ view: 'admin', tab: 'taxonomy' })],
   [/^#\/admin\/settings$/, () => ({ view: 'admin', tab: 'settings' })],
 ];
 
@@ -264,6 +268,7 @@ const LOADERS = {
   bottlenecks: () => import('./views/bottlenecks.js'),
   issues: () => import('./views/issues.js'),
   workload: () => import('./views/workload.js'),
+  links: () => import('./views/links.js'),
   notifications: () => import('./views/notifications.js'),
   profile: () => import('./views/profile.js'),
   admin: () => import('./views/admin.js'),

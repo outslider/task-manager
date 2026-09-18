@@ -286,6 +286,39 @@ DDL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
+    CREATE TABLE IF NOT EXISTS task_statuses (
+        status_key VARCHAR(20)  NOT NULL PRIMARY KEY,
+        label      VARCHAR(40)  NOT NULL,
+        color      VARCHAR(20)  NOT NULL,
+        sort_order INT          NOT NULL DEFAULT 0
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS task_categories (
+        value      VARCHAR(30)  NOT NULL PRIMARY KEY,
+        label      VARCHAR(60)  NOT NULL,
+        color      VARCHAR(20)  NOT NULL,
+        icon       VARCHAR(8)   NOT NULL DEFAULT '',
+        sort_order INT          NOT NULL DEFAULT 0
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS shared_links (
+        id         INT AUTO_INCREMENT PRIMARY KEY,
+        project_id INT NULL,                      -- NULL なら全体で共有
+        title      VARCHAR(200)  NOT NULL,
+        url        VARCHAR(2000) NOT NULL,
+        note       VARCHAR(500)  NOT NULL DEFAULT '',
+        sort_order INT           NOT NULL DEFAULT 0,
+        created_by INT NULL,
+        created_at DATETIME      NOT NULL,
+        updated_at DATETIME      NOT NULL,
+        KEY idx_links_project (project_id, sort_order),
+        CONSTRAINT fk_link_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        CONSTRAINT fk_link_user FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
     CREATE TABLE IF NOT EXISTS company_holidays (
         day        DATE NOT NULL PRIMARY KEY,
         name       VARCHAR(100) NOT NULL DEFAULT '休業日',
@@ -595,6 +628,8 @@ def init_db():
         if query_one("SELECT 1 FROM settings WHERE setting_key=%s", (k,)) is None:
             set_setting(k, v)
             added_settings.append(k)
+    from . import taxonomy          # 循環 import を避けるため、ここで取り込む
+    taxonomy.seed()
     # 何が変わったのかは残しておく（黙って直っていると、後で追えなくなる）
     if created:
         log.info("テーブルを作成しました: %s", ", ".join(created))

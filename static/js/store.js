@@ -34,6 +34,7 @@ export const store = {
       api.meta(), api.users(), api.projects({ include_archived: 1 }),
     ]);
     this.meta = meta;
+    applyTaxonomy(meta);
     this.setUsers(users.users);
     this.projects = projects.projects;
     this.emit();
@@ -98,12 +99,32 @@ export const store = {
   },
 };
 
+/* 状態とカテゴリは管理画面から変えられる。/api/meta で受け取った内容で
+ * 中身を差し替えるので、各画面は今までどおり参照するだけでよい。 */
 export const STATUS_LABEL = {
   todo: '未着手', doing: '進行中', review: 'レビュー中', done: '完了', blocked: 'ブロック中',
 };
 export const STATUS_COLOR = {
   todo: '#98a2b3', doing: '#3b6ef5', review: '#9061f9', done: '#17a673', blocked: '#e14c4c',
 };
+
+/** サーバーの定義で、上の一覧を丸ごと置き換える。 */
+export function applyTaxonomy(meta) {
+  if (Array.isArray(meta?.statuses) && meta.statuses.length) {
+    for (const key of Object.keys(STATUS_LABEL)) {
+      delete STATUS_LABEL[key];
+      delete STATUS_COLOR[key];
+    }
+    for (const row of meta.statuses) {
+      STATUS_LABEL[row.value] = row.label;
+      STATUS_COLOR[row.value] = row.color;
+    }
+  }
+  if (Array.isArray(meta?.categories)) {
+    CATEGORIES.length = 0;
+    CATEGORIES.push(...meta.categories);
+  }
+}
 /** 重要度。緊急度は期限から自動的に決まるので、この軸は純粋な重要度だけ。 */
 export const IMPORTANCE_LABEL = { 0: '低', 1: '中', 2: '高', 3: '最重要' };
 

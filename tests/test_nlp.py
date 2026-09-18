@@ -204,8 +204,18 @@ class TestLlmSchemas(unittest.TestCase):
         priority = llm.PARSE_SCHEMA["properties"]["priority"]
         self.assertEqual(priority["enum"], [0, 1, 2, 3])
 
-    def test_categories_match_the_application(self):
-        """スキーマの enum が実際のカテゴリ定義とずれていないこと。"""
-        from app import api
-        self.assertEqual(sorted(llm.CATEGORY_VALUES),
-                         sorted(list(api.CATEGORY_VALUES) + [""]))
+    def test_categories_follow_the_current_definition(self):
+        """カテゴリは画面から増やせるので、送るスキーマもそれに追随すること。"""
+        from app import taxonomy
+        filled = llm.with_categories(llm.PARSE_SCHEMA)
+        expected = sorted([c["value"] for c in taxonomy.categories()] + [""])
+        self.assertEqual(sorted(filled["properties"]["category"]["enum"]), expected)
+        # 元のスキーマは書き換えない（呼ぶたびに積み重ならないこと）
+        self.assertNotIn("enum", llm.PARSE_SCHEMA["properties"]["category"])
+
+    def test_decompose_schema_also_gets_the_categories(self):
+        from app import taxonomy
+        filled = llm.with_categories(llm.DECOMPOSE_SCHEMA)
+        steps = filled["properties"]["steps"]["items"]["properties"]
+        self.assertEqual(sorted(steps["category"]["enum"]),
+                         sorted([c["value"] for c in taxonomy.categories()] + [""]))

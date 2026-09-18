@@ -29,7 +29,7 @@ os.environ.setdefault("TM_SECURE_COOKIE", "0")
 os.environ.setdefault("TM_ADMIN_EMAIL", "admin@test.local")
 os.environ.setdefault("TM_ADMIN_PASSWORD", "admin-test-pw")
 
-from app import auth, config, db, http_util, notify, prefs  # noqa: E402
+from app import auth, config, db, http_util, notify, prefs, taxonomy  # noqa: E402
 import server as server_module  # noqa: E402
 
 ADMIN = ("admin@test.local", "admin-test-pw")
@@ -2891,3 +2891,233 @@ class TestGanttOverview(ApiTestCase):
 
     def test_it_needs_a_login(self):
         self.assertEqual(Client(self.base).get("/api/gantt")[0], 401)
+
+
+class TestTaxonomy(ApiTestCase):
+    """状態とカテゴリの編集。"""
+
+    def tearDown(self):
+        # 既定に戻して、ほかのテストに影響させない
+        taxonomy.save_statuses([{"value": k, "label": l, "color": c}
+                                for k, l, c in taxonomy.DEFAULT_STATUSES])
+        taxonomy.save_categories([{"value": v, "label": l, "color": c, "icon": i}
+                                  for v, l, c, i in taxonomy.DEFAULT_CATEGORIES])
+        super().tearDown()
+
+    def get(self):
+        status, data = self.admin.get("/api/admin/taxonomy")
+        self.assertEqual(status, 200, data)
+        return data
+
+    def test_defaults_are_seeded(self):
+        data = self.get()
+        self.assertEqual([s["value"] for s in data["statuses"]], list(taxonomy.STATUS_KEYS))
+        self.assertTrue(data["categories"])
+        for category in data["categories"]:
+            self.assertTrue(category["icon"], "カテゴリには必ず記号が付くこと")
+
+    def test_a_status_can_be_renamed_and_recoloured(self):
+        self.admin.put("/api/admin/taxonomy", {"statuses": [
+            {"value": "todo", "label": "着手前", "color": "#112233"}]})
+        meta = self.admin.get("/api/meta")[1]
+        todo = next(s for s in meta["statuses"] if s["value"] == "todo")
+        self.assertEqual(todo["label"], "着手前")
+        self.assertEqual(todo["color"], "#112233")
+
+    def test_status_keys_cannot_be_added(self):
+        """キーは判定に使うので増やせないこと。"""
+        self.admin.put("/api/admin/taxonomy", {"statuses": [
+            {"value": "onhold", "label": "保留", "color": "#000000"}]})
+        values = [s["value"] for s in self.admin.get("/api/meta")[1]["statuses"]]
+        self.assertNotIn("onhold", values)
+        self.assertEqual(values, list(taxonomy.STATUS_KEYS))
+
+    def test_status_order_follows_the_saved_order(self):
+        self.admin.put("/api/admin/taxonomy", {"statuses": [
+            {"value": "done", "label": "完了", "color": "#17a673"},
+            {"value": "todo", "label": "未着手", "color": "#98a2b3"}]})
+        values = [s["value"] for s in self.admin.get("/api/meta")[1]["statuses"]]
+        self.assertEqual(values[:2], ["done", "todo"])
+
+    def test_a_bad_colour_falls_back(self):
+        self.admin.put("/api/admin/taxonomy", {"statuses": [
+            {"value": "todo", "label": "未着手", "color": "javascript:alert(1)"}]})
+        todo = next(s for s in self.admin.get("/api/meta")[1]["statuses"]
+                    if s["value"] == "todo")
+        self.assertTrue(todo["color"].startswith("#"))
+
+    def test_the_status_label_shows_up_in_the_history(self):
+        self.admin.put("/api/admin/taxonomy", {"statuses": [
+            {"value": "doing", "label": "対応中", "color": "#3b6ef5"}]})
+        project = self.make_project()
+        task = self.make_task(project["id"], "状態を変える")
+        self.admin.patch("/api/tasks/{}".format(task["id"]), {"status": "doing"})
+        detail = self.admin.get("/api/tasks/{}".format(task["id"]))[1]
+        history = " ".join(c["body"] for c in detail["comments"] if c["kind"] == "system")
+        self.assertIn("対応中", history)
+
+    def test_a_category_can_be_added(self):
+        current = self.get()["categories"]
+        payload = [{"value": c["value"], "label": c["label"], "color": c["color"],
+                    "icon": c["icon"]} for c in current]
+        payload.append({"value": "sales", "label": "営業活動", "color": "#e8912b",
+                        "icon": "🤝"})
+        self.admin.put("/api/admin/taxonomy", {"categories": payload})
+        meta = self.admin.get("/api/meta")[1]["categories"]
+        added = next(c for c in meta if c["value"] == "sales")
+        self.assertEqual(added["label"], "営業活動")
+        self.assertEqual(added["icon"], "🤝")
+
+    def test_a_new_category_can_be_used_on_a_task(self):
+        payload = [{"value": "sales", "label": "営業活動", "color": "#e8912b", "icon": "🤝"}]
+        self.admin.put("/api/admin/taxonomy", {"categories": payload})
+        project = self.make_project()
+        task = self.make_task(project["id"], "商談", category="sales")
+        self.assertEqual(task["category"], "sales")
+
+    def test_removing_a_category_clears_it_from_tasks(self):
+        project = self.make_project()
+        task = self.make_task(project["id"], "調査する", category="research")
+        self.assertEqual(task["category"], "research")
+        keep = [{"value": c["value"], "label": c["label"], "color": c["color"],
+                 "icon": c["icon"]}
+                for c in self.get()["categories"] if c["value"] != "research"]
+        data = self.admin.put("/api/admin/taxonomy", {"categories": keep})[1]
+        self.assertIn("research", data["removed"])
+        after = self.admin.get("/api/tasks/{}".format(task["id"]))[1]["task"]
+        self.assertEqual(after["category"], "", "消えた分類は未分類に戻ること")
+
+    def test_how_many_tasks_use_each_category_is_reported(self):
+        project = self.make_project()
+        self.make_task(project["id"], "A", category="build")
+        self.make_task(project["id"], "B", category="build")
+        counts = {c["value"]: c["used"] for c in self.get()["categories"]}
+        self.assertGreaterEqual(counts["build"], 2)
+
+    def test_an_unknown_category_on_a_task_is_refused(self):
+        """消したはずの分類がまた使われないよう、はっきり断ること。"""
+        project = self.make_project()
+        status, data = self.admin.post("/api/tasks", {
+            "project_id": project["id"], "title": "分類なし", "category": "nonexistent"})
+        self.assertEqual(status, 400, data)
+        self.assertIn("カテゴリ", data["error"])
+
+    def test_only_admins_can_change_it(self):
+        _user, email = self.make_user("一般")
+        client = self.client_for(email)
+        self.assertEqual(client.get("/api/admin/taxonomy")[0], 403)
+        self.assertEqual(client.put("/api/admin/taxonomy", {"statuses": []})[0], 403)
+
+    def test_palettes_and_icons_are_offered(self):
+        data = self.get()
+        self.assertTrue(len(data["palettes"]) >= 3)
+        self.assertTrue(len(data["icons"]) >= 20)
+        for palette in data["palettes"]:
+            self.assertEqual(sorted(palette["colors"]), sorted(taxonomy.STATUS_KEYS))
+
+    def test_too_many_categories_are_refused(self):
+        payload = [{"value": "c{}".format(i), "label": "分類{}".format(i),
+                    "color": "#3b6ef5", "icon": "📌"} for i in range(41)]
+        self.assertEqual(self.admin.put("/api/admin/taxonomy",
+                                        {"categories": payload})[0], 400)
+
+
+class TestSharedLinks(ApiTestCase):
+    """共有リンク集。"""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project("リンクのあるPJ")
+        self.other = self.make_project("よそのPJ")
+
+    def add(self, client=None, **kwargs):
+        payload = {"title": "社内ポータル", "url": "https://example.co.jp/portal"}
+        payload.update(kwargs)
+        return (client or self.admin).post("/api/links", payload)
+
+    def titles(self, client=None):
+        return [l["title"] for l in (client or self.admin).get("/api/links")[1]["links"]]
+
+    def test_a_shared_link_is_visible_to_everyone(self):
+        status, data = self.add()
+        self.assertEqual(status, 201, data)
+        self.assertIsNone(data["link"]["project_id"])
+        _user, email = self.make_user("誰でも")
+        self.assertIn("社内ポータル", self.titles(self.client_for(email)))
+
+    def test_a_project_link_is_only_for_its_members(self):
+        self.add(title="手順書", url="https://example.co.jp/doc",
+                 project_id=self.project["id"])
+        user, email = self.make_user("部外者")
+        client = self.client_for(email)
+        self.assertNotIn("手順書", self.titles(client))
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "viewer"}]})
+        self.assertIn("手順書", self.titles(client))
+
+    def test_only_admins_can_add_a_shared_link(self):
+        user, email = self.make_user("一般")
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "editor"}]})
+        client = self.client_for(email)
+        self.assertEqual(self.add(client=client)[0], 403)
+        # プロジェクトのものなら足せる
+        self.assertEqual(self.add(client=client, title="PJ の資料",
+                                  project_id=self.project["id"])[0], 201)
+
+    def test_a_viewer_cannot_add_a_project_link(self):
+        user, email = self.make_user("閲覧のみ")
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "viewer"}]})
+        self.assertEqual(self.add(client=self.client_for(email), title="だめ",
+                                  project_id=self.project["id"])[0], 403)
+
+    def test_can_edit_tells_the_screen_what_is_editable(self):
+        self.add()
+        self.add(title="PJ の資料", project_id=self.project["id"])
+        user, email = self.make_user("編集者")
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "editor"}]})
+        links = {l["title"]: l for l in self.client_for(email).get("/api/links")[1]["links"]}
+        self.assertFalse(links["社内ポータル"]["can_edit"], "全体のものは触れない")
+        self.assertTrue(links["PJ の資料"]["can_edit"])
+
+    def test_editing_and_deleting(self):
+        link = self.add()[1]["link"]
+        data = self.admin.patch("/api/links/{}".format(link["id"]),
+                                {"title": "新ポータル", "note": "移転しました"})[1]
+        self.assertEqual(data["link"]["title"], "新ポータル")
+        self.assertEqual(data["link"]["note"], "移転しました")
+        self.assertEqual(self.admin.delete("/api/links/{}".format(link["id"]))[0], 200)
+        self.assertNotIn(link["id"],
+                         [l["id"] for l in self.admin.get("/api/links")[1]["links"]])
+
+    def test_a_bad_url_is_refused(self):
+        status, data = self.add(url="javascript:alert(1)")
+        self.assertEqual(status, 400, data)
+        self.assertIn("URL", data["error"])
+
+    def test_a_file_server_path_is_allowed(self):
+        self.assertEqual(self.add(url="\\\\\\\\fileserver\\\\share\\\\手順")[0], 201)
+
+    def test_links_die_with_their_project(self):
+        link = self.add(title="消える", project_id=self.project["id"])[1]["link"]
+        self.admin.delete("/api/projects/{}".format(self.project["id"]))
+        self.assertEqual(
+            db.scalar("SELECT COUNT(*) AS c FROM shared_links WHERE id=%s",
+                      (link["id"],), default=0), 0)
+
+    def test_a_link_from_a_project_i_cannot_see_is_refused(self):
+        link = self.add(title="秘密", project_id=self.other["id"])[1]["link"]
+        _user, email = self.make_user("部外者2")
+        client = self.client_for(email)
+        self.assertEqual(client.patch("/api/links/{}".format(link["id"]),
+                                      {"title": "書き換え"})[0], 403)
+        self.assertEqual(client.delete("/api/links/{}".format(link["id"]))[0], 403)
+
+    def test_it_needs_a_login(self):
+        self.assertEqual(Client(self.base).get("/api/links")[0], 401)
