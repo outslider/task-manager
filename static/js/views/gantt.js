@@ -591,9 +591,10 @@ export async function render(container, route) {
     saveCollapsed('all', collapsed);
   }
 
-  /** サーバーから読み直して引き直す。見ていた横位置は保つ。 */
+  let scrolledToToday = false;
+
+  /** サーバーから読み直して引き直す。横位置は draw() が持ち越す。 */
   async function refresh() {
-    const scrollLeft = scroll.scrollLeft;
     try {
       data = overview ? await api.get('/api/gantt') : await api.projectTasks(projectId);
     } catch (error) {
@@ -601,7 +602,6 @@ export async function render(container, route) {
       return;
     }
     draw();
-    scroll.scrollLeft = scrollLeft;
   }
 
   /** 詳細ドロワーを開く。中で変更されたら、そのつどチャートを引き直す。 */
@@ -629,7 +629,18 @@ export async function render(container, route) {
       onToggleRow: toggleRow,
     });
     drawLegend();
+    // 描き直すと横位置が先頭に戻ってしまうので、見ていた位置を持ち越す。
+    const keepLeft = scroll.scrollLeft;
     fill(scroll, svg);
+    const mark = svg.querySelector('.gantt-today');
+    if (!scrolledToToday && mark && scroll.clientWidth > 0) {
+      // 最初に開いたときは今日が見える位置から。過去も少し見せたいので左寄りに置く。
+      scroll.scrollLeft = Math.max(0,
+        Number(mark.getAttribute('x1')) - Math.max(240, scroll.clientWidth * 0.35));
+      scrolledToToday = true;
+    } else {
+      scroll.scrollLeft = keepLeft;
+    }
     const names = svg.querySelector('.gantt-names');
     if (names) {
       const stick = () => names.setAttribute('transform', `translate(${scroll.scrollLeft},0)`);
@@ -983,12 +994,14 @@ export function buildGanttSvg({
   const namesG = svgEl('g', { class: 'gantt-names' });
   const barGeom = new Map();
 
+  // 横スクロールすると名前列は右へずれる。左の余白ぶんも塗っておかないと、
+  // その隙間から後ろのバーが覗いてしまう。
   namesG.appendChild(svgEl('rect', {
-    x: PAD - 1, y: titleH + PAD, width: nameWidth + 1, height: HEADER_H + laneH + totalRows * rowH,
-    fill: colors.bg,
+    x: 0, y: titleH + PAD, width: PAD + nameWidth + 1,
+    height: HEADER_H + laneH + totalRows * rowH, fill: colors.bg,
   }));
   namesG.appendChild(svgEl('rect', {
-    x: PAD - 1, y: titleH + PAD, width: nameWidth + 1, height: HEADER_H,
+    x: 0, y: titleH + PAD, width: PAD + nameWidth + 1, height: HEADER_H,
     fill: forExport ? '#f7f8fa' : 'var(--surface-2)',
   }));
   namesG.appendChild(svgEl('text', {
@@ -1496,7 +1509,7 @@ export function buildGanttSvg({
   if (now >= range.from && now <= range.to) {
     const tx = x(now) + dayWidth / 2;
     svg.appendChild(svgEl('line', {
-      x1: tx, y1: titleH + PAD, x2: tx, y2: originY + bodyH,
+      class: 'gantt-today', x1: tx, y1: titleH + PAD, x2: tx, y2: originY + bodyH,
       stroke: '#e14c4c', 'stroke-width': 1.6, opacity: 0.85,
     }));
     svg.appendChild(svgEl('text', {

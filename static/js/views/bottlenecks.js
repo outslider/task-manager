@@ -40,7 +40,7 @@ export async function render(container, route) {
       el('div', { class: 'grid cols-4', style: { marginBottom: '14px' } },
         stat('他をブロック中', blocking.length, blocking.length ? 'danger' : ''),
         stat('先行待ちで着手不可', waiting.length, waiting.length ? 'warn' : ''),
-        stat('クリティカルパス', `${chain.length} 件`, ''),
+        stat('クリティカルパス', chain.length, ''),
         stat('日程の矛盾', conflicts.length, conflicts.length ? 'danger' : '')),
 
       conflicts.length ? conflictCard(conflicts) : null,

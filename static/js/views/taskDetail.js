@@ -533,7 +533,7 @@ export function memoEditor({ value, canEdit, people, placeholder, onSave }) {
     const text = value || '';
     const view = text
       ? richText(text, people, 'comment-text memo-view')
-      : el('div', { class: 'comment-text memo-view empty',
+      : el('div', { class: 'comment-text memo-view is-blank',
         text: canEdit ? 'クリックしてメモを書く' : '（メモなし）' });
     if (canEdit) {
       view.classList.add('editable');

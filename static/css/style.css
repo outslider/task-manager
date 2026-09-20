@@ -228,6 +228,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .btn-primary:hover { filter: brightness(1.06); box-shadow: var(--shadow-accent); }
 .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn-danger:hover { filter: brightness(1.08); }
+/* 一覧に並ぶ削除。押す前に確認が入るので、塗りつぶしにはしない
+ * （赤い塗りが並ぶと、そこが主要動作のように見えてしまう） */
+.btn-quiet-danger { color: var(--danger); border-color: var(--border); background: var(--surface); }
+.btn-quiet-danger:hover { border-color: var(--danger); background: var(--danger-soft); }
 .btn-ghost { border-color: transparent; background: transparent; color: var(--text-muted); }
 .btn-ghost:hover { background: var(--surface-3); color: var(--text); }
 .btn-sm { padding: 4px 9px; font-size: 12.5px; border-radius: 6px; }
@@ -282,7 +286,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .grid .card:hover { box-shadow: var(--shadow); border-color: var(--border-strong); }
 .card-body .progress { margin-top: 4px; }
+/* 縦に積んだときだけ間隔を空ける。グリッドの中では gap が効くので不要
+ * （付けたままだと 2 枚目以降だけ下にずれて、上端が揃わない） */
 .card + .card { margin-top: 14px; }
+.grid > .card + .card { margin-top: 0; }
+.grid { align-items: start; }
 .card-head {
   display: flex; align-items: center; gap: 10px;
   padding: 13px 16px; border-bottom: 1px solid var(--border);
@@ -1052,7 +1060,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border: 1px solid transparent; border-radius: 9px; padding: 8px 10px;
   min-height: 38px; transition: background .12s, border-color .12s;
 }
-.memo-view.empty { color: var(--text-muted); }
+.memo-view.is-blank {
+  color: var(--text-muted); border-style: dashed; border-color: var(--border);
+}
 .memo-view.editable { cursor: text; }
 .memo-view.editable:hover { background: var(--surface-2); border-color: var(--border); }
 
@@ -1160,3 +1170,31 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .daily-extra { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
 .daily-hours { display: flex; align-items: center; gap: 8px; }
 .daily-hours .hint { margin: 0; }
+
+/* 通知の本文は、見出し部分をバッジにたたんで 1 件を短くする */
+.notif-meta { display: flex; gap: 6px; flex-wrap: wrap; margin: 3px 0 2px; }
+.notif-text {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 色ピッカーは .input の幅 100% を引き継ぐと巨大な色帯になってしまう */
+input[type="color"].input {
+  width: 40px; height: 28px; min-width: 40px; flex: 0 0 auto;
+  padding: 2px; cursor: pointer;
+}
+
+/* マイタスクはプロジェクト名の列がぶんだけ列が多く、既定の割付では右端が切れる */
+.mytask-list .task-row {
+  grid-template-columns: minmax(200px, 1fr) 118px 88px 84px 74px 128px 112px;
+}
+.mytask-list .chip { max-width: 100%; }
+
+/* 依存関係の警告は畳めるようにして、一覧を押し下げないようにする */
+.warn-fold {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  background: none; border: none; padding: 0; cursor: pointer;
+  font: inherit; color: inherit; text-align: left;
+}
+.warn-fold .hint { margin-left: auto; }
+.warn-box .warn-fold + div { margin-top: 7px; }

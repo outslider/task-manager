@@ -68,7 +68,7 @@ export async function render(container) {
     el('span', { text: TYPE_ICON[item.type] || '•' }),
     el('div', { class: 'notif-body' },
       el('div', { class: 'notif-title', text: item.title }),
-      item.body ? linkify(item.body, el('div', { class: 'notif-text' })) : null,
+      ...summarize(item.body),
       el('div', { class: 'hint', text: formatDateTime(item.created_at) })),
     el('button', {
       class: 'icon-btn', title: '削除',
@@ -83,4 +83,44 @@ export async function render(container) {
   }
 
   await load();
+}
+
+/* 本文はメール用に「プロジェクト: …／期限: …」と改行で並べてある。
+ * 画面ではそのまま出すと 1 件が何行にもなるので、見出しの部分はバッジにたたむ。 */
+const FIELD_LINE = /^(プロジェクト|期限|状態|担当者|影響度|対応者)\s*[:：]\s*(.+)$/;
+
+function summarize(body) {
+  const text = String(body || '').trim();
+  if (!text) return [];
+  const badges = [];
+  const rest = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    // 画面では行をクリックすれば開けるので、メール用の URL 行は出さない
+    if (/^https?:\/\/\S+$/.test(trimmed)) continue;
+    const field = trimmed.match(FIELD_LINE);
+    if (field) {
+      badges.push([field[1], tidyDate(field[2])]);
+      continue;
+    }
+    rest.push(trimmed);
+  }
+  const out = [];
+  if (badges.length) {
+    out.push(el('div', { class: 'notif-meta' },
+      ...badges.map(([key, value]) => el('span', { class: 'badge', text: `${key} ${value}` }))));
+  }
+  if (rest.length) {
+    const body2 = linkify(rest.join(' / '), el('div', { class: 'notif-text' }));
+    body2.title = text;
+    out.push(body2);
+  }
+  return out;
+}
+
+/** 2026-09-21 のような日付は、他の画面に合わせて 9/21 にする。 */
+function tidyDate(value) {
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? `${Number(match[2])}/${Number(match[3])}` : value;
 }

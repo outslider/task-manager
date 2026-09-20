@@ -23,7 +23,8 @@ export async function render(container, route) {
   setHeader(project ? `${project.name} — 課題管理表` : '課題管理表',
     [
       el('button', { class: 'btn', onClick: exportCsv }, '⬇ CSV'),
-      canEdit
+      // 全体一覧にはプロジェクトが無いので、どこかで編集できるなら出す
+      (canEdit || store.projects.some((p) => !p.archived && store.canEdit(p)))
         ? el('button', { class: 'btn btn-primary', onClick: () => createIssue() }, '＋ 課題を起票')
         : null,
     ]);

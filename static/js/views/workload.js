@@ -118,7 +118,7 @@ export async function render(container, route) {
             : null,
         }, el('span', { text: week.label }),
         (week.holidays || []).length
-          ? el('span', { class: 'wl-holiday', text: `−${week.holidays.length}日` })
+          ? el('span', { class: 'wl-holiday', text: `休${week.holidays.length}` })
           : null,
         week.is_current ? el('span', { class: 'wl-now', text: '今週' }) : null)),
         el('th', { class: 'wl-total', text: '合計' }))),

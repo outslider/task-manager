@@ -286,16 +286,33 @@ export async function render(container, route) {
       }, 'すべて表示')));
   }
 
+  /**
+   * 矛盾の一覧は長くなって一覧の邪魔になるので、既定では 1 行に畳んでおく。
+   * 開いたかどうかは画面を切り替えても覚えておく。
+   */
   function drawAlerts() {
     const conflicts = data.conflicts || [];
     if (!conflicts.length) { fill(alerts); return; }
-    fill(alerts, el('div', { class: 'warn-box danger' },
-      el('strong', { text: `⚠ 依存関係と日程が矛盾しています（${conflicts.length} 件）` }),
-      el('ul', {}, ...conflicts.slice(0, 5).map((c) => el('li', {},
-        `「${c.depends_on_title}」の期限が「${c.task_title}」の開始日より `
-        + `${c.overlap_days} 日あとになっています`))),
-      conflicts.length > 5
-        ? el('div', { class: 'hint', text: `ほか ${conflicts.length - 5} 件` })
+    const open = localStorage.getItem('tm.tasks.conflictsOpen') === '1';
+    const head = el('button', {
+      class: 'warn-fold', type: 'button',
+      onClick: () => {
+        localStorage.setItem('tm.tasks.conflictsOpen', open ? '0' : '1');
+        drawAlerts();
+      },
+    },
+    el('span', { class: 'fold-mark', text: open ? '▼' : '▶' }),
+    el('strong', { text: `⚠ 依存関係と日程が矛盾しています（${conflicts.length} 件）` }),
+    el('span', { class: 'hint', text: open ? '' : 'クリックで内訳を表示' }));
+    fill(alerts, el('div', { class: 'warn-box danger' }, head,
+      open
+        ? el('div', {},
+          el('ul', {}, ...conflicts.slice(0, 5).map((c) => el('li', {},
+            `「${c.depends_on_title}」の期限が「${c.task_title}」の開始日より `
+            + `${c.overlap_days} 日あとになっています`))),
+          conflicts.length > 5
+            ? el('div', { class: 'hint', text: `ほか ${conflicts.length - 5} 件` })
+            : null)
         : null));
   }
 

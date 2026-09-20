@@ -18,7 +18,7 @@ export async function render(container) {
 
   setHeader('マイタスク');
 
-  const listHost = el('div', {});
+  const listHost = el('div', { class: 'mytask-list' });
   const summary = el('div', { class: 'page-sub' });
   const timeline = el('div', { class: 'card', style: { marginBottom: '14px' } });
 

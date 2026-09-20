@@ -23,13 +23,12 @@ export async function render(container) {
   fill(container,
     el('div', { class: 'card' },
       el('div', { class: 'card-head' },
-        el('h2', {}, 'リンク集'),
-        el('div', { style: { display: 'flex', gap: '8px' } }, search, addButton)),
-      el('div', { class: 'card-body' },
-        el('p', { class: 'page-sub',
-          text: '社内の手順書や共有フォルダなど、よく開くものを置いておく場所です。'
-            + '全体で共有するものと、プロジェクトごとのものを分けて置けます。' }),
-        listHost)));
+        el('div', { class: 'grow' },
+          el('div', { class: 'page-sub', style: { margin: '0' },
+            text: '社内の手順書や共有フォルダなど、よく開くものを置いておく場所です。'
+              + '全体で共有するものと、プロジェクトごとのものを分けて置けます。' })),
+        search, addButton),
+      el('div', { class: 'card-body' }, listHost)));
 
   async function load() {
     fill(listHost, el('div', { class: 'empty', text: '読み込み中…' }));
@@ -51,7 +50,13 @@ export async function render(container) {
     if (!links.length) {
       fill(listHost, el('div', { class: 'empty' },
         el('div', { class: 'big', text: '🔗' }),
-        state.query ? '一致するリンクがありません' : 'まだリンクがありません'));
+        el('div', { text: state.query ? '一致するリンクがありません' : 'まだリンクがありません' }),
+        state.query || addButton.hidden
+          ? null
+          : el('button', {
+            class: 'btn btn-primary', style: { marginTop: '12px' },
+            onClick: () => edit(null),
+          }, '＋ 最初のリンクを追加')));
       return;
     }
     // 全体 → プロジェクトごと に分け、その中をさらに分類でまとめる

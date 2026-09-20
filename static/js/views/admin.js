@@ -65,7 +65,7 @@ async function renderUsers(container) {
           el('button', { class: 'btn btn-sm', onClick: () => resetPassword(user) }, 'PW再発行'),
           ' ',
           el('button', {
-            class: 'btn btn-sm btn-danger',
+            class: 'btn btn-sm btn-quiet-danger',
             onClick: async () => {
               if (!await confirmDialog(
                 `「${user.name}」を削除します。\n担当タスクは「未割当」になります。`,
@@ -188,10 +188,10 @@ async function renderGroups(container) {
           el('div', { class: 'page-sub', text: group.description || '（説明なし）' }),
           el('div', { class: 'avatar-stack', style: { flexWrap: 'wrap', margin: '10px 0' } },
             ...group.members.map((m) => avatar(m, 'sm'))),
-          el('div', { class: 'row', style: { gap: '6px' } },
+          el('div', { style: { display: 'flex', gap: '6px' } },
             el('button', { class: 'btn btn-sm', onClick: () => editGroup(group) }, '編集'),
             el('button', {
-              class: 'btn btn-sm btn-danger',
+              class: 'btn btn-sm btn-quiet-danger',
               onClick: async () => {
                 if (!await confirmDialog(`「${group.name}」を削除しますか？`,
                   { danger: true, okLabel: '削除する' })) return;
@@ -571,8 +571,7 @@ async function renderTaxonomy(container) {
       })), custom);
     };
     const custom = el('input', {
-      type: 'color', class: 'input', value: current,
-      style: { width: '38px', height: '26px', padding: '1px' },
+      type: 'color', class: 'input', value: current, title: '色を自由に選ぶ',
       onInput: (event) => { onPick(event.target.value); },
     });
     draw(current);
@@ -620,7 +619,10 @@ async function renderTaxonomy(container) {
         label,
         swatches(cat.color, (color) => { cat.color = color; }),
         el('div', { style: { display: 'flex', gap: '2px', alignItems: 'center' } },
-          cat.used ? el('span', { class: 'hint', text: `${cat.used}件` }) : null,
+          cat.used
+            ? el('span', { class: 'hint', title: `${cat.used} 件のタスクで使われています`,
+              text: `${cat.used}件` })
+            : null,
           el('button', {
             class: 'icon-btn', title: '上へ', disabled: index === 0 ? true : null,
             onClick: () => { move(categories, index, -1); drawCategories(); },
