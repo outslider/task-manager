@@ -3296,17 +3296,277 @@ def list_tickets(ctx):
         + " ORDER BY t.status IN %s DESC, t.priority DESC, "
           "t.due_date IS NULL, t.due_date, t.id DESC LIMIT 400",
         tuple(params) + (tickets.CLOSED_STATUSES,))
+    today = db.today()
+    week_start = today - timedelta(days=today.weekday())
+    month_start = today.replace(day=1)
     summary = db.query_one(
         "SELECT COUNT(*) AS total, "
         "SUM(status IN %s) AS open, "
         "SUM(status='new') AS waiting, "
         "SUM(assignee_id IS NULL AND status IN %s) AS unassigned, "
-        "SUM(due_date IS NOT NULL AND due_date < %s AND status IN %s) AS overdue "
+        "SUM(due_date IS NOT NULL AND due_date < %s AND status IN %s) AS overdue, "
+        "SUM(status='done') AS done_total, "
+        "SUM(status='done' AND resolved_at >= %s) AS done_week, "
+        "SUM(status='done' AND resolved_at >= %s) AS done_month "
         "FROM tickets",
-        (tickets.OPEN_STATUSES, tickets.OPEN_STATUSES, db.today(), tickets.OPEN_STATUSES))
+        (tickets.OPEN_STATUSES, tickets.OPEN_STATUSES, today, tickets.OPEN_STATUSES,
+         week_start, month_start))
+    # 受けてから返すまでにかかった日数（直近 90 日に片付いたぶん）
+    turnaround = db.scalar(
+        "SELECT AVG(TIMESTAMPDIFF(HOUR, created_at, resolved_at)) AS m FROM tickets "
+        "WHERE status='done' AND resolved_at IS NOT NULL AND resolved_at >= %s",
+        (today - timedelta(days=90),))
     return json_response({
         "tickets": rows,
         "summary": {k: int(v or 0) for k, v in (summary or {}).items()},
+        "turnaround_days": (round(float(turnaround) / 24, 1)
+                            if turnaround is not None else None),
+    })
+
+
+TICKET_IMPORT_FIELDS = [
+    ("title", "件名", "必須"),
+    ("queue", "窓口", "窓口名。空欄なら画面で選んだ窓口に入ります"),
+    ("kind", "種別", "依頼 / 問い合わせ / 障害"),
+    ("status", "状態", "受付待ち / 対応中 / 保留 / 完了 / 取り下げ"),
+    ("priority", "優先度", "低 / 中 / 高 / 緊急 または 0〜3"),
+    ("on_behalf_of", "依頼元", "「営業部 田中」など"),
+    ("assignee", "担当", "氏名またはメールアドレス"),
+    ("due_date", "期限", "2026-04-01 / 2026/4/1 / 4月1日 など"),
+    ("occurred_at", "発生日時", "障害のとき。2026-04-01 09:30 など"),
+    ("body", "内容", ""),
+    ("resolution", "対応結果", ""),
+    ("created_at", "受付日", "過去ぶんを入れるときに。空欄なら取り込んだ日時"),
+]
+TICKET_IMPORT_KEYS = [f[0] for f in TICKET_IMPORT_FIELDS]
+
+
+@route("GET", r"/api/tickets/import-fields")
+def ticket_import_fields(ctx):
+    me(ctx)
+    return json_response({
+        "fields": [{"value": v, "label": label, "help": help_text}
+                   for v, label, help_text in TICKET_IMPORT_FIELDS],
+        "kinds": {label: value for value, label, _i in tickets.KINDS},
+        "statuses": {label: value for value, label, _c in tickets.STATUSES},
+        "priorities": {label: value for value, label in tickets.PRIORITY_LABEL.items()},
+    })
+
+
+def _import_datetime(value):
+    """日付だけでも、時刻付きでも受ける。"""
+    text = _import_text(value).replace("　", " ").replace("T", " ")
+    if not text:
+        return None
+    day = _import_date(text.split(" ")[0])
+    if not day:
+        return None
+    match = re.search(r"(\d{1,2})\s*[:時]\s*(\d{1,2})", text)
+    if not match:
+        return day + " 00:00:00"
+    hour, minute = (int(g) for g in match.groups())
+    return "{} {:02d}:{:02d}:00".format(day, min(hour, 23), min(minute, 59))
+
+
+@route("POST", r"/api/tickets/import")
+def import_tickets(ctx):
+    """CSV や Excel からチケットをまとめて登録する。dry_run=true なら登録しない。"""
+    user = me(ctx)
+    rows = ctx.body.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise bad_request("取り込む行がありません")
+    if len(rows) > 1000:
+        raise bad_request("一度に取り込めるのは 1000 行までです")
+    dry_run = as_bool(ctx.body.get("dry_run"))
+    fallback_queue = as_int(ctx.body.get("queue_id"))
+    if fallback_queue:
+        queue_or_404(fallback_queue)
+
+    queues = {q["name"].strip(): q for q in db.query("SELECT * FROM ticket_queues")}
+    people = {}
+    for person in db.query("SELECT id, name, email FROM users WHERE is_active=1"):
+        people[person["name"].strip()] = person["id"]
+        people[person["email"].strip().lower()] = person["id"]
+    kind_by_label = {label: value for value, label, _i in tickets.KINDS}
+    status_by_label = {label: value for value, label, _c in tickets.STATUSES}
+    priority_by_label = {label: value for value, label in tickets.PRIORITY_LABEL.items()}
+
+    prepared, problems = [], []
+    for index, raw in enumerate(rows):
+        line = index + 1
+        if not isinstance(raw, dict):
+            problems.append({"line": line, "message": "行の形式が正しくありません"})
+            continue
+        title = _import_text(raw.get("title"))
+        if not title:
+            problems.append({"line": line, "message": "件名が空です"})
+            continue
+
+        queue_name = _import_text(raw.get("queue"))
+        queue = queues.get(queue_name) if queue_name else None
+        if queue_name and not queue:
+            problems.append({"line": line,
+                             "message": "窓口「{}」がありません".format(queue_name)})
+            continue
+        queue_id = queue["id"] if queue else fallback_queue
+        if not queue_id:
+            problems.append({"line": line, "message": "窓口が決まっていません"})
+            continue
+
+        assignee_text = _import_text(raw.get("assignee"))
+        assignee_id = None
+        if assignee_text:
+            assignee_id = people.get(assignee_text) or people.get(assignee_text.lower())
+            if not assignee_id:
+                problems.append({
+                    "line": line,
+                    "message": "「{}」という人が見つかりません".format(assignee_text)})
+
+        kind_text = _import_text(raw.get("kind"))
+        kind = kind_by_label.get(kind_text) or tickets.kind(kind_text)
+        status_text = _import_text(raw.get("status"))
+        status = status_by_label.get(status_text) or tickets.status(status_text)
+        priority_text = _import_text(raw.get("priority"))
+        if priority_text in priority_by_label:
+            priority = priority_by_label[priority_text]
+        else:
+            number = _import_number(priority_text, 0, 3)
+            priority = int(number) if number is not None else 1
+
+        created = _import_datetime(raw.get("created_at")) or db.now()
+        resolved = created if status in tickets.CLOSED_STATUSES else None
+        prepared.append({
+            "queue_id": queue_id, "kind": kind, "title": title[:300],
+            "body": _import_text(raw.get("body")), "status": status, "priority": priority,
+            "on_behalf_of": _import_text(raw.get("on_behalf_of"))[:120],
+            "assignee_id": assignee_id, "due_date": _import_date(raw.get("due_date")),
+            "occurred_at": _import_datetime(raw.get("occurred_at")),
+            "resolution": _import_text(raw.get("resolution")),
+            "created_at": created, "resolved_at": resolved,
+        })
+
+    if dry_run:
+        return json_response({"would_create": len(prepared), "problems": problems,
+                              "preview": prepared[:8]})
+    if not prepared:
+        raise bad_request("登録できる行がありませんでした")
+
+    created_ids = []
+    for item in prepared:
+        created_ids.append(db.insert(
+            "INSERT INTO tickets(queue_id, kind, title, body, status, priority, requester_id, "
+            "on_behalf_of, assignee_id, due_date, occurred_at, resolution, resolved_at, "
+            "created_at, updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (item["queue_id"], item["kind"], item["title"], item["body"], item["status"],
+             item["priority"], user["id"], item["on_behalf_of"], item["assignee_id"],
+             item["due_date"], item["occurred_at"], item["resolution"], item["resolved_at"],
+             item["created_at"], item["created_at"])))
+    return json_response({"created": len(created_ids), "ticket_ids": created_ids,
+                          "problems": problems}, 201)
+
+
+@route("GET", r"/api/tickets/stats")
+def ticket_stats(ctx):
+    """日次・週次で、受けた数と片付いた数を数える。
+
+    受付日は created_at、完了日は resolved_at で数える。
+    片付いた日に数えるので、日付をまたいだぶんは完了した側の日に入る。
+    """
+    me(ctx)
+    unit = "week" if (ctx.query.get("unit") or "day") == "week" else "day"
+    span = as_int(ctx.query.get("span"), 14 if unit == "day" else 12, 1, 60)
+    today = db.today()
+    if unit == "week":
+        last = today - timedelta(days=today.weekday())
+        starts = [last - timedelta(weeks=i) for i in range(span - 1, -1, -1)]
+        step = timedelta(weeks=1)
+    else:
+        starts = [today - timedelta(days=i) for i in range(span - 1, -1, -1)]
+        step = timedelta(days=1)
+    since = starts[0]
+    until = starts[-1] + step
+
+    where, params = [], []
+    queue_id = as_int(ctx.query.get("queue_id"))
+    if queue_id:
+        where.append("t.queue_id=%s")
+        params.append(queue_id)
+    project_id = as_int(ctx.query.get("project_id"))
+    if project_id:
+        where.append("q.project_id=%s")
+        params.append(project_id)
+    clause = (" AND " + " AND ".join(where)) if where else ""
+
+    def bucket_of(value):
+        if not value:
+            return None
+        day = value.date() if hasattr(value, "date") else value
+        if day < since or day >= until:
+            return None
+        if unit == "week":
+            return (day - timedelta(days=day.weekday())).isoformat()
+        return day.isoformat()
+
+    rows = db.query(
+        "SELECT t.id, t.kind, t.status, t.created_at, t.resolved_at, t.queue_id, "
+        "       q.name AS queue_name, q.color AS queue_color "
+        "  FROM tickets t JOIN ticket_queues q ON q.id = t.queue_id "
+        " WHERE (t.created_at >= %s OR t.resolved_at >= %s)" + clause,
+        tuple([since, since] + params))
+
+    buckets = {}
+    for start in starts:
+        key = start.isoformat()
+        buckets[key] = {
+            "key": key,
+            "label": "{}/{}".format(start.month, start.day),
+            "created": 0, "resolved": 0,
+        }
+    by_queue, by_kind = {}, {}
+    hours, closed = 0.0, 0
+    for row in rows:
+        made = bucket_of(row["created_at"])
+        done = bucket_of(row["resolved_at"]) if row["status"] in tickets.CLOSED_STATUSES else None
+        if made:
+            buckets[made]["created"] += 1
+        if done:
+            buckets[done]["resolved"] += 1
+        if not made and not done:
+            continue
+        queue = by_queue.setdefault(row["queue_id"], {
+            "queue_id": row["queue_id"], "name": row["queue_name"],
+            "color": row["queue_color"], "created": 0, "resolved": 0})
+        kind = by_kind.setdefault(row["kind"], {
+            "kind": row["kind"], "label": tickets.KIND_LABEL.get(row["kind"], row["kind"]),
+            "icon": tickets.KIND_ICON.get(row["kind"], ""), "created": 0, "resolved": 0})
+        if made:
+            queue["created"] += 1
+            kind["created"] += 1
+        if done:
+            queue["resolved"] += 1
+            kind["resolved"] += 1
+            if row["created_at"] and row["resolved_at"]:
+                hours += (row["resolved_at"] - row["created_at"]).total_seconds() / 3600
+                closed += 1
+
+    series = list(buckets.values())
+    return json_response({
+        "unit": unit,
+        "span": span,
+        "from": since.isoformat(),
+        "to": (until - timedelta(days=1)).isoformat(),
+        "buckets": series,
+        "totals": {
+            "created": sum(b["created"] for b in series),
+            "resolved": sum(b["resolved"] for b in series),
+            "open_now": db.scalar(
+                "SELECT COUNT(*) AS c FROM tickets t JOIN ticket_queues q ON q.id = t.queue_id "
+                "WHERE t.status IN %s" + clause,
+                tuple([tickets.OPEN_STATUSES] + params), default=0) or 0,
+            "turnaround_days": round(hours / closed / 24, 1) if closed else None,
+        },
+        "by_queue": sorted(by_queue.values(), key=lambda q: -q["created"]),
+        "by_kind": sorted(by_kind.values(), key=lambda k: -k["created"]),
     })
 
 

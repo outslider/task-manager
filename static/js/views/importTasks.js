@@ -48,25 +48,42 @@ export function decodeCsv(buffer) {
   }
 }
 
-/** 見出しの文字から、どの項目かを推測する。 */
-export function guessField(header, fields) {
+const TASK_HINTS = {
+  title: ['タスク', 'たすく', '件名', '作業', '項目', '内容', 'title', 'name', 'task'],
+  level: ['階層', 'レベル', 'level', 'indent'],
+  parent: ['親', 'parent'],
+  assignee: ['担当', '責任', 'assignee', 'owner', '担当者'],
+  start_date: ['開始', '着手', 'start', 'from'],
+  due_date: ['期限', '締切', '終了', '完了予定', 'due', 'end', 'deadline'],
+  category: ['カテゴリ', '分類', '種別', 'category', 'type'],
+  priority: ['重要', '優先', 'priority', 'importance'],
+  status: ['状態', 'ステータス', '進捗状況', 'status'],
+  progress: ['進捗', '達成', 'progress', '%'],
+  estimate_hours: ['見積', '工数', '予定工数', 'estimate', 'hours'],
+  description: ['メモ', '備考', '説明', '詳細', 'note', 'memo', 'description'],
+  is_milestone: ['マイルストーン', '節目', 'milestone'],
+};
+
+/** チケットの列。「内容」は本文を指すなど、タスクとは語彙が違う。 */
+export const TICKET_HINTS = {
+  title: ['件名', 'タイトル', '表題', '要望', 'subject', 'title'],
+  queue: ['窓口', 'キュー', '受付先', 'queue'],
+  kind: ['種別', '区分', 'しゅべつ', 'kind', 'type'],
+  status: ['状態', 'ステータス', 'status'],
+  priority: ['優先', '重要', 'priority'],
+  on_behalf_of: ['依頼元', '依頼者', '申請者', '部署', 'requester'],
+  assignee: ['担当', '対応者', 'assignee', 'owner'],
+  due_date: ['期限', '締切', '回答期限', 'due', 'deadline'],
+  occurred_at: ['発生', '障害発生', 'occurred'],
+  body: ['内容', '本文', '詳細', '説明', '備考', 'body', 'detail'],
+  resolution: ['対応結果', '結果', '回答', '対応内容', 'resolution'],
+  created_at: ['受付', '起票', '登録日', 'created'],
+};
+
+/** 見出しの文字から、どの項目かを推測する。hints を渡すと語彙を差し替えられる。 */
+export function guessField(header, fields, hints = TASK_HINTS) {
   const text = String(header || '').trim().toLowerCase().replace(/[（(].*?[)）]/g, '');
   if (!text) return '';
-  const hints = {
-    title: ['タスク', 'たすく', '件名', '作業', '項目', '内容', 'title', 'name', 'task'],
-    level: ['階層', 'レベル', 'level', 'indent'],
-    parent: ['親', 'parent'],
-    assignee: ['担当', '責任', 'assignee', 'owner', '担当者'],
-    start_date: ['開始', '着手', 'start', 'from'],
-    due_date: ['期限', '締切', '終了', '完了予定', 'due', 'end', 'deadline'],
-    category: ['カテゴリ', '分類', '種別', 'category', 'type'],
-    priority: ['重要', '優先', 'priority', 'importance'],
-    status: ['状態', 'ステータス', '進捗状況', 'status'],
-    progress: ['進捗', '達成', 'progress', '%'],
-    estimate_hours: ['見積', '工数', '予定工数', 'estimate', 'hours'],
-    description: ['メモ', '備考', '説明', '詳細', 'note', 'memo', 'description'],
-    is_milestone: ['マイルストーン', '節目', 'milestone'],
-  };
   for (const field of fields) {
     for (const hint of hints[field.value] || []) {
       if (text.includes(hint)) return field.value;

@@ -1,6 +1,6 @@
 /* Reusable form controls: user / category selects and chip-style multi pickers. */
 import { store, CATEGORIES, ISSUE_CATEGORIES, category, issueCategory } from '../store.js';
-import { el } from '../util.js';
+import { el, openModal } from '../util.js';
 
 export function option(value, label, selected) {
   return el('option', { value, selected: selected ? true : null }, label);
@@ -94,4 +94,40 @@ export function chipPicker(candidates, selectedIds = [], {
   });
   refresh();
   return { node: el('div', {}, chips, picker), ids: () => [...chosen] };
+}
+
+
+/**
+ * 記号（絵文字）を選ぶボタン。直接入力だと環境によって打てないので、
+ * 用意した中から選ぶ形にしている。
+ *
+ * @returns {{node: HTMLElement, value: () => string}}
+ */
+export function iconPicker(current, choices, { allowEmpty = true } = {}) {
+  let chosen = current || '';
+  const button = el('button', {
+    class: 'tx-icon', type: 'button', title: '記号を選ぶ',
+    onClick: async () => {
+      const picked = await openModal({
+        title: '記号を選ぶ',
+        build: (close) => el('div', {},
+          el('p', { class: 'page-sub', text: '見た目を揃えるため、この中から選びます。' }),
+          el('div', { class: 'icon-grid' },
+            ...choices.map((icon) => el('button', {
+              type: 'button', class: `icon-pick${icon === chosen ? ' active' : ''}`,
+              onClick: () => close(icon),
+            }, icon)))),
+        footer: (close) => [
+          allowEmpty
+            ? el('button', { class: 'btn', onClick: () => close('') }, '記号なし')
+            : null,
+          el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
+        ].filter(Boolean),
+      });
+      if (picked === null) return;
+      chosen = picked;
+      button.textContent = chosen || '＋';
+    },
+  }, chosen || '＋');
+  return { node: button, value: () => chosen };
 }

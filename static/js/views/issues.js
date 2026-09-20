@@ -158,11 +158,14 @@ export async function render(container, route) {
   }
 
   async function createIssue() {
-    const target = project || store.projects.find((p) => store.canEdit(p));
+    // 全体一覧から起票するときは、書き込めるプロジェクトの中から選ばせる
+    const candidates = store.projects.filter((p) => !p.archived && store.canEdit(p));
+    const target = project || candidates[0];
     if (!target) { return; }
     const projectTasks = await api.projectTasks(target.id);
     const saved = await openIssueForm({
-      project: target, tasks: projectTasks.tasks, members: projectTasks.members });
+      project: target, tasks: projectTasks.tasks, members: projectTasks.members,
+      projects: project ? null : candidates });
     if (saved) {
       await store.refreshProjects();
       load();

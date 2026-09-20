@@ -4,6 +4,7 @@ import { setHeader } from '../app.js';
 import { store } from '../store.js';
 import { avatar, clear, confirmDialog, el, fill, openModal, toast } from '../util.js';
 import { ACCENT_PRESETS, applyAccent } from '../theme.js';
+import { iconPicker } from './pickers.js';
 
 export async function render(container, route) {
   if (!store.isAdmin()) {
@@ -800,8 +801,8 @@ async function renderQueues(container) {
       class: 'input', placeholder: '何を受ける窓口かひとこと',
     });
     description.value = queue?.description || '';
-    const icon = el('input', { class: 'input', maxlength: '4', placeholder: '📮' });
-    icon.value = queue?.icon || '';
+    const icon = iconPicker(queue?.icon || '',
+      store.meta?.tickets?.queue_icons || ['📮']);
     const project = el('select', { class: 'select' },
       el('option', { value: '', selected: queue?.project_id ? null : true },
         'どのプロジェクトにも紐づけない'),
@@ -826,8 +827,8 @@ async function renderQueues(container) {
             text: '紐づけると、この窓口のチケットを「タスクにする」とき、'
               + 'そのプロジェクトが最初から選ばれます。誰が読めるかは変わりません。' })),
         el('div', { class: 'row' },
-          el('div', { class: 'field' }, el('label', { text: '記号' }), icon,
-            el('div', { class: 'hint', text: '絵文字ひとつ' })),
+          el('div', { class: 'field' }, el('label', { text: '記号' }), icon.node,
+            el('div', { class: 'hint', text: 'クリックして選びます' })),
           el('div', { class: 'field' }, el('label', { text: '色' }), color),
           el('div', { class: 'field' }, el('label', { text: '並び順' }), order)),
         el('div', { class: 'field' },
@@ -839,7 +840,7 @@ async function renderQueues(container) {
           onClick: async () => {
             const payload = {
               name: name.value.trim(), description: description.value.trim(),
-              icon: icon.value.trim(), color: color.value,
+              icon: icon.value(), color: color.value,
               project_id: project.value ? Number(project.value) : null,
               sort_order: Number(order.value) || 0, is_active: active.checked,
             };

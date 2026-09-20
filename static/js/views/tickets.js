@@ -31,13 +31,23 @@ export async function render(container) {
   const statusLabel = Object.fromEntries(meta.statuses.map((s) => [s.value, s]));
 
   setHeader('チケット', [
+    el('button', {
+      class: 'btn', title: 'CSV や Excel からまとめて登録します',
+      onClick: async () => {
+        const { openTicketImport } = await import('./importTickets.js');
+        if (await openTicketImport()) { drawQueues(); load(); }
+      },
+    }, '⬆ 取り込み'),
     el('button', { class: 'btn btn-primary', onClick: () => create() }, '＋ チケットを起票'),
   ]);
 
-  const summaryHost = el('div', { class: 'grid cols-4', style: { marginBottom: '14px' } });
+  const summaryHost = el('div', { class: 'grid cols-4', style: { marginBottom: '10px' } });
+  const paceHost = el('div', { class: 'ticket-pace' });
   const queueHost = el('div', { class: 'queue-tabs' });
   const listHost = el('div', {});
   const countHost = el('div', { class: 'hint' });
+  const viewHost = el('div', {});
+  state.view = 'list';
 
   const search = el('input', {
     class: 'input', type: 'search', placeholder: '件名・本文で絞り込む',
@@ -65,14 +75,29 @@ export async function render(container) {
     ['unassigned', '担当が未定'],
   ], state.scope, (value) => { state.scope = value; load(); });
 
-  fill(container,
-    summaryHost,
-    el('div', { class: 'card' },
-      el('div', { class: 'card-head' }, queueHost),
-      el('div', { class: 'toolbar' },
-        search, statusSelect, kindSelect, scopeSelect,
-        el('span', { class: 'spacer' }), countHost),
-      el('div', { class: 'card-body tight' }, listHost)));
+  const listCard = el('div', { class: 'card' },
+    el('div', { class: 'card-head' }, queueHost),
+    el('div', { class: 'toolbar' },
+      search, statusSelect, kindSelect, scopeSelect,
+      el('span', { class: 'spacer' }), countHost),
+    el('div', { class: 'card-body tight' }, listHost));
+
+  fill(container, summaryHost, paceHost, viewHost);
+
+  async function drawView() {
+    // 集計を見ているあいだは、一覧向けの数字は引っ込める（同じ数が二重に出るため）
+    summaryHost.hidden = state.view === 'stats';
+    paceHost.hidden = state.view === 'stats';
+    if (state.view === 'stats') {
+      const { ticketStats } = await import('./ticketStats.js');
+      fill(viewHost, await ticketStats({
+        queueId: state.queue_id,
+        onBack: () => { state.view = 'list'; drawView(); },
+      }));
+      return;
+    }
+    fill(viewHost, listCard);
+  }
 
   function select(options, value, onChange) {
     const node = el('select', { class: 'select', style: { maxWidth: '160px' } },
@@ -112,7 +137,7 @@ export async function render(container) {
       fill(listHost, el('div', { class: 'empty', text: error.message }));
       return;
     }
-    drawSummary(data.summary);
+    drawSummary(data.summary, data.turnaround_days);
     countHost.textContent = `${data.tickets.length} 件`;
     if (!data.tickets.length) {
       fill(listHost, el('div', { class: 'empty' },
@@ -125,15 +150,34 @@ export async function render(container) {
     fill(listHost, ...data.tickets.map(row));
   }
 
-  function drawSummary(s) {
-    const card = (label, value, tone) => el('div', { class: 'card stat' },
-      el('div', { class: 'k', text: label }),
-      el('div', { class: `v ${tone || ''}`.trim(), text: String(value) }));
+  /**
+   * 残っているぶんだけでなく、片付いたぶんも出す。
+   * 数字が減るだけの画面だと、やった実感が残らないため。
+   */
+  function drawSummary(s, turnaround) {
+    const card = (label, value, tone, sub) => el('div', {
+      class: `card stat${value ? '' : ' zero'}`,
+    },
+    el('div', { class: 'k', text: label }),
+    el('div', { class: `v ${tone || ''}`.trim(), text: String(value) }),
+    sub ? el('div', { class: 'stat-sub', text: sub }) : null);
     fill(summaryHost,
       card('未完了', s.open, ''),
       card('受付待ち', s.waiting, s.waiting ? 'warn' : ''),
-      card('担当が未定', s.unassigned, s.unassigned ? 'warn' : ''),
-      card('期限超過', s.overdue, s.overdue ? 'danger' : ''));
+      card('期限超過', s.overdue, s.overdue ? 'danger' : ''),
+      card('今週の完了', s.done_week, s.done_week ? 'ok' : '',
+        `今月 ${s.done_month} 件 / 通算 ${s.done_total} 件`));
+    fill(paceHost,
+      s.unassigned
+        ? el('span', { class: 'badge warn-badge',
+          text: `担当が決まっていないもの ${s.unassigned} 件` })
+        : null,
+      turnaround !== null && turnaround !== undefined
+        ? el('span', { class: 'hint', text: `受けてから片付くまで 平均 ${turnaround} 日` })
+        : null,
+      el('button', {
+        class: 'btn btn-sm', onClick: () => { state.view = 'stats'; drawView(); },
+      }, '📊 集計を見る'));
   }
 
   function row(ticket) {
@@ -188,5 +232,6 @@ export async function render(container) {
   }
 
   await drawQueues();
+  await drawView();
   await load();
 }

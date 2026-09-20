@@ -38,6 +38,13 @@ CLOSED_STATUSES = ("done", "canceled")
 
 PRIORITY_LABEL = {0: "低", 1: "中", 2: "高", 3: "緊急"}
 
+# 窓口の記号。直接入力だと環境によって打てないので、この中から選んでもらう。
+QUEUE_ICONS = [
+    "📮", "📥", "🖥", "🛠", "🏢", "💼", "💰", "📞", "🤝", "🧾",
+    "🔐", "🚚", "🧪", "🚀", "📚", "🩺", "🧹", "⚙️", "🗂", "🌐",
+    "👥", "📊", "🎓", "🏗", "🔧", "📋", "💬", "🚨", "🎫", "🧭",
+]
+
 DEFAULT_QUEUE = ("総合受付", "どこに出すか迷うものはここへ。窓口は管理画面で増やせます。",
                  "#3b6ef5", "📮")
 
@@ -75,4 +82,5 @@ def meta():
         "priorities": [{"value": v, "label": l}
                        for v, l in sorted(PRIORITY_LABEL.items(), reverse=True)],
         "open_statuses": list(OPEN_STATUSES),
+        "queue_icons": list(QUEUE_ICONS),
     }

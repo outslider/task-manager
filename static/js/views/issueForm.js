@@ -1,7 +1,7 @@
 /* Create / edit dialog for an issue. */
 import { api } from '../api.js';
 import { ISSUE_STATUS_LABEL, SEVERITY_LABEL } from '../store.js';
-import { el, openModal, toISO, toast, today } from '../util.js';
+import { el, fill, openModal, toISO, toast, today } from '../util.js';
 import { chipPicker, issueCategorySelect, option, userSelect } from './pickers.js';
 
 export function taskPicker(tasks, selectedIds = []) {
@@ -18,10 +18,16 @@ export function taskPicker(tasks, selectedIds = []) {
  */
 export function openIssueForm({
   project, issue = null, tasks = [], linkedTaskIds = [], members = null,
+  projects = null,
 }) {
   const editing = Boolean(issue);
   const f = {};
-  const picker = taskPicker(tasks, linkedTaskIds);
+  let picker = taskPicker(tasks, linkedTaskIds);
+  let target = project;
+  // 全体の課題一覧から起票するときは、どのプロジェクトに出すかをここで選ぶ
+  const choosable = !editing && Array.isArray(projects) && projects.length > 1;
+  const pickerHost = el('div', {}, picker.node);
+  const ownerHost = el('div', {});
 
   return openModal({
     title: editing ? `課題 #${issue.seq} を編集` : '課題を起票',
@@ -45,6 +51,24 @@ export function openIssueForm({
         ...Object.entries(SEVERITY_LABEL).reverse().map(([value, label]) =>
           option(value, label, String(issue?.severity ?? 1) === value)));
       f.owner = userSelect(issue?.owner_id, { emptyLabel: '未割当', people: members });
+      fill(ownerHost, f.owner);
+      f.project = choosable
+        ? el('select', { class: 'select' },
+          ...projects.map((p) => option(p.id, p.name, p.id === target?.id)))
+        : null;
+      if (f.project) {
+        f.project.addEventListener('change', async () => {
+          // プロジェクトが変わると、担当できる人も紐づけられるタスクも変わる
+          target = projects.find((p) => String(p.id) === f.project.value) || target;
+          try {
+            const data = await api.projectTasks(target.id);
+            picker = taskPicker(data.tasks, []);
+            fill(pickerHost, picker.node);
+            f.owner = userSelect(null, { emptyLabel: '未割当', people: data.members });
+            fill(ownerHost, f.owner);
+          } catch (error) { toast(error.message, 'error'); }
+        });
+      }
       f.raised = el('input', { class: 'input', type: 'date' });
       f.raised.value = issue?.raised_on || toISO(today());
       f.due = el('input', { class: 'input', type: 'date' });
@@ -53,13 +77,17 @@ export function openIssueForm({
       f.resolved.value = issue?.resolved_on || '';
 
       return el('div', {},
+        f.project
+          ? el('div', { class: 'field' },
+            el('label', { text: 'プロジェクト *' }), f.project)
+          : null,
         el('div', { class: 'field' }, el('label', { text: '課題 *' }), f.title),
         el('div', { class: 'row' },
           el('div', { class: 'field' }, el('label', { text: '区分' }), f.category),
           el('div', { class: 'field' }, el('label', { text: '影響度' }), f.severity),
           el('div', { class: 'field' }, el('label', { text: '状態' }), f.status)),
         el('div', { class: 'row' },
-          el('div', { class: 'field' }, el('label', { text: '対応者' }), f.owner),
+          el('div', { class: 'field' }, el('label', { text: '対応者' }), ownerHost),
           el('div', { class: 'field' }, el('label', { text: '発生日 *' }), f.raised),
           el('div', { class: 'field' }, el('label', { text: '対応期限' }), f.due)),
         el('div', { class: 'field' },
@@ -67,7 +95,7 @@ export function openIssueForm({
         el('div', { class: 'field' },
           el('label', { text: '対応方針・結果' }), f.resolution),
         el('div', { class: 'field' },
-          el('label', { text: '関連タスク' }), picker.node,
+          el('label', { text: '関連タスク' }), pickerHost,
           el('div', { class: 'hint',
             text: 'この課題が解消しないと進まないタスク、または課題対応のために作ったタスクを紐づけます。' })),
         editing
@@ -100,7 +128,7 @@ export function openIssueForm({
           try {
             const result = editing
               ? await api.patch(`/api/issues/${issue.id}`, payload)
-              : await api.post('/api/issues', { ...payload, project_id: project.id });
+              : await api.post('/api/issues', { ...payload, project_id: target.id });
             toast(editing ? '更新しました' : '課題を起票しました', 'ok');
             close(result.issue);
           } catch (error) {

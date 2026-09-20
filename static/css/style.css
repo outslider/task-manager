@@ -1315,3 +1315,32 @@ input[type="color"].input {
   font-size: 11px; font-weight: 500; opacity: .75;
   padding-left: 6px; border-left: 1px solid currentColor;
 }
+
+/* ---------- チケットの集計 ---------- */
+.ticket-pace {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px;
+}
+.ticket-pace .badge.warn-badge { background: var(--warn-soft); color: var(--warn); }
+.stat-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+
+.tk-legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-muted);
+  margin-bottom: 8px; }
+.tk-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+  margin-right: 5px; vertical-align: -1px; }
+.tk-key.created { background: var(--accent); }
+.tk-key.resolved { background: var(--ok); }
+
+/* 棒の上に出す数字が切れないよう、上にも余白をとる
+   （overflow-x: auto は縦方向も切ってしまうため） */
+.tk-chart { display: flex; align-items: flex-end; gap: 6px; overflow-x: auto;
+  padding: 18px 0 4px; }
+.tk-col { flex: 1 1 0; min-width: 30px; display: flex; flex-direction: column;
+  align-items: center; gap: 4px; }
+.tk-bars { display: flex; align-items: flex-end; gap: 2px; height: 120px; width: 100%;
+  justify-content: center; }
+.tk-bar { width: 45%; min-height: 2px; border-radius: 4px 4px 0 0; position: relative; }
+.tk-bar.created { background: var(--accent); opacity: .85; }
+.tk-bar.resolved { background: var(--ok); opacity: .85; }
+.tk-num { position: absolute; top: -15px; left: 50%; transform: translateX(-50%);
+  font-size: 10.5px; color: var(--text-muted); }
+.tk-label { font-size: 10.5px; color: var(--text-muted); white-space: nowrap; }

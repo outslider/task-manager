@@ -475,6 +475,179 @@ class TestTicketList(TicketTestCase):
         self.assertEqual(after["overdue"] - before["overdue"], 1)
 
 
+class TestDoneCounts(TicketTestCase):
+    """残りだけでなく、片付いたぶんも数える。"""
+
+    def test_finishing_one_moves_it_into_the_done_counts(self):
+        before = self.admin.get("/api/tickets")[1]["summary"]
+        ticket = self.make_ticket("片付けるもの")
+        self.admin.patch("/api/tickets/{}".format(ticket["id"]), {"status": "done"})
+        after = self.admin.get("/api/tickets")[1]["summary"]
+        self.assertEqual(after["done_total"] - before["done_total"], 1)
+        self.assertEqual(after["done_week"] - before["done_week"], 1)
+        self.assertEqual(after["done_month"] - before["done_month"], 1)
+
+    def test_a_withdrawn_ticket_is_not_counted_as_done(self):
+        before = self.admin.get("/api/tickets")[1]["summary"]
+        ticket = self.make_ticket("取り下げるもの")
+        self.admin.patch("/api/tickets/{}".format(ticket["id"]), {"status": "canceled"})
+        after = self.admin.get("/api/tickets")[1]["summary"]
+        self.assertEqual(after["done_total"], before["done_total"])
+        self.assertEqual(after["open"], before["open"])
+
+    def test_the_turnaround_is_reported(self):
+        ticket = self.make_ticket()
+        self.admin.patch("/api/tickets/{}".format(ticket["id"]), {"status": "done"})
+        data = self.admin.get("/api/tickets")[1]
+        self.assertIsNotNone(data["turnaround_days"])
+
+
+class TestTicketStats(TicketTestCase):
+    def test_a_new_ticket_lands_on_today(self):
+        self.make_ticket("今日うけた")
+        _status, data = self.admin.get(
+            "/api/tickets/stats?unit=day&span=7&queue_id={}".format(self.queue["id"]))
+        self.assertEqual(data["unit"], "day")
+        self.assertEqual(len(data["buckets"]), 7)
+        self.assertEqual(data["buckets"][-1]["created"], 1)
+        self.assertEqual(data["totals"]["created"], 1)
+
+    def test_finishing_it_counts_on_the_day_it_closed(self):
+        ticket = self.make_ticket()
+        self.admin.patch("/api/tickets/{}".format(ticket["id"]), {"status": "done"})
+        _status, data = self.admin.get(
+            "/api/tickets/stats?unit=day&span=7&queue_id={}".format(self.queue["id"]))
+        self.assertEqual(data["buckets"][-1]["resolved"], 1)
+        self.assertEqual(data["totals"]["resolved"], 1)
+
+    def test_it_can_be_counted_by_week(self):
+        self.make_ticket()
+        _status, data = self.admin.get(
+            "/api/tickets/stats?unit=week&span=4&queue_id={}".format(self.queue["id"]))
+        self.assertEqual(data["unit"], "week")
+        self.assertEqual(len(data["buckets"]), 4)
+        self.assertEqual(data["buckets"][-1]["created"], 1)
+
+    def test_it_breaks_down_by_queue_and_kind(self):
+        self.make_ticket("障害のほう", kind="incident")
+        self.make_ticket("依頼のほう", kind="request")
+        _status, data = self.admin.get(
+            "/api/tickets/stats?queue_id={}".format(self.queue["id"]))
+        self.assertEqual([q["queue_id"] for q in data["by_queue"]], [self.queue["id"]])
+        kinds = {k["kind"]: k["created"] for k in data["by_kind"]}
+        self.assertEqual(kinds, {"incident": 1, "request": 1})
+
+    def test_another_queue_is_left_out(self):
+        other = self.make_queue("よその窓口")
+        self.admin.post("/api/tickets", {"queue_id": other["id"], "title": "よそのぶん"})
+        self.make_ticket("うちのぶん")
+        _status, data = self.admin.get(
+            "/api/tickets/stats?queue_id={}".format(self.queue["id"]))
+        self.assertEqual(data["totals"]["created"], 1)
+
+    def test_the_span_is_capped(self):
+        _status, data = self.admin.get("/api/tickets/stats?unit=day&span=9999")
+        self.assertLessEqual(len(data["buckets"]), 60)
+
+    def test_login_is_required(self):
+        status, _ = Client(self.base).get("/api/tickets/stats")
+        self.assertEqual(status, 401)
+
+
+class TestTicketImport(TicketTestCase):
+    def rows_for(self, *rows):
+        return {"queue_id": self.queue["id"], "rows": list(rows)}
+
+    def test_a_dry_run_does_not_write(self):
+        before = self.admin.get("/api/tickets?status=all")[1]["summary"]["total"]
+        payload = self.rows_for({"title": "取り込むもの"})
+        payload["dry_run"] = True
+        status, data = self.admin.post("/api/tickets/import", payload)
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["would_create"], 1)
+        after = self.admin.get("/api/tickets?status=all")[1]["summary"]["total"]
+        self.assertEqual(after, before)
+
+    def test_it_reads_the_japanese_labels(self):
+        status, data = self.admin.post("/api/tickets/import", self.rows_for(
+            {"title": "止まった", "kind": "障害", "status": "完了", "priority": "緊急"}))
+        self.assertEqual(status, 201, data)
+        ticket = self.admin.get("/api/tickets/{}".format(data["ticket_ids"][0]))[1]["ticket"]
+        self.assertEqual(ticket["kind"], "incident")
+        self.assertEqual(ticket["status"], "done")
+        self.assertEqual(ticket["priority"], 3)
+
+    def test_a_finished_row_gets_a_resolved_time(self):
+        _status, data = self.admin.post("/api/tickets/import", self.rows_for(
+            {"title": "もう終わってる", "status": "完了", "created_at": "2026/9/1"}))
+        ticket = self.admin.get("/api/tickets/{}".format(data["ticket_ids"][0]))[1]["ticket"]
+        self.assertIsNotNone(ticket["resolved_at"])
+        self.assertTrue(str(ticket["created_at"]).startswith("2026-09-01"))
+
+    def test_it_reads_the_dates_people_actually_write(self):
+        _status, data = self.admin.post("/api/tickets/import", self.rows_for(
+            {"title": "日付いろいろ", "due_date": "2026/10/5",
+             "occurred_at": "2026/10/1 9:30"}))
+        ticket = self.admin.get("/api/tickets/{}".format(data["ticket_ids"][0]))[1]["ticket"]
+        self.assertEqual(str(ticket["due_date"]), "2026-10-05")
+        self.assertTrue(str(ticket["occurred_at"]).startswith("2026-10-01 09:30"))
+
+    def test_a_queue_can_be_named_per_row(self):
+        other = self.make_queue("行き先指定の窓口")
+        _status, data = self.admin.post("/api/tickets/import", self.rows_for(
+            {"title": "こっちの窓口へ", "queue": other["name"]}))
+        ticket = self.admin.get("/api/tickets/{}".format(data["ticket_ids"][0]))[1]["ticket"]
+        self.assertEqual(ticket["queue_id"], other["id"])
+
+    def test_an_unknown_queue_is_reported_and_skipped(self):
+        payload = self.rows_for({"title": "行き先不明", "queue": "存在しない窓口"})
+        payload["dry_run"] = True
+        _status, data = self.admin.post("/api/tickets/import", payload)
+        self.assertEqual(data["would_create"], 0)
+        self.assertIn("窓口", data["problems"][0]["message"])
+
+    def test_a_missing_title_is_reported_and_skipped(self):
+        payload = self.rows_for({"title": "  ", "kind": "依頼"})
+        payload["dry_run"] = True
+        _status, data = self.admin.post("/api/tickets/import", payload)
+        self.assertEqual(data["would_create"], 0)
+        self.assertIn("件名", data["problems"][0]["message"])
+
+    def test_an_unknown_person_is_reported_but_the_row_still_goes_in(self):
+        payload = self.rows_for({"title": "担当あやしい", "assignee": "いない人"})
+        payload["dry_run"] = True
+        _status, data = self.admin.post("/api/tickets/import", payload)
+        self.assertEqual(data["would_create"], 1)
+        self.assertTrue(data["problems"])
+
+    def test_a_known_person_is_matched(self):
+        user, _email = self.make_user(name="取り込み担当")
+        _status, data = self.admin.post("/api/tickets/import", self.rows_for(
+            {"title": "担当つき", "assignee": "取り込み担当"}))
+        ticket = self.admin.get("/api/tickets/{}".format(data["ticket_ids"][0]))[1]["ticket"]
+        self.assertEqual(ticket["assignee_id"], user["id"])
+
+    def test_an_empty_list_is_rejected(self):
+        status, _ = self.admin.post("/api/tickets/import", {"rows": []})
+        self.assertEqual(status, 400)
+
+    def test_too_many_rows_are_rejected(self):
+        status, _ = self.admin.post("/api/tickets/import", self.rows_for(
+            *[{"title": "行 {}".format(i)} for i in range(1001)]))
+        self.assertEqual(status, 400)
+
+    def test_login_is_required(self):
+        status, _ = Client(self.base).post("/api/tickets/import", {"rows": [{"title": "x"}]})
+        self.assertEqual(status, 401)
+
+    def test_the_field_list_is_available(self):
+        status, data = self.admin.get("/api/tickets/import-fields")
+        self.assertEqual(status, 200)
+        values = [f["value"] for f in data["fields"]]
+        self.assertIn("title", values)
+        self.assertIn("queue", values)
+
+
 class TestTicketSearch(TicketTestCase):
     def test_a_ticket_turns_up_in_the_global_search(self):
         self.make_ticket("ぷりんたの調子がわるい")
