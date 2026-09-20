@@ -3,10 +3,12 @@
 プロジェクト管理とは別建てになっていること、タスクや課題へ渡せること、
 渡したあとも互いに残ること、消せる人が限られていることを見る。
 """
+import datetime
 import os
 import sys
 import unittest
 import uuid
+from datetime import timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -843,6 +845,126 @@ class TestStatsByPerson(TicketTestCase):
         data = self.admin.get(
             "/api/tickets/stats?queue_id={}".format(self.queue["id"]))[1]
         self.assertFalse(data["has_categories"])
+
+
+class TestSpentHours(TicketTestCase):
+    """対応時間は任意。入れておくと、あとで集計に出る。"""
+
+    def test_it_is_empty_by_default(self):
+        self.assertIsNone(self.make_ticket()["spent_hours"])
+
+    def test_it_can_be_set_when_raising(self):
+        ticket = self.make_ticket("時間つき", spent_hours=1.5)
+        self.assertEqual(float(ticket["spent_hours"]), 1.5)
+
+    def test_it_can_be_set_later(self):
+        ticket = self.make_ticket()
+        _status, data = self.admin.patch("/api/tickets/{}".format(ticket["id"]),
+                                         {"spent_hours": 2.5})
+        self.assertEqual(float(data["ticket"]["spent_hours"]), 2.5)
+
+    def test_it_can_be_cleared(self):
+        ticket = self.make_ticket("あとで消す", spent_hours=3)
+        _status, data = self.admin.patch("/api/tickets/{}".format(ticket["id"]),
+                                         {"spent_hours": None})
+        self.assertIsNone(data["ticket"]["spent_hours"])
+
+    def test_a_negative_value_is_refused(self):
+        status, _ = self.admin.post("/api/tickets", {
+            "queue_id": self.queue["id"], "title": "マイナス", "spent_hours": -1})
+        self.assertEqual(status, 400)
+
+    def test_the_change_is_written_into_the_history(self):
+        ticket = self.make_ticket()
+        self.admin.patch("/api/tickets/{}".format(ticket["id"]), {"spent_hours": 4})
+        _status, detail = self.admin.get("/api/tickets/{}".format(ticket["id"]))
+        notes = [c["body"] for c in detail["comments"] if c["kind"] == "system"]
+        self.assertTrue(any("対応時間" in n for n in notes), notes)
+
+    def test_import_reads_hours_and_minutes(self):
+        _status, data = self.admin.post("/api/tickets/import", {
+            "queue_id": self.queue["id"],
+            "rows": [{"title": "時間", "spent_hours": "1.5"},
+                     {"title": "分", "spent_hours": "90分"},
+                     {"title": "空", "spent_hours": ""}]})
+        got = [self.admin.get("/api/tickets/{}".format(i))[1]["ticket"]["spent_hours"]
+               for i in data["ticket_ids"]]
+        self.assertEqual([float(got[0]), float(got[1])], [1.5, 1.5])
+        self.assertIsNone(got[2])
+
+    def test_finished_tickets_add_up_in_the_stats(self):
+        first = self.make_ticket("2時間かかった", spent_hours=2)
+        second = self.make_ticket("3時間かかった", spent_hours=3)
+        for ticket in (first, second):
+            self.admin.patch("/api/tickets/{}".format(ticket["id"]), {"status": "done"})
+        data = self.admin.get(
+            "/api/tickets/stats?queue_id={}".format(self.queue["id"]))[1]
+        self.assertEqual(data["totals"]["spent_hours"], 5.0)
+        self.assertEqual(data["totals"]["spent_rows"], 2)
+
+    def test_unfinished_hours_are_not_counted(self):
+        self.make_ticket("まだ途中", spent_hours=8)
+        data = self.admin.get(
+            "/api/tickets/stats?queue_id={}".format(self.queue["id"]))[1]
+        self.assertIsNone(data["totals"]["spent_hours"])
+
+    def test_it_shows_up_per_person(self):
+        user, _email = self.make_user(name="時間を使う人")
+        ticket = self.make_ticket("その人の作業", assignee_id=user["id"], spent_hours=6)
+        self.admin.patch("/api/tickets/{}".format(ticket["id"]), {"status": "done"})
+        rows = {p["name"]: p for p in self.admin.get(
+            "/api/tickets/stats?queue_id={}".format(self.queue["id"]))[1]["by_assignee"]}
+        self.assertEqual(rows["時間を使う人"]["spent_hours"], 6.0)
+
+
+class TestStatsPeriod(TicketTestCase):
+    """集計は半年ぶんまでさかのぼれる。"""
+
+    def stats(self, **params):
+        query = "&".join("{}={}".format(k, v) for k, v in params.items())
+        return self.admin.get("/api/tickets/stats?" + query)[1]
+
+    def test_it_ends_today_by_default(self):
+        data = self.stats(unit="day", span=7)
+        self.assertEqual(data["end"], str(db.today()))
+        self.assertFalse(data["can_go_forward"])
+        self.assertTrue(data["can_go_back"])
+
+    def test_it_can_be_moved_back(self):
+        end = (db.today() - timedelta(days=30)).isoformat()
+        data = self.stats(unit="day", span=7, end=end)
+        self.assertEqual(data["end"], end)
+        self.assertTrue(data["can_go_forward"])
+
+    def test_it_stops_at_half_a_year(self):
+        data = self.stats(unit="day", span=7, end="2000-01-01")
+        self.assertFalse(data["can_go_back"])
+        earliest = db.today() - timedelta(days=186)
+        self.assertGreaterEqual(datetime.date.fromisoformat(data["from"]), earliest)
+
+    def test_the_future_is_pulled_back_to_today(self):
+        end = (db.today() + timedelta(days=90)).isoformat()
+        data = self.stats(unit="day", span=7, end=end)
+        self.assertEqual(data["end"], str(db.today()))
+        self.assertFalse(data["can_go_forward"])
+
+    def test_a_week_lands_on_a_monday(self):
+        data = self.stats(unit="week", span=4, end="2026-07-15")
+        self.assertEqual(datetime.date.fromisoformat(data["end"]).weekday(), 0)
+        self.assertEqual(len(data["buckets"]), 4)
+
+    def test_only_that_window_is_counted(self):
+        ticket = self.make_ticket("今日のもの")
+        void = ticket
+        del void
+        old = self.stats(unit="day", span=7, end=(db.today() - timedelta(days=60)).isoformat())
+        self.assertEqual(old["totals"]["created"], 0)
+        now = self.stats(unit="day", span=7)
+        self.assertGreaterEqual(now["totals"]["created"], 1)
+
+    def test_a_bad_date_is_ignored(self):
+        status, _ = self.admin.get("/api/tickets/stats?end=めちゃくちゃ")
+        self.assertEqual(status, 400)
 
 
 class TestTicketSearch(TicketTestCase):

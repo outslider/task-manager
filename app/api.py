@@ -3445,6 +3445,7 @@ TICKET_IMPORT_FIELDS = [
     ("assignee", "担当", "氏名またはメールアドレス"),
     ("due_date", "期限", "2026-04-01 / 2026/4/1 / 4月1日 など"),
     ("occurred_at", "発生日時", "障害のとき。2026-04-01 09:30 など"),
+    ("spent_hours", "対応時間", "かかった時間。1.5 / 90分 など。空欄でも構いません"),
     ("body", "内容", ""),
     ("resolution", "対応結果", ""),
     ("created_at", "受付日", "過去ぶんを入れるときに。空欄なら取り込んだ日時"),
@@ -3462,6 +3463,18 @@ def ticket_import_fields(ctx):
         "statuses": {label: value for value, label, _c in tickets.STATUSES},
         "priorities": {label: value for value, label in tickets.PRIORITY_LABEL.items()},
     })
+
+
+def _import_hours(value):
+    """「1.5」「90分」「2h」あたりをまとめて受ける。"""
+    text = _import_text(value)
+    if not text:
+        return None
+    minutes = re.match(r"^(\d+(?:\.\d+)?)\s*(?:分|min)$", text)
+    if minutes:
+        return round(float(minutes.group(1)) / 60, 1)
+    number = _import_number(text, 0, 9999)
+    return round(number, 1) if number is not None else None
 
 
 def _import_datetime(value):
@@ -3571,6 +3584,7 @@ def import_tickets(ctx):
             "on_behalf_of": _import_text(raw.get("on_behalf_of"))[:120],
             "assignee_id": assignee_id, "due_date": _import_date(raw.get("due_date")),
             "occurred_at": _import_datetime(raw.get("occurred_at")),
+            "spent_hours": _import_hours(raw.get("spent_hours")),
             "resolution": _import_text(raw.get("resolution")),
             "created_at": created, "resolved_at": resolved,
         })
@@ -3585,14 +3599,14 @@ def import_tickets(ctx):
     for item in prepared:
         created_ids.append(db.insert(
             "INSERT INTO tickets(queue_id, kind, category_id, title, body, status, priority, "
-            "requester_id, on_behalf_of, assignee_id, due_date, occurred_at, resolution, "
-            "resolved_at, created_at, updated_at) "
-            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "requester_id, on_behalf_of, assignee_id, due_date, occurred_at, spent_hours, "
+            "resolution, resolved_at, created_at, updated_at) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (item["queue_id"], item["kind"], item["category_id"], item["title"],
              item["body"], item["status"],
              item["priority"], user["id"], item["on_behalf_of"], item["assignee_id"],
-             item["due_date"], item["occurred_at"], item["resolution"], item["resolved_at"],
-             item["created_at"], item["created_at"])))
+             item["due_date"], item["occurred_at"], item["spent_hours"], item["resolution"],
+             item["resolved_at"], item["created_at"], item["created_at"])))
     return json_response({"created": len(created_ids), "ticket_ids": created_ids,
                           "problems": problems}, 201)
 
@@ -3608,13 +3622,20 @@ def ticket_stats(ctx):
     unit = "week" if (ctx.query.get("unit") or "day") == "week" else "day"
     span = as_int(ctx.query.get("span"), 14 if unit == "day" else 12, 1, 60)
     today = db.today()
-    if unit == "week":
-        last = today - timedelta(days=today.weekday())
-        starts = [last - timedelta(weeks=i) for i in range(span - 1, -1, -1)]
-        step = timedelta(weeks=1)
-    else:
-        starts = [today - timedelta(days=i) for i in range(span - 1, -1, -1)]
-        step = timedelta(days=1)
+    step = timedelta(weeks=1) if unit == "week" else timedelta(days=1)
+
+    def snap(day):
+        """週次なら、その日を含む週の月曜に寄せる。"""
+        return day - timedelta(days=day.weekday()) if unit == "week" else day
+
+    # end は表示する最後の区切り。さかのぼれるのは半年ぶんまで。
+    earliest = snap(today - timedelta(days=TICKET_STATS_MAX_DAYS))
+    asked = as_date(ctx.query.get("end"))
+    end = snap(date.fromisoformat(asked) if asked else today)
+    end = min(end, snap(today))
+    if end - (span - 1) * step < earliest:
+        end = min(snap(today), earliest + (span - 1) * step)
+    starts = [end - i * step for i in range(span - 1, -1, -1)]
     since = starts[0]
     until = starts[-1] + step
 
@@ -3661,8 +3682,10 @@ def ticket_stats(ctx):
                "OR (t.resolved_at >= %s AND t.resolved_at < %s AND t.status IN %s))")
     window = [since, until, since, until, closed]
     counts = ("SUM(t.created_at >= %s AND t.created_at < %s) AS created, "
-              "SUM(t.resolved_at >= %s AND t.resolved_at < %s AND t.status IN %s) AS resolved")
-    count_args = [since, until, since, until, closed]
+              "SUM(t.resolved_at >= %s AND t.resolved_at < %s AND t.status IN %s) AS resolved, "
+              "SUM(CASE WHEN t.resolved_at >= %s AND t.resolved_at < %s AND t.status IN %s "
+              "    THEN t.spent_hours END) AS spent")
+    count_args = [since, until, since, until, closed, since, until, closed]
 
     def grouped(select, joins, group):
         return db.query(
@@ -3670,17 +3693,23 @@ def ticket_stats(ctx):
             + " GROUP BY " + group,
             tuple(count_args + window + params))
 
+    def spent_of(row):
+        return round(float(row["spent"]), 1) if row["spent"] is not None else None
+
     by_queue = [{"queue_id": r["queue_id"], "name": r["name"], "color": r["color"],
-                 "created": int(r["created"] or 0), "resolved": int(r["resolved"] or 0)}
+                 "created": int(r["created"] or 0), "resolved": int(r["resolved"] or 0),
+                 "spent_hours": spent_of(r)}
                 for r in grouped("q.id AS queue_id, q.name, q.color", "", "q.id")]
     by_kind = [{"kind": r["kind"],
                 "label": tickets.KIND_LABEL.get(r["kind"], r["kind"]),
                 "icon": tickets.KIND_ICON.get(r["kind"], ""),
-                "created": int(r["created"] or 0), "resolved": int(r["resolved"] or 0)}
+                "created": int(r["created"] or 0), "resolved": int(r["resolved"] or 0),
+                "spent_hours": spent_of(r)}
                for r in grouped("t.kind", "", "t.kind")]
     by_category = [{"category_id": r["category_id"],
                     "label": r["label"] or "分類なし", "color": r["color"] or "#98a2b3",
-                    "created": int(r["created"] or 0), "resolved": int(r["resolved"] or 0)}
+                    "created": int(r["created"] or 0), "resolved": int(r["resolved"] or 0),
+                    "spent_hours": spent_of(r)}
                    for r in grouped(
                        "t.category_id, c.label, c.color",
                        " LEFT JOIN ticket_categories c ON c.id = t.category_id",
@@ -3696,12 +3725,14 @@ def ticket_stats(ctx):
         "user_id": r["assignee_id"], "name": r["name"] or "未割当",
         "avatar_color": r["avatar_color"] or "#98a2b3",
         "created": int(r["created"] or 0), "resolved": int(r["resolved"] or 0),
+        "spent_hours": spent_of(r),
         "turnaround_days": (round(float(r["avg_hours"]) / 24, 1)
                             if r["avg_hours"] is not None else None),
     } for r in people], key=lambda p: (-p["resolved"], -p["created"]))
 
     overall = db.query_one(
-        "SELECT AVG(TIMESTAMPDIFF(HOUR, t.created_at, t.resolved_at)) AS avg_hours"
+        "SELECT AVG(TIMESTAMPDIFF(HOUR, t.created_at, t.resolved_at)) AS avg_hours, "
+        "SUM(t.spent_hours) AS spent, COUNT(t.spent_hours) AS spent_rows"
         + frm + " WHERE t.resolved_at >= %s AND t.resolved_at < %s AND t.status IN %s"
         + clause, tuple([since, until, closed] + params)) or {}
     open_now = db.scalar(
@@ -3711,8 +3742,12 @@ def ticket_stats(ctx):
     return json_response({
         "unit": unit,
         "span": span,
+        "end": end.isoformat(),
         "from": since.isoformat(),
         "to": (until - timedelta(days=1)).isoformat(),
+        "can_go_back": since > earliest,
+        "can_go_forward": end < snap(today),
+        "earliest": earliest.isoformat(),
         "buckets": series,
         "totals": {
             "created": sum(b["created"] for b in series),
@@ -3720,6 +3755,9 @@ def ticket_stats(ctx):
             "open_now": open_now,
             "turnaround_days": (round(float(overall["avg_hours"]) / 24, 1)
                                 if overall.get("avg_hours") is not None else None),
+            "spent_hours": (round(float(overall["spent"]), 1)
+                            if overall.get("spent") is not None else None),
+            "spent_rows": int(overall.get("spent_rows") or 0),
         },
         "by_queue": sorted(by_queue, key=lambda q: -q["created"]),
         "by_kind": sorted(by_kind, key=lambda k: -k["created"]),
@@ -3746,8 +3784,8 @@ def create_ticket(ctx):
     now = db.now()
     ticket_id = db.insert(
         "INSERT INTO tickets(queue_id, kind, category_id, title, body, status, priority, "
-        "requester_id, on_behalf_of, assignee_id, due_date, occurred_at, created_at, "
-        "updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "requester_id, on_behalf_of, assignee_id, due_date, occurred_at, spent_hours, "
+        "created_at, updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (queue_id, tickets.kind(ctx.body.get("kind"), queue["default_kind"]),
          ticket_category(queue_id, ctx.body.get("category_id")),
          title, ctx.body.get("body") or "",
@@ -3755,7 +3793,7 @@ def create_ticket(ctx):
          as_int(ctx.body.get("priority"), 1, 0, 3), user["id"],
          (ctx.body.get("on_behalf_of") or "")[:120], assignee_id,
          as_date(ctx.body.get("due_date")), as_datetime(ctx.body.get("occurred_at")),
-         now, now))
+         as_hours(ctx.body.get("spent_hours")), now, now))
     if assignee_id and assignee_id != user["id"]:
         _notify_ticket_assignee(ticket_id, title, assignee_id, user)
     return json_response({"ticket": ticket_or_404(ticket_id)}, 201)
@@ -3883,6 +3921,15 @@ def update_ticket(ctx, ticket_id):
     if "occurred_at" in body:
         fields.append("occurred_at=%s")
         params.append(as_datetime(body["occurred_at"]))
+    if "spent_hours" in body:
+        hours = as_hours(body["spent_hours"])
+        old_hours = float(current["spent_hours"]) if current["spent_hours"] else None
+        if hours != old_hours:
+            notes.append("対応時間: {} → {}".format(
+                "未入力" if old_hours is None else "{}h".format(old_hours),
+                "未入力" if hours is None else "{}h".format(hours)))
+        fields.append("spent_hours=%s")
+        params.append(hours)
 
     if not fields:
         raise bad_request("更新する項目がありません")
@@ -4324,6 +4371,8 @@ def nl_extract(ctx):
 
 
 REVIEW_STALE_DAYS = 14
+# 集計をさかのぼれる範囲。半年より前は見ない。
+TICKET_STATS_MAX_DAYS = 186
 
 
 def _review_context(project, tasks, deps, analysis, load):

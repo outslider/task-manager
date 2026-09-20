@@ -124,6 +124,15 @@ async function renderDetail(instance, ticketId, onChange) {
     onChange: (event) => patch({ due_date: event.target.value || null }),
   });
 
+  // 対応時間は任意。入れておくと、あとで集計に出る。
+  const spentInput = el('input', {
+    class: 'input', type: 'number', step: '0.5', min: '0', placeholder: '—',
+    value: ticket.spent_hours ?? '',
+    onChange: (event) => patch({
+      spent_hours: event.target.value === '' ? null : Number(event.target.value),
+    }),
+  });
+
   const stillOpen = (meta.open_statuses || []).includes(ticket.status);
   const daysLeft = stillOpen ? dueDelta(ticket.due_date) : null;
   if (daysLeft !== null && daysLeft < 0) {
@@ -149,7 +158,8 @@ async function renderDetail(instance, ticketId, onChange) {
       ? el('div', {}, el('span', { class: 'label', text: '分類' }), categorySelect)
       : null,
     el('div', {}, el('span', { class: 'label', text: '担当' }), assigneeSelect),
-    el('div', {}, el('span', { class: 'label', text: '期限' }), dueInput)));
+    el('div', {}, el('span', { class: 'label', text: '期限' }), dueInput),
+    el('div', {}, el('span', { class: 'label', text: '対応時間 (h)' }), spentInput)));
 
   body.append(el('div', { class: 'meta-row' },
     el('span', { class: 'badge', text: `${kind.icon} ${kind.label}` }),

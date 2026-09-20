@@ -205,6 +205,7 @@ DDL = [
         due_date     DATE NULL,                           -- 回答・対応の期限
         occurred_at  DATETIME NULL,                       -- 障害の発生日時
         resolved_at  DATETIME NULL,
+        spent_hours  DECIMAL(6,1) NULL,                   -- かかった時間（任意）
         resolution   TEXT,                                -- 対応結果
         created_at   DATETIME NOT NULL,
         updated_at   DATETIME NOT NULL,
@@ -633,6 +634,8 @@ MIGRATIONS = [
      "DEFAULT 'request' AFTER project_id"),
     ("tickets", "category_id",
      "ALTER TABLE tickets ADD COLUMN category_id INT NULL AFTER kind"),
+    ("tickets", "spent_hours",
+     "ALTER TABLE tickets ADD COLUMN spent_hours DECIMAL(6,1) NULL AFTER resolved_at"),
 ]
 
 MIGRATION_INDEXES = [

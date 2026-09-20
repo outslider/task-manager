@@ -75,6 +75,10 @@ export async function openTicketForm({ ticket = null, queues = null } = {}) {
       f.due.value = ticket?.due_date || '';
       f.occurred = el('input', { class: 'input', type: 'datetime-local' });
       f.occurred.value = (ticket?.occurred_at || '').replace(' ', 'T').slice(0, 16);
+      f.spent = el('input', {
+        class: 'input', type: 'number', step: '0.5', min: '0', placeholder: '例）1.5',
+      });
+      f.spent.value = ticket?.spent_hours ?? '';
 
       const occurredField = el('div', { class: 'field' },
         el('label', { text: '発生日時' }), f.occurred,
@@ -104,7 +108,10 @@ export async function openTicketForm({ ticket = null, queues = null } = {}) {
         el('div', { class: 'row' },
           el('div', { class: 'field' }, el('label', { text: '担当' }), f.assignee),
           el('div', { class: 'field' }, el('label', { text: '期限' }), f.due),
-          occurredField));
+          occurredField,
+          el('div', { class: 'field' },
+            el('label', { text: '対応時間 (h)' }), f.spent,
+            el('div', { class: 'hint', text: '任意。あとで集計に使えます' }))));
     },
     footer: (close) => [
       el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
@@ -124,6 +131,7 @@ export async function openTicketForm({ ticket = null, queues = null } = {}) {
             due_date: f.due.value || null,
             occurred_at: f.kind.value === 'incident' ? (f.occurred.value || null) : null,
             category_id: f.category && f.category.value ? Number(f.category.value) : null,
+            spent_hours: f.spent.value === '' ? null : Number(f.spent.value),
           };
           const button = event.currentTarget;
           button.disabled = true;
