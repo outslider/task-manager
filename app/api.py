@@ -3105,6 +3105,7 @@ def add_issue_attachment(ctx, issue_id):
 
 TICKET_SELECT = """
     SELECT t.*, q.name AS queue_name, q.color AS queue_color, q.icon AS queue_icon,
+           q.project_id AS queue_project_id, qp.name AS queue_project_name,
            a.name AS assignee_name, a.avatar_color AS assignee_color,
            r.name AS requester_name, r.avatar_color AS requester_color,
            (SELECT COUNT(*) FROM ticket_tasks tt WHERE tt.ticket_id = t.id) AS task_count,
@@ -3116,6 +3117,7 @@ TICKET_SELECT = """
            (SELECT COUNT(*) FROM attachments at WHERE at.ticket_id = t.id) AS attachment_count
       FROM tickets t
       JOIN ticket_queues q ON q.id = t.queue_id
+      LEFT JOIN projects qp ON qp.id = q.project_id
       LEFT JOIN users a ON a.id = t.assignee_id
       LEFT JOIN users r ON r.id = t.requester_id
 """
@@ -3141,28 +3143,47 @@ def can_drop_ticket(user, ticket):
 
 
 def queue_or_404(queue_id):
-    row = db.query_one("SELECT * FROM ticket_queues WHERE id=%s", (queue_id,))
+    row = db.query_one(QUEUE_SELECT + " WHERE q.id=%s", (tickets.OPEN_STATUSES, queue_id))
     if not row:
         raise not_found("窓口が見つかりません")
     return row
 
 
+def queue_project(user, body, current=None):
+    """窓口に紐づけるプロジェクト。無指定ならそのまま、null なら外す。
+
+    紐づけは「タスクにするときの既定の行き先」を決めるためのもので、
+    チケットの見える範囲は変えない（チケットは社内の誰でも読める）。
+    """
+    if "project_id" not in body:
+        return current["project_id"] if current else None
+    project_id = as_int(body["project_id"])
+    if project_id is None:
+        return None
+    project_or_404(user, project_id)
+    return project_id
+
+
+QUEUE_SELECT = """
+    SELECT q.*, p.name AS project_name, p.color AS project_color, p.archived AS project_archived,
+           (SELECT COUNT(*) FROM tickets t WHERE t.queue_id = q.id) AS ticket_count,
+           (SELECT COUNT(*) FROM tickets t WHERE t.queue_id = q.id AND t.status IN %s)
+               AS open_count
+      FROM ticket_queues q
+      LEFT JOIN projects p ON p.id = q.project_id
+"""
+
+
 @route("GET", r"/api/ticket-queues")
 def list_queues(ctx):
     me(ctx)
-    rows = db.query(
-        "SELECT q.*, "
-        "(SELECT COUNT(*) FROM tickets t WHERE t.queue_id = q.id) AS ticket_count, "
-        "(SELECT COUNT(*) FROM tickets t WHERE t.queue_id = q.id AND t.status IN %s) "
-        "  AS open_count "
-        "FROM ticket_queues q ORDER BY q.sort_order, q.id",
-        (tickets.OPEN_STATUSES,))
+    rows = db.query(QUEUE_SELECT + " ORDER BY q.sort_order, q.id", (tickets.OPEN_STATUSES,))
     return json_response({"queues": rows})
 
 
 @route("POST", r"/api/ticket-queues")
 def create_queue(ctx):
-    admin_only(ctx)
+    user = admin_only(ctx)
     name = require(ctx.body, "name", "窓口名")
     order = as_int(ctx.body.get("sort_order"))
     if order is None:
@@ -3170,10 +3191,11 @@ def create_queue(ctx):
                            default=0) or 0) + 10
     try:
         queue_id = db.insert(
-            "INSERT INTO ticket_queues(name, description, color, icon, sort_order, "
-            "is_active, created_at) VALUES(%s,%s,%s,%s,%s,%s,%s)",
+            "INSERT INTO ticket_queues(name, description, color, icon, project_id, "
+            "sort_order, is_active, created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
             (name[:80], (ctx.body.get("description") or "")[:300],
              (ctx.body.get("color") or "#3b6ef5")[:20], (ctx.body.get("icon") or "")[:8],
+             queue_project(user, ctx.body),
              order, 0 if "is_active" in ctx.body and not as_bool(ctx.body["is_active"]) else 1,
              db.now()))
     except pymysql.err.IntegrityError:
@@ -3183,9 +3205,12 @@ def create_queue(ctx):
 
 @route("PATCH", r"/api/ticket-queues/(\d+)")
 def update_queue(ctx, queue_id):
-    admin_only(ctx)
-    queue_or_404(queue_id)
+    user = admin_only(ctx)
+    current = queue_or_404(queue_id)
     fields, params = [], []
+    if "project_id" in ctx.body:
+        fields.append("project_id=%s")
+        params.append(queue_project(user, ctx.body, current))
     if "name" in ctx.body:
         fields.append("name=%s")
         params.append(require(ctx.body, "name", "窓口名")[:80])
@@ -3231,6 +3256,11 @@ def list_tickets(ctx):
     if queue_id:
         where.append("t.queue_id=%s")
         params.append(queue_id)
+    project_id = as_int(ctx.query.get("project_id"))
+    if project_id:
+        # そのプロジェクト専用の窓口に来ているものだけ
+        where.append("q.project_id=%s")
+        params.append(project_id)
     status = (ctx.query.get("status") or "open").strip()
     if status == "open":
         where.append("t.status IN %s")
@@ -3541,7 +3571,7 @@ def create_task_from_ticket(ctx, ticket_id):
     """チケットの内容でタスクを起票し、そのまま結びつける。"""
     user = me(ctx)
     ticket = ticket_or_404(ticket_id)
-    project_id = as_int(ctx.body.get("project_id"))
+    project_id = as_int(ctx.body.get("project_id")) or ticket["queue_project_id"]
     if project_id is None:
         raise bad_request("登録先のプロジェクトを選んでください")
     project_or_404(user, project_id, "editor")
@@ -3585,7 +3615,7 @@ def create_issue_from_ticket(ctx, ticket_id):
     """作業ではなく論点だったときに、プロジェクトの課題管理表へ移す。"""
     user = me(ctx)
     ticket = ticket_or_404(ticket_id)
-    project_id = as_int(ctx.body.get("project_id"))
+    project_id = as_int(ctx.body.get("project_id")) or ticket["queue_project_id"]
     if project_id is None:
         raise bad_request("登録先のプロジェクトを選んでください")
     project_or_404(user, project_id, "editor")

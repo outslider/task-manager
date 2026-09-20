@@ -771,6 +771,10 @@ async function renderQueues(container) {
           el('div', { class: 'meta-row', style: { margin: '10px 0' } },
             el('span', { class: 'legend-swatch',
               style: { background: queue.color, width: '14px', height: '14px' } }),
+            queue.project_id
+              ? el('span', { class: 'badge',
+                text: `📁 ${queue.project_name}${queue.project_archived ? '（終了）' : ''}` })
+              : el('span', { class: 'hint', text: 'プロジェクトの紐づけなし' }),
             el('span', { class: 'hint', text: `全 ${queue.ticket_count} 件` })),
           el('div', { style: { display: 'flex', gap: '6px' } },
             el('button', { class: 'btn btn-sm', onClick: () => edit(queue) }, '編集'),
@@ -798,6 +802,13 @@ async function renderQueues(container) {
     description.value = queue?.description || '';
     const icon = el('input', { class: 'input', maxlength: '4', placeholder: '📮' });
     icon.value = queue?.icon || '';
+    const project = el('select', { class: 'select' },
+      el('option', { value: '', selected: queue?.project_id ? null : true },
+        'どのプロジェクトにも紐づけない'),
+      ...store.projects.filter((p) => !p.archived || p.id === queue?.project_id)
+        .map((p) => el('option', {
+          value: p.id, selected: String(queue?.project_id || '') === String(p.id) ? true : null,
+        }, p.name)));
     const color = el('input', { type: 'color', class: 'input', value: queue?.color || '#3b6ef5' });
     const order = el('input', { class: 'input', type: 'number', step: '10' });
     order.value = String(queue?.sort_order ?? 0);
@@ -809,6 +820,11 @@ async function renderQueues(container) {
       build: () => el('div', {},
         el('div', { class: 'field' }, el('label', { text: '窓口名 *' }), name),
         el('div', { class: 'field' }, el('label', { text: '説明' }), description),
+        el('div', { class: 'field' },
+          el('label', { text: 'プロジェクト' }), project,
+          el('div', { class: 'hint',
+            text: '紐づけると、この窓口のチケットを「タスクにする」とき、'
+              + 'そのプロジェクトが最初から選ばれます。誰が読めるかは変わりません。' })),
         el('div', { class: 'row' },
           el('div', { class: 'field' }, el('label', { text: '記号' }), icon,
             el('div', { class: 'hint', text: '絵文字ひとつ' })),
@@ -824,6 +840,7 @@ async function renderQueues(container) {
             const payload = {
               name: name.value.trim(), description: description.value.trim(),
               icon: icon.value.trim(), color: color.value,
+              project_id: project.value ? Number(project.value) : null,
               sort_order: Number(order.value) || 0, is_active: active.checked,
             };
             if (!payload.name) { toast('窓口名を入れてください', 'error'); return; }

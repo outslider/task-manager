@@ -84,15 +84,18 @@ export async function render(container) {
 
   async function drawQueues() {
     const { queues } = await api.get('/api/ticket-queues');
-    const tab = (id, label, count) => el('button', {
+    const tab = (id, label, count, project) => el('button', {
       class: `queue-tab${String(state.queue_id) === String(id) ? ' active' : ''}`,
+      title: project ? `${project} 専用の窓口` : '',
       onClick: () => { state.queue_id = id; drawQueues(); load(); },
-    }, label, count ? el('span', { class: 'badge', text: String(count) }) : null);
+    }, label,
+    project ? el('span', { class: 'queue-tab-project', text: project }) : null,
+    count ? el('span', { class: 'badge', text: String(count) }) : null);
     fill(queueHost,
       tab('', 'すべての窓口', queues.reduce((n, q) => n + q.open_count, 0)),
       ...queues
         .filter((q) => q.is_active || String(state.queue_id) === String(q.id) || q.ticket_count)
-        .map((q) => tab(q.id, `${q.icon || '📮'} ${q.name}`, q.open_count)));
+        .map((q) => tab(q.id, `${q.icon || '📮'} ${q.name}`, q.open_count, q.project_name)));
   }
 
   async function load() {

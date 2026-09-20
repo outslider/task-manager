@@ -85,6 +85,98 @@ class TestQueues(TicketTestCase):
         self.assertEqual(queue["open_count"], 1)
 
 
+class TestProjectQueues(TicketTestCase):
+    """プロジェクト専用の窓口。行き先が決まるだけで、見える範囲は変わらない。"""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project("窓口つきPJ")
+
+    def test_a_queue_can_be_tied_to_a_project(self):
+        queue = self.make_queue("PJ窓口", project_id=self.project["id"])
+        self.assertEqual(queue["project_id"], self.project["id"])
+        self.assertEqual(queue["project_name"], "窓口つきPJ")
+
+    def test_a_queue_without_a_project_stays_loose(self):
+        self.assertIsNone(self.queue["project_id"])
+
+    def test_the_link_can_be_removed_later(self):
+        queue = self.make_queue("あとで外す窓口", project_id=self.project["id"])
+        _status, data = self.admin.patch("/api/ticket-queues/{}".format(queue["id"]),
+                                         {"project_id": None})
+        self.assertIsNone(data["queue"]["project_id"])
+
+    def test_an_unknown_project_is_rejected(self):
+        status, _ = self.admin.post("/api/ticket-queues",
+                                    {"name": "でたらめ窓口", "project_id": 999999})
+        self.assertIn(status, (400, 404))
+
+    def test_a_task_goes_to_that_project_without_being_told(self):
+        queue = self.make_queue("行き先つき窓口", project_id=self.project["id"])
+        _status, made = self.admin.post("/api/tickets",
+                                        {"queue_id": queue["id"], "title": "やってほしい"})
+        status, data = self.admin.post(
+            "/api/tickets/{}/task".format(made["ticket"]["id"]), {})
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["task"]["project_name"], "窓口つきPJ")
+
+    def test_an_issue_goes_there_too(self):
+        queue = self.make_queue("論点窓口", project_id=self.project["id"])
+        _status, made = self.admin.post("/api/tickets",
+                                        {"queue_id": queue["id"], "title": "決めたい"})
+        status, data = self.admin.post(
+            "/api/tickets/{}/issue".format(made["ticket"]["id"]), {})
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["issue"]["project_name"], "窓口つきPJ")
+
+    def test_an_explicit_project_still_wins(self):
+        other = self.make_project("別のPJ")
+        queue = self.make_queue("上書き窓口", project_id=self.project["id"])
+        _status, made = self.admin.post("/api/tickets",
+                                        {"queue_id": queue["id"], "title": "こっちに出す"})
+        _status, data = self.admin.post(
+            "/api/tickets/{}/task".format(made["ticket"]["id"]),
+            {"project_id": other["id"]})
+        self.assertEqual(data["task"]["project_name"], "別のPJ")
+
+    def test_a_loose_queue_still_needs_a_project(self):
+        ticket = self.make_ticket()
+        status, _ = self.admin.post("/api/tickets/{}/task".format(ticket["id"]), {})
+        self.assertEqual(status, 400)
+
+    def test_the_ticket_carries_which_project_its_queue_serves(self):
+        queue = self.make_queue("持ち回り窓口", project_id=self.project["id"])
+        _status, made = self.admin.post("/api/tickets",
+                                        {"queue_id": queue["id"], "title": "確認"})
+        self.assertEqual(made["ticket"]["queue_project_name"], "窓口つきPJ")
+
+    def test_tickets_can_be_listed_by_project(self):
+        queue = self.make_queue("絞り込み窓口", project_id=self.project["id"])
+        self.admin.post("/api/tickets", {"queue_id": queue["id"], "title": "PJ宛て"})
+        self.make_ticket("どこでもない宛て")
+        titles = [t["title"] for t in self.admin.get(
+            "/api/tickets?project_id={}".format(self.project["id"]))[1]["tickets"]]
+        self.assertEqual(titles, ["PJ宛て"])
+
+    def test_someone_outside_the_project_can_still_read_it(self):
+        queue = self.make_queue("外から見える窓口", project_id=self.project["id"])
+        _status, made = self.admin.post("/api/tickets",
+                                        {"queue_id": queue["id"], "title": "誰でも読める"})
+        _user, email = self.make_user()
+        status, _ = self.client_for(email).get(
+            "/api/tickets/{}".format(made["ticket"]["id"]))
+        self.assertEqual(status, 200)
+
+    def test_but_they_cannot_push_work_into_that_project(self):
+        queue = self.make_queue("権限のいる窓口", project_id=self.project["id"])
+        _status, made = self.admin.post("/api/tickets",
+                                        {"queue_id": queue["id"], "title": "勝手に積めない"})
+        _user, email = self.make_user()
+        status, _ = self.client_for(email).post(
+            "/api/tickets/{}/task".format(made["ticket"]["id"]), {})
+        self.assertIn(status, (403, 404))
+
+
 class TestRaisingTickets(TicketTestCase):
     def test_anyone_logged_in_can_raise_one(self):
         _user, email = self.make_user()

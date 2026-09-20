@@ -29,7 +29,9 @@ export async function openTicketForm({ ticket = null, queues = null } = {}) {
     wide: true,
     build: () => {
       f.queue = el('select', { class: 'select' },
-        ...open.map((q) => option(q.id, `${q.icon || '📮'} ${q.name}`,
+        ...open.map((q) => option(
+          q.id,
+          `${q.icon || '📮'} ${q.name}${q.project_name ? `（${q.project_name}）` : ''}`,
           String(ticket?.queue_id || open[0].id) === String(q.id))));
       f.kind = el('select', { class: 'select' },
         ...meta.kinds.map((k) => option(k.value, `${k.icon} ${k.label}`,

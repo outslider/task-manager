@@ -60,7 +60,9 @@ async function renderDetail(instance, ticketId, onChange) {
   const head = el('div', { class: 'drawer-head' },
     el('div', { style: { minWidth: 0, flex: 1 } },
       el('div', { class: 'breadcrumb' },
-        `${ticket.queue_icon || '📮'} ${ticket.queue_name} ・ チケット #${ticket.id}`),
+        `${ticket.queue_icon || '📮'} ${ticket.queue_name}`
+        + (ticket.queue_project_name ? ` （${ticket.queue_project_name}）` : '')
+        + ` ・ チケット #${ticket.id}`),
       el('h2', { text: ticket.title, style: { whiteSpace: 'normal' } })),
     el('button', {
       class: 'icon-btn', title: '編集',
@@ -251,14 +253,20 @@ function writableProjects() {
   return (store.projects || []).filter((p) => !p.archived && store.canEdit(p));
 }
 
+/** 窓口にプロジェクトが紐づいていれば、そこを最初から選んでおく。 */
+function projectSelect(ticket, projects) {
+  return el('select', { class: 'select' },
+    ...projects.map((p) => option(
+      p.id, p.name, String(ticket.queue_project_id || '') === String(p.id))));
+}
+
 async function makeTask(ticket, reload) {
   const projects = writableProjects();
   if (!projects.length) {
     toast('タスクを追加できるプロジェクトがありません', 'error');
     return;
   }
-  const project = el('select', { class: 'select' },
-    ...projects.map((p) => option(p.id, p.name)));
+  const project = projectSelect(ticket, projects);
   const title = el('input', { class: 'input' });
   title.value = ticket.title;
   const category = categorySelect('');
@@ -311,8 +319,7 @@ async function makeIssue(ticket, reload) {
     toast('課題を追加できるプロジェクトがありません', 'error');
     return;
   }
-  const project = el('select', { class: 'select' },
-    ...projects.map((p) => option(p.id, p.name)));
+  const project = projectSelect(ticket, projects);
   const title = el('input', { class: 'input' });
   title.value = ticket.title;
 

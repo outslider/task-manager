@@ -166,10 +166,14 @@ DDL = [
         description VARCHAR(300) NOT NULL DEFAULT '',
         color       VARCHAR(20)  NOT NULL DEFAULT '#3b6ef5',
         icon        VARCHAR(8)   NOT NULL DEFAULT '',
+        project_id  INT NULL,                          -- 特定プロジェクト専用の窓口にする場合
         sort_order  INT          NOT NULL DEFAULT 0,
         is_active   TINYINT(1)   NOT NULL DEFAULT 1,
         created_at  DATETIME     NOT NULL,
-        UNIQUE KEY uq_queue_name (name)
+        UNIQUE KEY uq_queue_name (name),
+        KEY idx_queue_project (project_id),
+        CONSTRAINT fk_queue_project FOREIGN KEY (project_id) REFERENCES projects(id)
+            ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
@@ -603,6 +607,8 @@ MIGRATIONS = [
      "ALTER TABLE comments ADD COLUMN ticket_id INT NULL AFTER issue_id"),
     ("attachments", "ticket_id",
      "ALTER TABLE attachments ADD COLUMN ticket_id INT NULL AFTER issue_id"),
+    ("ticket_queues", "project_id",
+     "ALTER TABLE ticket_queues ADD COLUMN project_id INT NULL AFTER icon"),
 ]
 
 MIGRATION_INDEXES = [
@@ -614,6 +620,8 @@ MIGRATION_INDEXES = [
      "ALTER TABLE comments ADD KEY idx_comments_ticket (ticket_id)"),
     ("attachments", "idx_attachments_ticket",
      "ALTER TABLE attachments ADD KEY idx_attachments_ticket (ticket_id)"),
+    ("ticket_queues", "idx_queue_project",
+     "ALTER TABLE ticket_queues ADD KEY idx_queue_project (project_id)"),
 ]
 
 # Comments and attachments originally belonged to a task only; issues reuse them.
@@ -635,6 +643,9 @@ MIGRATION_FKS = [
     ("attachments", "fk_att_ticket",
      "ALTER TABLE attachments ADD CONSTRAINT fk_att_ticket "
      "FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE"),
+    ("ticket_queues", "fk_queue_project",
+     "ALTER TABLE ticket_queues ADD CONSTRAINT fk_queue_project "
+     "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL"),
 ]
 
 
