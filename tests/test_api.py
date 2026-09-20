@@ -586,6 +586,17 @@ class TestNotificationsAndDaily(ApiTestCase):
         self.assertGreaterEqual(first, 1)
         self.assertEqual(second, 0, "同じ日に同じ通知を重複作成しないこと")
 
+    def test_daily_rows_carry_what_the_screen_shows(self):
+        """一覧にカテゴリの記号と最終更新を出すので、日次のデータにも含めること。"""
+        project = self.make_project()
+        admin_id = self.admin.get("/api/auth/me")[1]["user"]["id"]
+        self.make_task(project["id"], "分類つきの遅れ", assignee_id=admin_id,
+                       due_date="2020-01-01", category="meeting")
+        buckets = self.admin.get("/api/daily")[1]["buckets"]
+        task = next(t for t in buckets["overdue"] if t["title"] == "分類つきの遅れ")
+        self.assertEqual(task["category"], "meeting")
+        self.assertIn("updated_at", task)
+
     def test_daily_buckets_and_batch_update(self):
         project = self.make_project()
         admin_id = self.admin.get("/api/auth/me")[1]["user"]["id"]

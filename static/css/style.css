@@ -1141,3 +1141,22 @@ button, input, select, textarea { font: inherit; color: inherit; }
   text-overflow: ellipsis; white-space: nowrap; }
 .link-note { font-size: 12px; color: var(--text-muted); flex: 0 1 auto; }
 .link-actions { display: flex; gap: 2px; flex: 0 0 auto; }
+
+/* ---------- 今日の確認：見た目の調整 ---------- */
+/* 見出しを押して開け閉めする区分 */
+.card-head.foldable { cursor: pointer; user-select: none; }
+.card-head.foldable:hover { background: var(--surface-2); }
+.fold-mark { font-size: 10px; color: var(--text-muted); margin-right: 2px; }
+.card.daily-bucket.folded .card-head { border-bottom: none; }
+
+/* 0 件の数字は控えめにして、目が必要なところへ向くようにする */
+.card.stat.zero .v { color: var(--text-muted); opacity: .45; }
+.card.stat.zero .k { opacity: .7; }
+
+/* タイトル行に添えるカテゴリの記号 */
+.daily-cat { font-size: 14px; line-height: 1; flex: 0 0 auto; }
+
+/* メモと実績時間は必要なときだけ開く */
+.daily-extra { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.daily-hours { display: flex; align-items: center; gap: 8px; }
+.daily-hours .hint { margin: 0; }

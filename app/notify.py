@@ -243,7 +243,8 @@ def daily_summary_for(user_id, exclude_muted=False):
     visible = visible_project_ids(user_id)
     rows = db.query(
         """
-        SELECT t.id, t.title, t.status, t.progress, t.due_date, t.priority,
+        SELECT t.id, t.title, t.status, t.progress, t.due_date, t.priority, t.category,
+               t.updated_at,
                p.name AS project_name, p.id AS project_id, p.notify_enabled
           FROM tasks t JOIN projects p ON p.id = t.project_id
          WHERE t.assignee_id = %s AND t.status IN %s AND p.archived = 0

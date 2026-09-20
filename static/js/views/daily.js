@@ -1,7 +1,7 @@
 /* Daily check-in: review everything due and update it in a couple of clicks. */
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
-import { store, STATUS_LABEL, ISSUE_STATUS_LABEL, SEVERITY_LABEL } from '../store.js';
+import { store, category, STATUS_LABEL, ISSUE_STATUS_LABEL, SEVERITY_LABEL } from '../store.js';
 import { clear, dueClass, el, fill, formatDate, formatDateTime, toast } from '../util.js';
 import { openTaskDetail } from './taskDetail.js';
 import { openIssueDetail } from './issueDetail.js';
@@ -10,17 +10,30 @@ const BUCKETS = [
   { key: 'overdue', label: '期限超過', tone: 'overdue', icon: '🔥' },
   { key: 'today', label: '本日期限', tone: 'soon', icon: '📌' },
   { key: 'soon', label: 'まもなく期限', tone: 'soon', icon: '⏳' },
-  { key: 'no_due', label: '期限未設定', tone: '', icon: '❓' },
-  { key: 'later', label: '先の予定', tone: '', icon: '🗓' },
+  // 今日の判断には要らないので、既定ではたたんでおく
+  { key: 'no_due', label: '期限未設定', tone: '', icon: '❓', folded: true },
+  { key: 'later', label: '先の予定', tone: '', icon: '🗓', folded: true },
 ];
+const FOLD_KEY = 'tm.daily.folded';
+
+function loadFolded() {
+  try {
+    const saved = localStorage.getItem(FOLD_KEY);
+    if (saved !== null) return new Set(JSON.parse(saved));
+  } catch { /* private mode */ }
+  return new Set(BUCKETS.filter((b) => b.folded).map((b) => b.key));
+}
+
+function saveFolded(set) {
+  try { localStorage.setItem(FOLD_KEY, JSON.stringify([...set])); } catch { /* ignore */ }
+}
 
 export async function render(container) {
   const data = await api.daily();
   const pending = new Map();   // task_id -> { progress, status, note }
+  const folded = loadFolded();
 
-  setHeader('今日の確認', [
-    el('a', { class: 'btn', href: '#/mytasks' }, 'マイタスク一覧'),
-  ]);
+  setHeader('今日の確認');
 
   const counts = {
     overdue: data.buckets.overdue.length,
@@ -58,9 +71,10 @@ export async function render(container) {
     listHost, saveBar);
 
   function statCard(label, value, tone) {
-    return el('div', { class: 'card stat' },
+    // 0 のカードまで同じ濃さだと、目を向けるべきところが分からなくなる
+    return el('div', { class: `card stat${value ? '' : ' zero'}` },
       el('div', { class: 'k', text: label }),
-      el('div', { class: `v ${tone}`.trim(), text: String(value) }));
+      el('div', { class: `v ${value ? tone : ''}`.trim(), text: String(value) }));
   }
 
   function draw() {
@@ -70,11 +84,7 @@ export async function render(container) {
       const items = data.buckets[bucket.key] || [];
       if (!items.length) continue;
       rendered += items.length;
-      listHost.append(el('div', { class: 'card daily-bucket' },
-        el('div', { class: 'card-head' },
-          el('h2', {}, `${bucket.icon} ${bucket.label}`),
-          el('span', { class: `badge ${bucket.tone}`, text: `${items.length} 件` })),
-        el('div', { class: 'card-body tight' }, ...items.map(taskItem))));
+      listHost.append(bucketCard(bucket, items));
     }
     if (data.stale.length) {
       listHost.append(el('div', { class: 'card daily-bucket' },
@@ -163,15 +173,28 @@ export async function render(container) {
     }
   }
 
+  /** 区分ごとのまとまり。見出しを押すと開け閉めできる。 */
+  function bucketCard(bucket, items) {
+    const closed = folded.has(bucket.key);
+    const body = el('div', { class: 'card-body tight', hidden: closed },
+      ...(closed ? [] : items.map(taskItem)));
+    const head = el('div', { class: 'card-head foldable' },
+      el('h2', {},
+        el('span', { class: 'fold-mark', text: closed ? '▶' : '▼' }),
+        ` ${bucket.icon} ${bucket.label}`),
+      el('span', { class: `badge ${bucket.tone}`.trim(), text: `${items.length} 件` }));
+    head.addEventListener('click', () => {
+      if (folded.has(bucket.key)) folded.delete(bucket.key);
+      else folded.add(bucket.key);
+      saveFolded(folded);
+      draw();
+    });
+    return el('div', { class: `card daily-bucket${closed ? ' folded' : ''}` }, head, body);
+  }
+
   function taskItem(task) {
     const change = pending.get(task.id) || {};
     const row = el('div', { class: `daily-item${pending.has(task.id) ? ' changed' : ''}` });
-
-    const progressLabel = el('span', {
-      class: 'cell-mut',
-      text: `${change.progress ?? task.progress}%`,
-      style: { minWidth: '38px', textAlign: 'right' },
-    });
 
     const markChanged = () => {
       row.classList.add('changed');
@@ -186,7 +209,6 @@ export async function render(container) {
         if (value === 100) entry.status = 'done';
         else if ((entry.status || task.status) === 'done') entry.status = 'doing';
         pending.set(task.id, entry);
-        progressLabel.textContent = `${value}%`;
         [...quick].forEach((b, i) => b.classList.toggle('active', [0, 25, 50, 75, 100][i] === value));
         statusSelect.value = entry.status || task.status;
         markChanged();
@@ -205,7 +227,7 @@ export async function render(container) {
       el('option', { value, selected: (change.status || task.status) === value ? true : null }, label)));
 
     const hoursBox = el('input', {
-      class: 'input qhours', type: 'number', min: 0, step: 0.5, placeholder: '実績h',
+      class: 'input qhours', type: 'number', min: 0, step: 0.5, placeholder: '実績 h',
       title: '今日かけた時間（任意）。保存すると実績工数に足されます',
       onInput: (event) => {
         const entry = pending.get(task.id) || {};
@@ -217,8 +239,8 @@ export async function render(container) {
     });
 
     const noteBox = el('textarea', {
-      class: 'textarea', hidden: true, placeholder: 'ひとことメモ（タスクのコメントとして残ります）',
-      style: { minHeight: '54px', marginTop: '6px' },
+      class: 'textarea', placeholder: 'ひとことメモ（タスクのコメントとして残ります）',
+      style: { minHeight: '54px' },
       onInput: (event) => {
         const entry = pending.get(task.id) || {};
         entry.note = event.target.value;
@@ -228,9 +250,22 @@ export async function render(container) {
       },
     });
 
+    // メモと実績時間は毎日使うものではないので、💬 を押したときだけ出す
+    const extra = el('div', { class: 'daily-extra', hidden: true },
+      noteBox,
+      el('label', { class: 'daily-hours' },
+        el('span', { class: 'hint', text: '今日かけた時間' }), hoursBox));
+
     row.append(
       el('div', { style: { minWidth: 0 } },
         el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+          task.category
+            ? el('span', {
+              class: 'daily-cat', title: category(task.category).label,
+              style: { color: category(task.category).color },
+              text: category(task.category).icon,
+            })
+            : null,
           el('a', {
             href: '#', style: { fontWeight: 550 },
             onClick: (event) => {
@@ -248,15 +283,15 @@ export async function render(container) {
         el('div', { class: 'page-sub' },
           task.project_name,
           task.updated_at ? ` · 最終更新 ${formatDateTime(task.updated_at)}` : ''),
-        noteBox),
+        extra),
       el('div', { class: 'daily-controls' },
-        ...quick, progressLabel, statusSelect, hoursBox,
+        ...quick, statusSelect,
         el('button', {
-          class: 'qbtn', title: 'メモを書く',
+          class: 'qbtn', title: 'メモと実績時間を書く',
           onClick: (event) => {
-            noteBox.hidden = !noteBox.hidden;
-            event.currentTarget.classList.toggle('active', !noteBox.hidden);
-            if (!noteBox.hidden) noteBox.focus();
+            extra.hidden = !extra.hidden;
+            event.currentTarget.classList.toggle('active', !extra.hidden);
+            if (!extra.hidden) noteBox.focus();
           },
         }, '💬')));
     return row;
