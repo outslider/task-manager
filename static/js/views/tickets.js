@@ -14,9 +14,10 @@ const KEY = 'tm.tickets.filter';
 function loadFilter() {
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || '{}');
-    return { queue_id: '', status: 'open', kind: '', scope: '', q: '', ...saved };
+    return { queue_id: '', status: 'open', kind: '', scope: '', q: '',
+      category_id: '', ...saved };
   } catch {
-    return { queue_id: '', status: 'open', kind: '', scope: '', q: '' };
+    return { queue_id: '', status: 'open', kind: '', scope: '', q: '', category_id: '' };
   }
 }
 
@@ -75,10 +76,25 @@ export async function render(container) {
     ['unassigned', '担当が未定'],
   ], state.scope, (value) => { state.scope = value; load(); });
 
+  // 分類は窓口ごとなので、窓口を選んでいるときだけ出す
+  const categoryHost = el('span', {});
+  function drawCategoryFilter() {
+    const queue = queues.find((q) => String(q.id) === String(state.queue_id));
+    const list = queue?.categories || [];
+    if (!list.length) {
+      state.category_id = '';
+      fill(categoryHost);
+      return;
+    }
+    fill(categoryHost, select([
+      ['', '分類: すべて'], ...list.map((c) => [c.id, c.label]),
+    ], state.category_id, (value) => { state.category_id = value; load(); }));
+  }
+
   const listCard = el('div', { class: 'card' },
     el('div', { class: 'card-head' }, queueHost),
     el('div', { class: 'toolbar' },
-      search, statusSelect, kindSelect, scopeSelect,
+      search, statusSelect, kindSelect, categoryHost, scopeSelect,
       el('span', { class: 'spacer' }), countHost),
     el('div', { class: 'card-body tight' }, listHost));
 
@@ -107,12 +123,14 @@ export async function render(container) {
     return node;
   }
 
+  let queues = [];
+
   async function drawQueues() {
-    const { queues } = await api.get('/api/ticket-queues');
+    ({ queues } = await api.get('/api/ticket-queues'));
     const tab = (id, label, count, project) => el('button', {
       class: `queue-tab${String(state.queue_id) === String(id) ? ' active' : ''}`,
       title: project ? `${project} 専用の窓口` : '',
-      onClick: () => { state.queue_id = id; drawQueues(); load(); },
+      onClick: () => { state.queue_id = id; state.category_id = ''; drawQueues(); load(); },
     }, label,
     project ? el('span', { class: 'queue-tab-project', text: project }) : null,
     count ? el('span', { class: 'badge', text: String(count) }) : null);
@@ -121,13 +139,14 @@ export async function render(container) {
       ...queues
         .filter((q) => q.is_active || String(state.queue_id) === String(q.id) || q.ticket_count)
         .map((q) => tab(q.id, `${q.icon || '📮'} ${q.name}`, q.open_count, q.project_name)));
+    drawCategoryFilter();
   }
 
   async function load() {
     saveFilter(state);
     fill(listHost, el('div', { class: 'empty', text: '読み込み中…' }));
     const params = new URLSearchParams();
-    for (const key of ['queue_id', 'status', 'kind', 'scope', 'q']) {
+    for (const key of ['queue_id', 'status', 'kind', 'scope', 'q', 'category_id']) {
       if (state[key]) params.set(key, state[key]);
     }
     let data;
@@ -202,6 +221,12 @@ export async function render(container) {
           : null,
         ticket.issue_count
           ? el('span', { class: 'badge', title: '関連課題', text: `📌 ${ticket.issue_count}` })
+          : null,
+        ticket.category_label
+          ? el('span', { class: 'cat-chip sm', style: {
+            background: `${ticket.category_color}1f`, color: ticket.category_color,
+            borderColor: `${ticket.category_color}55`,
+          } }, ticket.category_label)
           : null,
         ticket.comment_count
           ? el('span', { class: 'ticket-meta-icon', text: `💬${ticket.comment_count}` })

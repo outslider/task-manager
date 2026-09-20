@@ -3,7 +3,7 @@
  * 溜まっているかどうかは、この 2 本の差を見れば分かる。
  * 数字はそのまま CSV に落とせるようにしておく。 */
 import { api } from '../api.js';
-import { downloadBlob, el, fill, toISO, today } from '../util.js';
+import { avatar, downloadBlob, el, fill, toISO, today } from '../util.js';
 
 const UNITS = [
   { value: 'day', label: '日次', spans: [7, 14, 30, 60] },
@@ -15,6 +15,7 @@ export async function ticketStats({ queueId = '', onBack } = {}) {
   const host = el('div', {});
   const chartHost = el('div', {});
   const breakdownHost = el('div', { class: 'grid cols-2', style: { marginTop: '14px' } });
+  // 表が 3 つ以上になっても、2 列で素直に折り返す
   const totalHost = el('div', { class: 'grid cols-4', style: { marginBottom: '14px' } });
 
   const unitSeg = el('div', { class: 'seg' },
@@ -93,34 +94,66 @@ export async function ticketStats({ queueId = '', onBack } = {}) {
         el('div', { class: 'tk-label', text: b.label })))));
   }
 
-  function drawBreakdown() {
-    const table = (title, rows, nameOf) => el('div', { class: 'card' },
+  /**
+   * 内訳の表。extra を渡すと 1 列足せる（担当者の平均日数など）。
+   */
+  function table(title, rows, nameOf, extra) {
+    return el('div', { class: 'card' },
       el('div', { class: 'card-head' }, el('h2', {}, title)),
       el('div', { class: 'card-body tight' },
         rows.length
           ? el('div', { class: 'table-wrap' }, el('table', { class: 'table' },
             el('thead', {}, el('tr', {},
               el('th', { text: '' }), el('th', { text: '受けた' }),
-              el('th', { text: '片付いた' }))),
+              el('th', { text: '片付いた' }),
+              extra ? el('th', { text: extra.label }) : null)),
             el('tbody', {}, ...rows.map((row) => el('tr', {},
               el('td', {}, nameOf(row)),
               el('td', { text: String(row.created) }),
-              el('td', { text: String(row.resolved) }))))))
+              el('td', { text: String(row.resolved) }),
+              extra ? el('td', {}, extra.cell(row)) : null)))))
           : el('div', { class: 'empty', text: 'この期間の動きはありません' })));
+  }
 
+  function drawBreakdown() {
+    const data = state.data;
     fill(breakdownHost,
-      table('窓口ごと', state.data.by_queue, (row) => el('span', {},
+      table('担当者ごと', data.by_assignee, (row) => el('span', { class: 'avatar-stack' },
+        avatar({ name: row.name, avatar_color: row.avatar_color }, 'sm'),
+        el('span', { text: row.name })), {
+        label: '平均日数',
+        cell: (row) => el('span', {
+          class: row.turnaround_days === null ? 'hint' : '',
+          text: row.turnaround_days === null ? '—' : `${row.turnaround_days} 日`,
+        }),
+      }),
+      data.has_categories
+        ? table('分類ごと', data.by_category, (row) => el('span', {},
+          el('span', { class: 'dot', style: { background: row.color } }),
+          el('span', { text: row.label })))
+        : null,
+      table('窓口ごと', data.by_queue, (row) => el('span', {},
         el('span', { class: 'dot', style: { background: row.color } }),
         el('span', { text: row.name }))),
-      table('種別ごと', state.data.by_kind, (row) =>
+      table('種別ごと', data.by_kind, (row) =>
         el('span', { text: `${row.icon} ${row.label}` })));
   }
 
   function exportCsv() {
     if (!state.data) return;
+    const d = state.data;
     const unit = state.unit === 'day' ? '日' : '週';
-    const header = [`期間（${unit}）`, '受けた', '片付いた'];
-    const rows = state.data.buckets.map((b) => [b.key, b.created, b.resolved]);
+    const header = ['区切り', '名前', '受けた', '片付いた', '平均日数'];
+    const rows = [
+      ...d.buckets.map((b) => [`期間（${unit}）`, b.key, b.created, b.resolved, '']),
+      ...d.by_assignee.map((p) =>
+        ['担当者', p.name, p.created, p.resolved, p.turnaround_days ?? '']),
+      ...(d.has_categories
+        ? d.by_category.map((c) => ['分類', c.label, c.created, c.resolved, ''])
+        : []),
+      ...d.by_queue.map((q) => ['窓口', q.name, q.created, q.resolved, '']),
+      ...d.by_kind.map((k) => ['種別', k.label, k.created, k.resolved, '']),
+    ];
     const escape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
     const csv = [header, ...rows].map((r) => r.map(escape).join(',')).join('\r\n');
     downloadBlob(new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8' }),

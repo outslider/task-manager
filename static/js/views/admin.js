@@ -743,6 +743,10 @@ async function renderTaxonomy(container) {
 /** チケットの受付窓口。部署や用途ごとに分けて、閉じた窓口は受付だけ止める。 */
 async function renderQueues(container) {
   const grid = el('div', { class: 'grid cols-3' });
+  const kindLabel = (value) => {
+    const found = (store.meta?.tickets?.kinds || []).find((k) => k.value === value);
+    return found ? `${found.icon} ${found.label}` : '依頼';
+  };
 
   fill(container,
     el('div', { class: 'page-head' },
@@ -777,6 +781,17 @@ async function renderQueues(container) {
                 text: `📁 ${queue.project_name}${queue.project_archived ? '（終了）' : ''}` })
               : el('span', { class: 'hint', text: 'プロジェクトの紐づけなし' }),
             el('span', { class: 'hint', text: `全 ${queue.ticket_count} 件` })),
+          el('div', { class: 'hint', style: { margin: '8px 0 4px' },
+            text: `既定の種別: ${kindLabel(queue.default_kind)}` }),
+          el('div', { class: 'meta-row', style: { marginBottom: '10px' } },
+            queue.categories?.length
+              ? el('span', { class: 'hint', text: '分類:' })
+              : el('span', { class: 'hint', text: '分類なし' }),
+            ...(queue.categories || []).map((cat) => el('span', {
+              class: 'cat-chip',
+              style: { background: `${cat.color}1f`, color: cat.color,
+                borderColor: `${cat.color}55` },
+            }, cat.label))),
           el('div', { style: { display: 'flex', gap: '6px' } },
             el('button', { class: 'btn btn-sm', onClick: () => edit(queue) }, '編集'),
             el('button', {
@@ -803,6 +818,49 @@ async function renderQueues(container) {
     description.value = queue?.description || '';
     const icon = iconPicker(queue?.icon || '',
       store.meta?.tickets?.queue_icons || ['📮']);
+    const meta = store.meta?.tickets || { kinds: [] };
+    const defaultKind = el('select', { class: 'select' },
+      ...meta.kinds.map((k) => el('option', {
+        value: k.value,
+        selected: (queue?.default_kind || 'request') === k.value ? true : null,
+      }, `${k.icon} ${k.label}`)));
+    // 分類は窓口ごと。行を足したり消したりして、保存でまとめて反映する。
+    const cats = (queue?.categories || []).map((c) => ({ ...c }));
+    const catHost = el('div', { class: 'queue-cats' });
+    const drawCats = () => {
+      fill(catHost, ...cats.map((cat, index) => {
+        const label = el('input', {
+          class: 'input', value: cat.label, maxlength: 60, placeholder: '分類名',
+        });
+        label.addEventListener('input', () => { cat.label = label.value; });
+        const color = el('input', { type: 'color', class: 'input', value: cat.color || '#98a2b3' });
+        color.addEventListener('input', () => { cat.color = color.value; });
+        return el('div', { class: 'queue-cat-row' },
+          label, color,
+          el('button', {
+            class: 'icon-btn', type: 'button', title: '上へ',
+            disabled: index === 0 ? true : null,
+            onClick: () => { cats.splice(index - 1, 0, cats.splice(index, 1)[0]); drawCats(); },
+          }, '↑'),
+          el('button', {
+            class: 'icon-btn', type: 'button', title: '下へ',
+            disabled: index === cats.length - 1 ? true : null,
+            onClick: () => { cats.splice(index + 1, 0, cats.splice(index, 1)[0]); drawCats(); },
+          }, '↓'),
+          el('button', {
+            class: 'icon-btn', type: 'button', title: '削除',
+            onClick: () => { cats.splice(index, 1); drawCats(); },
+          }, '×'));
+      }),
+      cats.length
+        ? null
+        : el('div', { class: 'hint', text: '分類なしで運用します（起票時に分類は出ません）' }),
+      el('button', {
+        class: 'btn btn-sm', type: 'button', style: { marginTop: '6px' },
+        onClick: () => { cats.push({ label: '', color: '#98a2b3' }); drawCats(); },
+      }, '＋ 分類を追加'));
+    };
+    drawCats();
     const project = el('select', { class: 'select' },
       el('option', { value: '', selected: queue?.project_id ? null : true },
         'どのプロジェクトにも紐づけない'),
@@ -826,6 +884,14 @@ async function renderQueues(container) {
           el('div', { class: 'hint',
             text: '紐づけると、この窓口のチケットを「タスクにする」とき、'
               + 'そのプロジェクトが最初から選ばれます。誰が読めるかは変わりません。' })),
+        el('div', { class: 'field' },
+          el('label', { text: '起票したときの種別' }), defaultKind,
+          el('div', { class: 'hint', text: 'この窓口で最初から選ばれている種別です' })),
+        el('div', { class: 'field' },
+          el('label', { text: '分類（この窓口だけ）' }), catHost,
+          el('div', { class: 'hint',
+            text: '「PC・端末」「ネットワーク」のように、この窓口の中の分け方を決められます。'
+              + '消した分類を使っていたチケットは「分類なし」に戻ります。' })),
         el('div', { class: 'row' },
           el('div', { class: 'field' }, el('label', { text: '記号' }), icon.node,
             el('div', { class: 'hint', text: 'クリックして選びます' })),
@@ -842,6 +908,8 @@ async function renderQueues(container) {
               name: name.value.trim(), description: description.value.trim(),
               icon: icon.value(), color: color.value,
               project_id: project.value ? Number(project.value) : null,
+              default_kind: defaultKind.value,
+              categories: cats.filter((c) => c.label.trim()),
               sort_order: Number(order.value) || 0, is_active: active.checked,
             };
             if (!payload.name) { toast('窓口名を入れてください', 'error'); return; }

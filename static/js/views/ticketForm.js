@@ -1,7 +1,7 @@
 /* チケットの起票・編集ダイアログ。 */
 import { api } from '../api.js';
 import { store } from '../store.js';
-import { el, openModal, toast } from '../util.js';
+import { el, fill, openModal, toast } from '../util.js';
 import { option, userSelect } from './pickers.js';
 
 function ticketMeta() {
@@ -33,9 +33,27 @@ export async function openTicketForm({ ticket = null, queues = null } = {}) {
           q.id,
           `${q.icon || '📮'} ${q.name}${q.project_name ? `（${q.project_name}）` : ''}`,
           String(ticket?.queue_id || open[0].id) === String(q.id))));
+      const queueOf = () => open.find((q) => String(q.id) === f.queue.value) || open[0];
       f.kind = el('select', { class: 'select' },
         ...meta.kinds.map((k) => option(k.value, `${k.icon} ${k.label}`,
-          (ticket?.kind || 'request') === k.value)));
+          (ticket?.kind || queueOf().default_kind || 'request') === k.value)));
+      // 分類は窓口ごとに違う。窓口が変わったら選択肢ごと入れ替える。
+      const categoryHost = el('div', {});
+      const categoryField = el('div', { class: 'field' },
+        el('label', { text: '分類' }), categoryHost);
+      f.category = null;
+      const drawCategory = () => {
+        const queue = queueOf();
+        const list = queue.categories || [];
+        categoryField.hidden = list.length === 0;
+        if (!list.length) { f.category = null; fill(categoryHost); return; }
+        const keep = String(ticket?.queue_id || '') === String(queue.id)
+          ? ticket?.category_id : null;
+        f.category = el('select', { class: 'select' },
+          option('', '分類なし', !keep),
+          ...list.map((c) => option(c.id, c.label, String(keep || '') === String(c.id))));
+        fill(categoryHost, f.category);
+      };
       f.title = el('input', {
         class: 'input', placeholder: '例）共有フォルダの権限を追加してほしい',
       });
@@ -63,12 +81,21 @@ export async function openTicketForm({ ticket = null, queues = null } = {}) {
         el('div', { class: 'hint', text: '障害のときだけ' }));
       const syncKind = () => { occurredField.hidden = f.kind.value !== 'incident'; };
       f.kind.addEventListener('change', syncKind);
+      f.queue.addEventListener('change', () => {
+        drawCategory();
+        if (!editing) {
+          f.kind.value = queueOf().default_kind || 'request';
+          syncKind();
+        }
+      });
+      drawCategory();
       syncKind();
 
       return el('div', {},
         el('div', { class: 'row' },
           el('div', { class: 'field' }, el('label', { text: '窓口 *' }), f.queue),
-          el('div', { class: 'field' }, el('label', { text: '種別' }), f.kind)),
+          el('div', { class: 'field' }, el('label', { text: '種別' }), f.kind),
+          categoryField),
         el('div', { class: 'field' }, el('label', { text: '件名 *' }), f.title),
         el('div', { class: 'field' }, el('label', { text: '内容' }), f.body),
         el('div', { class: 'row' },
@@ -96,6 +123,7 @@ export async function openTicketForm({ ticket = null, queues = null } = {}) {
             assignee_id: f.assignee.value ? Number(f.assignee.value) : null,
             due_date: f.due.value || null,
             occurred_at: f.kind.value === 'incident' ? (f.occurred.value || null) : null,
+            category_id: f.category && f.category.value ? Number(f.category.value) : null,
           };
           const button = event.currentTarget;
           button.disabled = true;

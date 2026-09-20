@@ -3103,24 +3103,58 @@ def add_issue_attachment(ctx, issue_id):
 # チケット側はプロジェクトの権限を持たない。
 # --------------------------------------------------------------------------
 
-TICKET_SELECT = """
+# 一覧では 1 行ずつ数えると件数ぶんサブクエリが走るので、本体は軽くしておき、
+# 関連件数は返す行ぶんだけ後からまとめて引く（attach_counts）。
+TICKET_BASE = """
     SELECT t.*, q.name AS queue_name, q.color AS queue_color, q.icon AS queue_icon,
            q.project_id AS queue_project_id, qp.name AS queue_project_name,
+           c.label AS category_label, c.color AS category_color,
            a.name AS assignee_name, a.avatar_color AS assignee_color,
-           r.name AS requester_name, r.avatar_color AS requester_color,
-           (SELECT COUNT(*) FROM ticket_tasks tt WHERE tt.ticket_id = t.id) AS task_count,
-           (SELECT COUNT(*) FROM ticket_tasks tt JOIN tasks tk ON tk.id = tt.task_id
-             WHERE tt.ticket_id = t.id AND tk.status <> 'done') AS open_task_count,
-           (SELECT COUNT(*) FROM ticket_issues ti WHERE ti.ticket_id = t.id) AS issue_count,
-           (SELECT COUNT(*) FROM comments c
-             WHERE c.ticket_id = t.id AND c.kind = 'comment') AS comment_count,
-           (SELECT COUNT(*) FROM attachments at WHERE at.ticket_id = t.id) AS attachment_count
+           r.name AS requester_name, r.avatar_color AS requester_color
       FROM tickets t
       JOIN ticket_queues q ON q.id = t.queue_id
       LEFT JOIN projects qp ON qp.id = q.project_id
+      LEFT JOIN ticket_categories c ON c.id = t.category_id
       LEFT JOIN users a ON a.id = t.assignee_id
       LEFT JOIN users r ON r.id = t.requester_id
 """
+TICKET_SELECT = TICKET_BASE
+
+COUNT_KEYS = ("task_count", "open_task_count", "issue_count",
+              "comment_count", "attachment_count")
+
+
+def attach_counts(rows):
+    """関連タスク・課題・コメント・添付の件数を、まとめて 4 回で数える。"""
+    for row in rows:
+        for key in COUNT_KEYS:
+            row[key] = 0
+    ids = [row["id"] for row in rows]
+    if not ids:
+        return rows
+    scope = tuple(ids)
+    by_id = {row["id"]: row for row in rows}
+
+    for item in db.query(
+            "SELECT tt.ticket_id AS id, COUNT(*) AS n, "
+            "SUM(tk.status <> 'done') AS open_n "
+            "FROM ticket_tasks tt JOIN tasks tk ON tk.id = tt.task_id "
+            "WHERE tt.ticket_id IN %s GROUP BY tt.ticket_id", (scope,)):
+        by_id[item["id"]]["task_count"] = int(item["n"])
+        by_id[item["id"]]["open_task_count"] = int(item["open_n"] or 0)
+    for item in db.query(
+            "SELECT ticket_id AS id, COUNT(*) AS n FROM ticket_issues "
+            "WHERE ticket_id IN %s GROUP BY ticket_id", (scope,)):
+        by_id[item["id"]]["issue_count"] = int(item["n"])
+    for item in db.query(
+            "SELECT ticket_id AS id, COUNT(*) AS n FROM comments "
+            "WHERE ticket_id IN %s AND kind='comment' GROUP BY ticket_id", (scope,)):
+        by_id[item["id"]]["comment_count"] = int(item["n"])
+    for item in db.query(
+            "SELECT ticket_id AS id, COUNT(*) AS n FROM attachments "
+            "WHERE ticket_id IN %s GROUP BY ticket_id", (scope,)):
+        by_id[item["id"]]["attachment_count"] = int(item["n"])
+    return rows
 
 
 def next_issue_seq(project_id):
@@ -3134,6 +3168,7 @@ def ticket_or_404(ticket_id):
     row = db.query_one(TICKET_SELECT + " WHERE t.id=%s", (ticket_id,))
     if not row:
         raise not_found("チケットが見つかりません")
+    attach_counts([row])
     return row
 
 
@@ -3146,7 +3181,56 @@ def queue_or_404(queue_id):
     row = db.query_one(QUEUE_SELECT + " WHERE q.id=%s", (tickets.OPEN_STATUSES, queue_id))
     if not row:
         raise not_found("窓口が見つかりません")
+    attach_categories([row])
     return row
+
+
+def save_queue_categories(queue_id, items):
+    """窓口の分類を、渡された並びのとおりに作り直す。
+
+    id が付いている行は名前と色だけ更新する。消えた分類を使っていた
+    チケットは「分類なし」に戻る（外部キーが SET NULL）。
+    """
+    if not isinstance(items, list):
+        raise bad_request("分類の形式が正しくありません")
+    if len(items) > 40:
+        raise bad_request("分類は 40 件までにしてください")
+    keep = []
+    for order, raw in enumerate(items):
+        if not isinstance(raw, dict):
+            continue
+        label = (raw.get("label") or "").strip()[:60]
+        if not label:
+            continue
+        color = (raw.get("color") or "#98a2b3")[:20]
+        current = as_int(raw.get("id"))
+        if current and db.query_one(
+                "SELECT 1 AS x FROM ticket_categories WHERE id=%s AND queue_id=%s",
+                (current, queue_id)):
+            db.execute(
+                "UPDATE ticket_categories SET label=%s, color=%s, sort_order=%s WHERE id=%s",
+                (label, color, (order + 1) * 10, current))
+            keep.append(current)
+        else:
+            keep.append(db.insert(
+                "INSERT INTO ticket_categories(queue_id, label, color, sort_order) "
+                "VALUES(%s,%s,%s,%s)", (queue_id, label, color, (order + 1) * 10)))
+    if keep:
+        db.execute("DELETE FROM ticket_categories WHERE queue_id=%s AND id NOT IN %s",
+                   (queue_id, tuple(keep)))
+    else:
+        db.execute("DELETE FROM ticket_categories WHERE queue_id=%s", (queue_id,))
+
+
+def ticket_category(queue_id, value, current=None):
+    """その窓口にある分類かどうかを見る。他の窓口のものは受け取らない。"""
+    category_id = as_int(value)
+    if category_id is None:
+        return None
+    row = db.query_one("SELECT queue_id FROM ticket_categories WHERE id=%s", (category_id,))
+    if not row or row["queue_id"] != queue_id:
+        raise bad_request("その分類はこの窓口にありません")
+    return category_id
 
 
 def queue_project(user, body, current=None):
@@ -3174,11 +3258,25 @@ QUEUE_SELECT = """
 """
 
 
+def attach_categories(rows):
+    """窓口ごとの分類をまとめて引いて配る。1 件ずつ引くとすぐ N+1 になる。"""
+    ids = [row["id"] for row in rows]
+    by_queue = {}
+    if ids:
+        for cat in db.query(
+                "SELECT id, queue_id, label, color, sort_order FROM ticket_categories "
+                "WHERE queue_id IN %s ORDER BY sort_order, id", (tuple(ids),)):
+            by_queue.setdefault(cat["queue_id"], []).append(cat)
+    for row in rows:
+        row["categories"] = by_queue.get(row["id"], [])
+    return rows
+
+
 @route("GET", r"/api/ticket-queues")
 def list_queues(ctx):
     me(ctx)
     rows = db.query(QUEUE_SELECT + " ORDER BY q.sort_order, q.id", (tickets.OPEN_STATUSES,))
-    return json_response({"queues": rows})
+    return json_response({"queues": attach_categories(rows)})
 
 
 @route("POST", r"/api/ticket-queues")
@@ -3192,14 +3290,17 @@ def create_queue(ctx):
     try:
         queue_id = db.insert(
             "INSERT INTO ticket_queues(name, description, color, icon, project_id, "
-            "sort_order, is_active, created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
+            "default_kind, sort_order, is_active, created_at) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (name[:80], (ctx.body.get("description") or "")[:300],
              (ctx.body.get("color") or "#3b6ef5")[:20], (ctx.body.get("icon") or "")[:8],
-             queue_project(user, ctx.body),
+             queue_project(user, ctx.body), tickets.kind(ctx.body.get("default_kind")),
              order, 0 if "is_active" in ctx.body and not as_bool(ctx.body["is_active"]) else 1,
              db.now()))
     except pymysql.err.IntegrityError:
         raise bad_request("同じ名前の窓口があります")
+    if "categories" in ctx.body:
+        save_queue_categories(queue_id, ctx.body["categories"])
     return json_response({"queue": queue_or_404(queue_id)}, 201)
 
 
@@ -3224,8 +3325,13 @@ def update_queue(ctx, queue_id):
     if "is_active" in ctx.body:
         fields.append("is_active=%s")
         params.append(1 if as_bool(ctx.body["is_active"]) else 0)
+    if "default_kind" in ctx.body:
+        fields.append("default_kind=%s")
+        params.append(tickets.kind(ctx.body["default_kind"], current["default_kind"]))
+    if "categories" in ctx.body:
+        save_queue_categories(queue_id, ctx.body["categories"])
     if not fields:
-        raise bad_request("更新する項目がありません")
+        return json_response({"queue": queue_or_404(queue_id)})
     params.append(queue_id)
     try:
         db.execute("UPDATE ticket_queues SET {} WHERE id=%s".format(", ".join(fields)), params)
@@ -3272,6 +3378,10 @@ def list_tickets(ctx):
     if kind in tickets.KIND_VALUES:
         where.append("t.kind=%s")
         params.append(kind)
+    category_id = as_int(ctx.query.get("category_id"))
+    if category_id:
+        where.append("t.category_id=%s")
+        params.append(category_id)
     scope = (ctx.query.get("scope") or "").strip()
     if scope == "mine":
         where.append("t.assignee_id=%s")
@@ -3291,11 +3401,11 @@ def list_tickets(ctx):
         params += ["%{}%".format(q)] * 3
 
     clause = (" WHERE " + " AND ".join(where)) if where else ""
-    rows = db.query(
+    rows = attach_counts(db.query(
         TICKET_SELECT + clause
         + " ORDER BY t.status IN %s DESC, t.priority DESC, "
           "t.due_date IS NULL, t.due_date, t.id DESC LIMIT 400",
-        tuple(params) + (tickets.CLOSED_STATUSES,))
+        tuple(params) + (tickets.CLOSED_STATUSES,)))
     today = db.today()
     week_start = today - timedelta(days=today.weekday())
     month_start = today.replace(day=1)
@@ -3330,6 +3440,7 @@ TICKET_IMPORT_FIELDS = [
     ("kind", "種別", "依頼 / 問い合わせ / 障害"),
     ("status", "状態", "受付待ち / 対応中 / 保留 / 完了 / 取り下げ"),
     ("priority", "優先度", "低 / 中 / 高 / 緊急 または 0〜3"),
+    ("category", "分類", "その窓口に登録してある分類名"),
     ("on_behalf_of", "依頼元", "「営業部 田中」など"),
     ("assignee", "担当", "氏名またはメールアドレス"),
     ("due_date", "期限", "2026-04-01 / 2026/4/1 / 4月1日 など"),
@@ -3379,10 +3490,17 @@ def import_tickets(ctx):
         raise bad_request("一度に取り込めるのは 1000 行までです")
     dry_run = as_bool(ctx.body.get("dry_run"))
     fallback_queue = as_int(ctx.body.get("queue_id"))
+    fallback_row = None
     if fallback_queue:
-        queue_or_404(fallback_queue)
+        fallback_row = db.query_one("SELECT * FROM ticket_queues WHERE id=%s",
+                                    (fallback_queue,))
+        if not fallback_row:
+            raise not_found("窓口が見つかりません")
 
     queues = {q["name"].strip(): q for q in db.query("SELECT * FROM ticket_queues")}
+    categories = {}
+    for row in db.query("SELECT id, queue_id, label FROM ticket_categories"):
+        categories[(row["queue_id"], row["label"].strip())] = row["id"]
     people = {}
     for person in db.query("SELECT id, name, email FROM users WHERE is_active=1"):
         people[person["name"].strip()] = person["id"]
@@ -3408,7 +3526,8 @@ def import_tickets(ctx):
             problems.append({"line": line,
                              "message": "窓口「{}」がありません".format(queue_name)})
             continue
-        queue_id = queue["id"] if queue else fallback_queue
+        queue = queue or fallback_row
+        queue_id = queue["id"] if queue else None
         if not queue_id:
             problems.append({"line": line, "message": "窓口が決まっていません"})
             continue
@@ -3422,8 +3541,18 @@ def import_tickets(ctx):
                     "line": line,
                     "message": "「{}」という人が見つかりません".format(assignee_text)})
 
+        category_text = _import_text(raw.get("category"))
+        category_id = None
+        if category_text:
+            category_id = categories.get((queue_id, category_text))
+            if not category_id:
+                problems.append({
+                    "line": line,
+                    "message": "分類「{}」はこの窓口にありません".format(category_text)})
+
         kind_text = _import_text(raw.get("kind"))
-        kind = kind_by_label.get(kind_text) or tickets.kind(kind_text)
+        default_kind = (queue or {}).get("default_kind") or tickets.DEFAULT_KIND
+        kind = kind_by_label.get(kind_text) or tickets.kind(kind_text, default_kind)
         status_text = _import_text(raw.get("status"))
         status = status_by_label.get(status_text) or tickets.status(status_text)
         priority_text = _import_text(raw.get("priority"))
@@ -3436,7 +3565,8 @@ def import_tickets(ctx):
         created = _import_datetime(raw.get("created_at")) or db.now()
         resolved = created if status in tickets.CLOSED_STATUSES else None
         prepared.append({
-            "queue_id": queue_id, "kind": kind, "title": title[:300],
+            "queue_id": queue_id, "kind": kind, "category_id": category_id,
+            "title": title[:300],
             "body": _import_text(raw.get("body")), "status": status, "priority": priority,
             "on_behalf_of": _import_text(raw.get("on_behalf_of"))[:120],
             "assignee_id": assignee_id, "due_date": _import_date(raw.get("due_date")),
@@ -3454,10 +3584,12 @@ def import_tickets(ctx):
     created_ids = []
     for item in prepared:
         created_ids.append(db.insert(
-            "INSERT INTO tickets(queue_id, kind, title, body, status, priority, requester_id, "
-            "on_behalf_of, assignee_id, due_date, occurred_at, resolution, resolved_at, "
-            "created_at, updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (item["queue_id"], item["kind"], item["title"], item["body"], item["status"],
+            "INSERT INTO tickets(queue_id, kind, category_id, title, body, status, priority, "
+            "requester_id, on_behalf_of, assignee_id, due_date, occurred_at, resolution, "
+            "resolved_at, created_at, updated_at) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (item["queue_id"], item["kind"], item["category_id"], item["title"],
+             item["body"], item["status"],
              item["priority"], user["id"], item["on_behalf_of"], item["assignee_id"],
              item["due_date"], item["occurred_at"], item["resolution"], item["resolved_at"],
              item["created_at"], item["created_at"])))
@@ -3470,7 +3602,7 @@ def ticket_stats(ctx):
     """日次・週次で、受けた数と片付いた数を数える。
 
     受付日は created_at、完了日は resolved_at で数える。
-    片付いた日に数えるので、日付をまたいだぶんは完了した側の日に入る。
+    件数が増えても重くならないよう、集計はすべて SQL 側でやる。
     """
     me(ctx)
     unit = "week" if (ctx.query.get("unit") or "day") == "week" else "day"
@@ -3496,60 +3628,86 @@ def ticket_stats(ctx):
         where.append("q.project_id=%s")
         params.append(project_id)
     clause = (" AND " + " AND ".join(where)) if where else ""
+    closed = tickets.CLOSED_STATUSES
 
-    def bucket_of(value):
-        if not value:
-            return None
-        day = value.date() if hasattr(value, "date") else value
-        if day < since or day >= until:
-            return None
+    def bucket(column):
+        """日次はその日、週次はその週の月曜にまとめる。"""
         if unit == "week":
-            return (day - timedelta(days=day.weekday())).isoformat()
-        return day.isoformat()
+            return "DATE(DATE_SUB({0}, INTERVAL WEEKDAY({0}) DAY))".format(column)
+        return "DATE({})".format(column)
 
-    rows = db.query(
-        "SELECT t.id, t.kind, t.status, t.created_at, t.resolved_at, t.queue_id, "
-        "       q.name AS queue_name, q.color AS queue_color "
-        "  FROM tickets t JOIN ticket_queues q ON q.id = t.queue_id "
-        " WHERE (t.created_at >= %s OR t.resolved_at >= %s)" + clause,
-        tuple([since, since] + params))
+    frm = " FROM tickets t JOIN ticket_queues q ON q.id = t.queue_id"
+    # 受けたぶんと片付いたぶんは期間の取り方が違うので、別々に数える
+    made_rows = db.query(
+        "SELECT {} AS k, COUNT(*) AS n".format(bucket("t.created_at")) + frm
+        + " WHERE t.created_at >= %s AND t.created_at < %s" + clause + " GROUP BY k",
+        tuple([since, until] + params))
+    done_rows = db.query(
+        "SELECT {} AS k, COUNT(*) AS n".format(bucket("t.resolved_at")) + frm
+        + " WHERE t.resolved_at >= %s AND t.resolved_at < %s AND t.status IN %s"
+        + clause + " GROUP BY k",
+        tuple([since, until, closed] + params))
+    made_by = {str(r["k"]): int(r["n"]) for r in made_rows}
+    done_by = {str(r["k"]): int(r["n"]) for r in done_rows}
+    series = [{
+        "key": day.isoformat(),
+        "label": "{}/{}".format(day.month, day.day),
+        "created": made_by.get(day.isoformat(), 0),
+        "resolved": done_by.get(day.isoformat(), 0),
+    } for day in starts]
 
-    buckets = {}
-    for start in starts:
-        key = start.isoformat()
-        buckets[key] = {
-            "key": key,
-            "label": "{}/{}".format(start.month, start.day),
-            "created": 0, "resolved": 0,
-        }
-    by_queue, by_kind = {}, {}
-    hours, closed = 0.0, 0
-    for row in rows:
-        made = bucket_of(row["created_at"])
-        done = bucket_of(row["resolved_at"]) if row["status"] in tickets.CLOSED_STATUSES else None
-        if made:
-            buckets[made]["created"] += 1
-        if done:
-            buckets[done]["resolved"] += 1
-        if not made and not done:
-            continue
-        queue = by_queue.setdefault(row["queue_id"], {
-            "queue_id": row["queue_id"], "name": row["queue_name"],
-            "color": row["queue_color"], "created": 0, "resolved": 0})
-        kind = by_kind.setdefault(row["kind"], {
-            "kind": row["kind"], "label": tickets.KIND_LABEL.get(row["kind"], row["kind"]),
-            "icon": tickets.KIND_ICON.get(row["kind"], ""), "created": 0, "resolved": 0})
-        if made:
-            queue["created"] += 1
-            kind["created"] += 1
-        if done:
-            queue["resolved"] += 1
-            kind["resolved"] += 1
-            if row["created_at"] and row["resolved_at"]:
-                hours += (row["resolved_at"] - row["created_at"]).total_seconds() / 3600
-                closed += 1
+    # 内訳。受けたぶん・片付いたぶんを 1 回の GROUP BY で数える。
+    touched = (" WHERE ((t.created_at >= %s AND t.created_at < %s) "
+               "OR (t.resolved_at >= %s AND t.resolved_at < %s AND t.status IN %s))")
+    window = [since, until, since, until, closed]
+    counts = ("SUM(t.created_at >= %s AND t.created_at < %s) AS created, "
+              "SUM(t.resolved_at >= %s AND t.resolved_at < %s AND t.status IN %s) AS resolved")
+    count_args = [since, until, since, until, closed]
 
-    series = list(buckets.values())
+    def grouped(select, joins, group):
+        return db.query(
+            "SELECT " + select + ", " + counts + frm + joins + touched + clause
+            + " GROUP BY " + group,
+            tuple(count_args + window + params))
+
+    by_queue = [{"queue_id": r["queue_id"], "name": r["name"], "color": r["color"],
+                 "created": int(r["created"] or 0), "resolved": int(r["resolved"] or 0)}
+                for r in grouped("q.id AS queue_id, q.name, q.color", "", "q.id")]
+    by_kind = [{"kind": r["kind"],
+                "label": tickets.KIND_LABEL.get(r["kind"], r["kind"]),
+                "icon": tickets.KIND_ICON.get(r["kind"], ""),
+                "created": int(r["created"] or 0), "resolved": int(r["resolved"] or 0)}
+               for r in grouped("t.kind", "", "t.kind")]
+    by_category = [{"category_id": r["category_id"],
+                    "label": r["label"] or "分類なし", "color": r["color"] or "#98a2b3",
+                    "created": int(r["created"] or 0), "resolved": int(r["resolved"] or 0)}
+                   for r in grouped(
+                       "t.category_id, c.label, c.color",
+                       " LEFT JOIN ticket_categories c ON c.id = t.category_id",
+                       "t.category_id, c.label, c.color")]
+    people = db.query(
+        "SELECT t.assignee_id, u.name, u.avatar_color, " + counts + ", "
+        "AVG(CASE WHEN t.resolved_at >= %s AND t.resolved_at < %s AND t.status IN %s "
+        "    THEN TIMESTAMPDIFF(HOUR, t.created_at, t.resolved_at) END) AS avg_hours"
+        + frm + " LEFT JOIN users u ON u.id = t.assignee_id" + touched + clause
+        + " GROUP BY t.assignee_id, u.name, u.avatar_color",
+        tuple(count_args + [since, until, closed] + window + params))
+    by_assignee = sorted([{
+        "user_id": r["assignee_id"], "name": r["name"] or "未割当",
+        "avatar_color": r["avatar_color"] or "#98a2b3",
+        "created": int(r["created"] or 0), "resolved": int(r["resolved"] or 0),
+        "turnaround_days": (round(float(r["avg_hours"]) / 24, 1)
+                            if r["avg_hours"] is not None else None),
+    } for r in people], key=lambda p: (-p["resolved"], -p["created"]))
+
+    overall = db.query_one(
+        "SELECT AVG(TIMESTAMPDIFF(HOUR, t.created_at, t.resolved_at)) AS avg_hours"
+        + frm + " WHERE t.resolved_at >= %s AND t.resolved_at < %s AND t.status IN %s"
+        + clause, tuple([since, until, closed] + params)) or {}
+    open_now = db.scalar(
+        "SELECT COUNT(*) AS c" + frm + " WHERE t.status IN %s" + clause,
+        tuple([tickets.OPEN_STATUSES] + params), default=0) or 0
+
     return json_response({
         "unit": unit,
         "span": span,
@@ -3559,14 +3717,15 @@ def ticket_stats(ctx):
         "totals": {
             "created": sum(b["created"] for b in series),
             "resolved": sum(b["resolved"] for b in series),
-            "open_now": db.scalar(
-                "SELECT COUNT(*) AS c FROM tickets t JOIN ticket_queues q ON q.id = t.queue_id "
-                "WHERE t.status IN %s" + clause,
-                tuple([tickets.OPEN_STATUSES] + params), default=0) or 0,
-            "turnaround_days": round(hours / closed / 24, 1) if closed else None,
+            "open_now": open_now,
+            "turnaround_days": (round(float(overall["avg_hours"]) / 24, 1)
+                                if overall.get("avg_hours") is not None else None),
         },
-        "by_queue": sorted(by_queue.values(), key=lambda q: -q["created"]),
-        "by_kind": sorted(by_kind.values(), key=lambda k: -k["created"]),
+        "by_queue": sorted(by_queue, key=lambda q: -q["created"]),
+        "by_kind": sorted(by_kind, key=lambda k: -k["created"]),
+        "by_assignee": by_assignee,
+        "by_category": sorted(by_category, key=lambda c: -c["created"]),
+        "has_categories": any(c["category_id"] for c in by_category),
     })
 
 
@@ -3586,10 +3745,12 @@ def create_ticket(ctx):
         raise bad_request("担当者が見つかりません")
     now = db.now()
     ticket_id = db.insert(
-        "INSERT INTO tickets(queue_id, kind, title, body, status, priority, requester_id, "
-        "on_behalf_of, assignee_id, due_date, occurred_at, created_at, updated_at) "
-        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-        (queue_id, tickets.kind(ctx.body.get("kind")), title, ctx.body.get("body") or "",
+        "INSERT INTO tickets(queue_id, kind, category_id, title, body, status, priority, "
+        "requester_id, on_behalf_of, assignee_id, due_date, occurred_at, created_at, "
+        "updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        (queue_id, tickets.kind(ctx.body.get("kind"), queue["default_kind"]),
+         ticket_category(queue_id, ctx.body.get("category_id")),
+         title, ctx.body.get("body") or "",
          tickets.status(ctx.body.get("status")),
          as_int(ctx.body.get("priority"), 1, 0, 3), user["id"],
          (ctx.body.get("on_behalf_of") or "")[:120], assignee_id,
@@ -3621,6 +3782,9 @@ def get_ticket(ctx, ticket_id):
     return json_response({
         "ticket": ticket, "tasks": linked_tasks, "issues": linked_issues,
         "comments": comments, "attachments": attachments,
+        "queue_categories": db.query(
+            "SELECT id, label, color FROM ticket_categories WHERE queue_id=%s "
+            "ORDER BY sort_order, id", (ticket["queue_id"],)),
         "can_delete": can_drop_ticket(user, ticket),
     })
 
@@ -3642,13 +3806,27 @@ def update_ticket(ctx, ticket_id):
     if "on_behalf_of" in body:
         fields.append("on_behalf_of=%s")
         params.append((body["on_behalf_of"] or "")[:120])
+    queue_id = current["queue_id"]
     if "queue_id" in body:
         queue_id = as_int(body["queue_id"])
         queue = queue_or_404(queue_id)
         if queue_id != current["queue_id"]:
             notes.append("窓口: {} → {}".format(current["queue_name"], queue["name"]))
+            # 分類は窓口ごとなので、移すと前の分類は使えない
+            if current["category_id"] and "category_id" not in body:
+                fields.append("category_id=%s")
+                params.append(None)
         fields.append("queue_id=%s")
         params.append(queue_id)
+    if "category_id" in body:
+        category_id = ticket_category(queue_id, body["category_id"])
+        if category_id != current["category_id"]:
+            notes.append("分類: {} → {}".format(
+                current["category_label"] or "なし",
+                db.scalar("SELECT label AS n FROM ticket_categories WHERE id=%s",
+                          (category_id,), default="なし") or "なし"))
+        fields.append("category_id=%s")
+        params.append(category_id)
     if "kind" in body:
         kind = tickets.kind(body["kind"], current["kind"])
         if kind != current["kind"]:

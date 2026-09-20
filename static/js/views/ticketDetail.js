@@ -96,6 +96,19 @@ async function renderDetail(instance, ticketId, onChange) {
     onChange: (event) => patch({ kind: event.target.value }),
   }, ...meta.kinds.map((k) => option(k.value, `${k.icon} ${k.label}`, ticket.kind === k.value)));
 
+  // 分類はその窓口に登録されているときだけ出す
+  const queueCats = (data.queue_categories || []);
+  const categorySelect = queueCats.length
+    ? el('select', {
+      class: 'select',
+      onChange: (event) => patch({
+        category_id: event.target.value ? Number(event.target.value) : null,
+      }),
+    }, option('', '分類なし', !ticket.category_id),
+    ...queueCats.map((c) => option(c.id, c.label,
+      String(ticket.category_id || '') === String(c.id))))
+    : null;
+
   const prioritySelect = el('select', {
     class: 'select',
     onChange: (event) => patch({ priority: Number(event.target.value) }),
@@ -132,11 +145,20 @@ async function renderDetail(instance, ticketId, onChange) {
     el('div', {}, el('span', { class: 'label', text: '状態' }), statusSelect),
     el('div', {}, el('span', { class: 'label', text: '種別' }), kindSelect),
     el('div', {}, el('span', { class: 'label', text: '優先度' }), prioritySelect),
+    categorySelect
+      ? el('div', {}, el('span', { class: 'label', text: '分類' }), categorySelect)
+      : null,
     el('div', {}, el('span', { class: 'label', text: '担当' }), assigneeSelect),
     el('div', {}, el('span', { class: 'label', text: '期限' }), dueInput)));
 
   body.append(el('div', { class: 'meta-row' },
     el('span', { class: 'badge', text: `${kind.icon} ${kind.label}` }),
+    ticket.category_label
+      ? el('span', { class: 'cat-chip', style: {
+        background: `${ticket.category_color}1f`, color: ticket.category_color,
+        borderColor: `${ticket.category_color}55`,
+      } }, ticket.category_label)
+      : null,
     el('span', { class: 'badge', text: `起票: ${ticket.requester_name || '—'}` }),
     ticket.on_behalf_of
       ? el('span', { class: 'badge', text: `依頼元: ${ticket.on_behalf_of}` })

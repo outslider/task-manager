@@ -167,6 +167,7 @@ DDL = [
         color       VARCHAR(20)  NOT NULL DEFAULT '#3b6ef5',
         icon        VARCHAR(8)   NOT NULL DEFAULT '',
         project_id  INT NULL,                          -- 特定プロジェクト専用の窓口にする場合
+        default_kind VARCHAR(20) NOT NULL DEFAULT 'request',  -- 起票時に最初から選ばれる種別
         sort_order  INT          NOT NULL DEFAULT 0,
         is_active   TINYINT(1)   NOT NULL DEFAULT 1,
         created_at  DATETIME     NOT NULL,
@@ -177,10 +178,23 @@ DDL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
+    CREATE TABLE IF NOT EXISTS ticket_categories (
+        id         INT AUTO_INCREMENT PRIMARY KEY,
+        queue_id   INT NOT NULL,
+        label      VARCHAR(60) NOT NULL,
+        color      VARCHAR(20) NOT NULL DEFAULT '#98a2b3',
+        sort_order INT         NOT NULL DEFAULT 0,
+        KEY idx_ticket_cat_queue (queue_id, sort_order),
+        CONSTRAINT fk_ticket_cat_queue FOREIGN KEY (queue_id)
+            REFERENCES ticket_queues(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
     CREATE TABLE IF NOT EXISTS tickets (
         id           INT AUTO_INCREMENT PRIMARY KEY,
         queue_id     INT NOT NULL,
         kind         VARCHAR(20)  NOT NULL DEFAULT 'request',  -- request|question|incident
+        category_id  INT NULL,                            -- 窓口ごとに決めた分類
         title        VARCHAR(300) NOT NULL,
         body         TEXT,                               -- 依頼・問い合わせの内容
         status       VARCHAR(20)  NOT NULL DEFAULT 'new', -- new|doing|pending|done|canceled
@@ -198,9 +212,14 @@ DDL = [
         KEY idx_tickets_assignee (assignee_id, status),
         KEY idx_tickets_requester (requester_id),
         KEY idx_tickets_due (due_date),
+        KEY idx_tickets_category (category_id),
+        KEY idx_tickets_created (created_at),
+        KEY idx_tickets_resolved (resolved_at),
         CONSTRAINT fk_ticket_queue     FOREIGN KEY (queue_id)     REFERENCES ticket_queues(id),
         CONSTRAINT fk_ticket_requester FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE SET NULL,
-        CONSTRAINT fk_ticket_assignee  FOREIGN KEY (assignee_id)  REFERENCES users(id) ON DELETE SET NULL
+        CONSTRAINT fk_ticket_assignee  FOREIGN KEY (assignee_id)  REFERENCES users(id) ON DELETE SET NULL,
+        CONSTRAINT fk_ticket_category  FOREIGN KEY (category_id)
+            REFERENCES ticket_categories(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
@@ -609,6 +628,11 @@ MIGRATIONS = [
      "ALTER TABLE attachments ADD COLUMN ticket_id INT NULL AFTER issue_id"),
     ("ticket_queues", "project_id",
      "ALTER TABLE ticket_queues ADD COLUMN project_id INT NULL AFTER icon"),
+    ("ticket_queues", "default_kind",
+     "ALTER TABLE ticket_queues ADD COLUMN default_kind VARCHAR(20) NOT NULL "
+     "DEFAULT 'request' AFTER project_id"),
+    ("tickets", "category_id",
+     "ALTER TABLE tickets ADD COLUMN category_id INT NULL AFTER kind"),
 ]
 
 MIGRATION_INDEXES = [
@@ -622,6 +646,12 @@ MIGRATION_INDEXES = [
      "ALTER TABLE attachments ADD KEY idx_attachments_ticket (ticket_id)"),
     ("ticket_queues", "idx_queue_project",
      "ALTER TABLE ticket_queues ADD KEY idx_queue_project (project_id)"),
+    ("tickets", "idx_tickets_category",
+     "ALTER TABLE tickets ADD KEY idx_tickets_category (category_id)"),
+    ("tickets", "idx_tickets_created",
+     "ALTER TABLE tickets ADD KEY idx_tickets_created (created_at)"),
+    ("tickets", "idx_tickets_resolved",
+     "ALTER TABLE tickets ADD KEY idx_tickets_resolved (resolved_at)"),
 ]
 
 # Comments and attachments originally belonged to a task only; issues reuse them.
@@ -646,6 +676,9 @@ MIGRATION_FKS = [
     ("ticket_queues", "fk_queue_project",
      "ALTER TABLE ticket_queues ADD CONSTRAINT fk_queue_project "
      "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL"),
+    ("tickets", "fk_ticket_category",
+     "ALTER TABLE tickets ADD CONSTRAINT fk_ticket_category "
+     "FOREIGN KEY (category_id) REFERENCES ticket_categories(id) ON DELETE SET NULL"),
 ]
 
 

@@ -648,6 +648,203 @@ class TestTicketImport(TicketTestCase):
         self.assertIn("queue", values)
 
 
+class TestQueueDefaults(TicketTestCase):
+    """窓口ごとに、起票したときの種別を決めておける。"""
+
+    def test_the_default_is_a_request(self):
+        self.assertEqual(self.queue["default_kind"], "request")
+
+    def test_it_can_be_set_per_queue(self):
+        queue = self.make_queue("問い合わせ窓口", default_kind="question")
+        self.assertEqual(queue["default_kind"], "question")
+
+    def test_a_new_ticket_picks_it_up(self):
+        queue = self.make_queue("障害窓口", default_kind="incident")
+        _status, data = self.admin.post("/api/tickets",
+                                        {"queue_id": queue["id"], "title": "落ちました"})
+        self.assertEqual(data["ticket"]["kind"], "incident")
+
+    def test_an_explicit_kind_still_wins(self):
+        queue = self.make_queue("障害寄りの窓口", default_kind="incident")
+        _status, data = self.admin.post(
+            "/api/tickets", {"queue_id": queue["id"], "title": "これは依頼", "kind": "request"})
+        self.assertEqual(data["ticket"]["kind"], "request")
+
+    def test_an_unknown_default_falls_back(self):
+        queue = self.make_queue("でたらめ既定", default_kind="なんだこれ")
+        self.assertEqual(queue["default_kind"], "request")
+
+
+class TestQueueCategories(TicketTestCase):
+    """分類は窓口ごと。置かない窓口があってもよい。"""
+
+    def setUp(self):
+        super().setUp()
+        self.shop = self.make_queue("分類つき窓口", categories=[
+            {"label": "PC・端末", "color": "#3b6ef5"},
+            {"label": "ネットワーク", "color": "#17a673"},
+        ])
+
+    def cats(self, queue_id):
+        queues = self.admin.get("/api/ticket-queues")[1]["queues"]
+        return next(q for q in queues if q["id"] == queue_id)["categories"]
+
+    def test_a_queue_can_have_none(self):
+        self.assertEqual(self.queue["categories"], [])
+
+    def test_they_come_back_in_order(self):
+        self.assertEqual([c["label"] for c in self.shop["categories"]],
+                         ["PC・端末", "ネットワーク"])
+
+    def test_they_can_be_renamed_without_losing_the_link(self):
+        first = self.shop["categories"][0]
+        _status, made = self.admin.post("/api/tickets", {
+            "queue_id": self.shop["id"], "title": "端末の話", "category_id": first["id"]})
+        self.admin.patch("/api/ticket-queues/{}".format(self.shop["id"]), {"categories": [
+            {"id": first["id"], "label": "パソコン", "color": first["color"]},
+            self.shop["categories"][1],
+        ]})
+        ticket = self.admin.get("/api/tickets/{}".format(made["ticket"]["id"]))[1]["ticket"]
+        self.assertEqual(ticket["category_label"], "パソコン")
+
+    def test_removing_one_leaves_the_ticket_without_a_category(self):
+        first = self.shop["categories"][0]
+        _status, made = self.admin.post("/api/tickets", {
+            "queue_id": self.shop["id"], "title": "消える分類", "category_id": first["id"]})
+        self.admin.patch("/api/ticket-queues/{}".format(self.shop["id"]),
+                         {"categories": [self.shop["categories"][1]]})
+        ticket = self.admin.get("/api/tickets/{}".format(made["ticket"]["id"]))[1]["ticket"]
+        self.assertIsNone(ticket["category_id"])
+        self.assertIsNone(ticket["category_label"])
+
+    def test_all_of_them_can_be_cleared(self):
+        self.admin.patch("/api/ticket-queues/{}".format(self.shop["id"]), {"categories": []})
+        self.assertEqual(self.cats(self.shop["id"]), [])
+
+    def test_a_category_from_another_queue_is_refused(self):
+        other = self.shop["categories"][0]
+        status, data = self.admin.post("/api/tickets", {
+            "queue_id": self.queue["id"], "title": "よその分類", "category_id": other["id"]})
+        self.assertEqual(status, 400)
+        self.assertIn("窓口", data["error"])
+
+    def test_moving_a_ticket_to_another_queue_drops_the_category(self):
+        first = self.shop["categories"][0]
+        _status, made = self.admin.post("/api/tickets", {
+            "queue_id": self.shop["id"], "title": "引っ越すもの", "category_id": first["id"]})
+        _status, data = self.admin.patch("/api/tickets/{}".format(made["ticket"]["id"]),
+                                         {"queue_id": self.queue["id"]})
+        self.assertIsNone(data["ticket"]["category_id"])
+
+    def test_the_change_is_written_into_the_history(self):
+        first = self.shop["categories"][0]
+        _status, made = self.admin.post("/api/tickets",
+                                        {"queue_id": self.shop["id"], "title": "分類をつける"})
+        self.admin.patch("/api/tickets/{}".format(made["ticket"]["id"]),
+                         {"category_id": first["id"]})
+        _status, detail = self.admin.get("/api/tickets/{}".format(made["ticket"]["id"]))
+        notes = [c["body"] for c in detail["comments"] if c["kind"] == "system"]
+        self.assertTrue(any("分類" in n for n in notes), notes)
+
+    def test_the_detail_carries_the_queues_categories(self):
+        _status, made = self.admin.post("/api/tickets",
+                                        {"queue_id": self.shop["id"], "title": "選択肢の確認"})
+        _status, detail = self.admin.get("/api/tickets/{}".format(made["ticket"]["id"]))
+        self.assertEqual([c["label"] for c in detail["queue_categories"]],
+                         ["PC・端末", "ネットワーク"])
+
+    def test_tickets_can_be_narrowed_by_category(self):
+        first, second = self.shop["categories"]
+        self.admin.post("/api/tickets", {"queue_id": self.shop["id"],
+                                         "title": "端末のほう", "category_id": first["id"]})
+        self.admin.post("/api/tickets", {"queue_id": self.shop["id"],
+                                         "title": "回線のほう", "category_id": second["id"]})
+        titles = [t["title"] for t in self.admin.get(
+            "/api/tickets?category_id={}".format(first["id"]))[1]["tickets"]]
+        self.assertEqual(titles, ["端末のほう"])
+
+    def test_import_can_name_the_category(self):
+        status, data = self.admin.post("/api/tickets/import", {
+            "queue_id": self.shop["id"],
+            "rows": [{"title": "取り込みの分類", "category": "ネットワーク"}]})
+        self.assertEqual(status, 201, data)
+        ticket = self.admin.get("/api/tickets/{}".format(data["ticket_ids"][0]))[1]["ticket"]
+        self.assertEqual(ticket["category_label"], "ネットワーク")
+
+    def test_import_reports_an_unknown_category(self):
+        _status, data = self.admin.post("/api/tickets/import", {
+            "queue_id": self.shop["id"], "dry_run": True,
+            "rows": [{"title": "あやしい分類", "category": "ないやつ"}]})
+        self.assertEqual(data["would_create"], 1)
+        self.assertIn("分類", data["problems"][0]["message"])
+
+    def test_import_uses_the_queues_default_kind(self):
+        queue = self.make_queue("取り込み用の障害窓口", default_kind="incident")
+        _status, data = self.admin.post("/api/tickets/import", {
+            "queue_id": queue["id"], "rows": [{"title": "種別を省く"}]})
+        ticket = self.admin.get("/api/tickets/{}".format(data["ticket_ids"][0]))[1]["ticket"]
+        self.assertEqual(ticket["kind"], "incident")
+
+    def test_only_an_admin_can_change_the_categories(self):
+        _user, email = self.make_user()
+        status, _ = self.client_for(email).patch(
+            "/api/ticket-queues/{}".format(self.shop["id"]), {"categories": []})
+        self.assertEqual(status, 403)
+
+
+class TestStatsByPerson(TicketTestCase):
+    def setUp(self):
+        super().setUp()
+        self.shop = self.make_queue("集計用の窓口", categories=[
+            {"label": "甲"}, {"label": "乙"},
+        ])
+
+    def stats(self):
+        return self.admin.get(
+            "/api/tickets/stats?queue_id={}".format(self.shop["id"]))[1]
+
+    def test_it_counts_per_person(self):
+        user, _email = self.make_user(name="対応する人")
+        _status, made = self.admin.post("/api/tickets", {
+            "queue_id": self.shop["id"], "title": "この人がやる",
+            "assignee_id": user["id"]})
+        self.admin.patch("/api/tickets/{}".format(made["ticket"]["id"]), {"status": "done"})
+        rows = {p["name"]: p for p in self.stats()["by_assignee"]}
+        self.assertEqual(rows["対応する人"]["created"], 1)
+        self.assertEqual(rows["対応する人"]["resolved"], 1)
+        self.assertIsNotNone(rows["対応する人"]["turnaround_days"])
+
+    def test_tickets_with_no_owner_are_gathered_together(self):
+        self.admin.post("/api/tickets", {"queue_id": self.shop["id"], "title": "誰もいない"})
+        rows = {p["name"]: p for p in self.stats()["by_assignee"]}
+        self.assertIn("未割当", rows)
+        self.assertIsNone(rows["未割当"]["user_id"])
+
+    def test_the_average_is_empty_until_something_is_finished(self):
+        user, _email = self.make_user(name="まだ終わってない人")
+        self.admin.post("/api/tickets", {"queue_id": self.shop["id"], "title": "進行中",
+                                         "assignee_id": user["id"]})
+        rows = {p["name"]: p for p in self.stats()["by_assignee"]}
+        self.assertIsNone(rows["まだ終わってない人"]["turnaround_days"])
+
+    def test_it_counts_per_category(self):
+        first = self.shop["categories"][0]
+        self.admin.post("/api/tickets", {"queue_id": self.shop["id"], "title": "甲のほう",
+                                         "category_id": first["id"]})
+        self.admin.post("/api/tickets", {"queue_id": self.shop["id"], "title": "分類なし"})
+        data = self.stats()
+        rows = {c["label"]: c["created"] for c in data["by_category"]}
+        self.assertEqual(rows.get("甲"), 1)
+        self.assertEqual(rows.get("分類なし"), 1)
+        self.assertTrue(data["has_categories"])
+
+    def test_a_queue_without_categories_says_so(self):
+        self.make_ticket("分類のない窓口のもの")
+        data = self.admin.get(
+            "/api/tickets/stats?queue_id={}".format(self.queue["id"]))[1]
+        self.assertFalse(data["has_categories"])
+
+
 class TestTicketSearch(TicketTestCase):
     def test_a_ticket_turns_up_in_the_global_search(self):
         self.make_ticket("ぷりんたの調子がわるい")
