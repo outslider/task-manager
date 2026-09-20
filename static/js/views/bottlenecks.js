@@ -1,7 +1,7 @@
 /* Bottleneck analysis: what is holding the project up, and why. */
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
-import { STATUS_LABEL, category } from '../store.js';
+import { STATUS_LABEL, category, store } from '../store.js';
 import { dueClass, el, fill, formatDate } from '../util.js';
 import { openTaskDetail } from './taskDetail.js';
 import { categoryChip } from './pickers.js';
@@ -18,6 +18,8 @@ export async function render(container, route) {
 
   const host = el('div', {});
   fill(container, host);
+  const reviewHost = el('div', { style: { marginBottom: '14px' } });
+  const review = { data: null, loading: false, error: '' };
 
   async function reload() {
     const fresh = await api.get(`/api/projects/${projectId}/bottlenecks`);
@@ -43,6 +45,7 @@ export async function render(container, route) {
         stat('クリティカルパス', chain.length, ''),
         stat('日程の矛盾', conflicts.length, conflicts.length ? 'danger' : '')),
 
+      reviewCard(),
       conflicts.length ? conflictCard(conflicts) : null,
       chain.length ? chainCard(chain) : null,
 
@@ -56,6 +59,90 @@ export async function render(container, route) {
             : el('div', { class: 'empty' },
               el('div', { class: 'big', text: '🎉' }),
               '止まっているタスクはありません'))));
+  }
+
+  /**
+   * いまの数字を Claude に見てもらう。API を使うので、押されたときだけ呼ぶ。
+   */
+  function reviewCard() {
+    drawReview();
+    return reviewHost;
+  }
+
+  function drawReview() {
+    if (!store.meta?.llm_available) { fill(reviewHost); return; }
+    const button = el('button', {
+      class: review.data ? 'btn btn-sm' : 'btn btn-sm btn-primary',
+      disabled: review.loading ? true : null,
+      onClick: askReview,
+    }, review.loading ? '見ています…' : (review.data ? '聞き直す' : '🤖 今週の見立てを聞く'));
+
+    fill(reviewHost, el('div', { class: 'card' },
+      el('div', { class: 'card-head' },
+        el('h2', {}, '🤖 進行レビュー'),
+        review.data
+          ? el('span', { class: 'hint', text: `${review.data.generated_at} 時点` })
+          : null,
+        button),
+      el('div', { class: 'card-body' },
+        review.error ? el('div', { class: 'warn-box', text: review.error }) : null,
+        review.loading
+          ? el('div', { class: 'hint',
+            text: '期限・依存関係・負荷をまとめて見ています（20 秒ほどかかります）' })
+          : null,
+        review.data ? reviewBody(review.data) : null,
+        !review.data && !review.loading && !review.error
+          ? el('div', { class: 'page-sub', style: { margin: '0' },
+            text: '期限超過・クリティカルパス・日程の矛盾・担当者ごとの負荷をまとめて渡して、'
+              + '今週どこが危ないかを書いてもらいます。' })
+          : null)));
+  }
+
+  function reviewBody(data) {
+    return el('div', {},
+      data.headline ? el('p', { class: 'review-lead', text: data.headline }) : null,
+      ...data.risks.map((risk) => el('div', { class: 'review-risk' },
+        el('div', { class: 'review-risk-head' },
+          el('span', { class: `badge ${riskTone(risk.level)}`, text: risk.level }),
+          el('strong', { text: risk.title })),
+        el('div', { class: 'review-detail', text: risk.detail }),
+        el('div', { class: 'review-action' }, el('span', { text: '→ ' }), risk.action),
+        risk.tasks.length
+          ? el('div', { class: 'review-tasks' }, ...risk.tasks.map(taskLink))
+          : null)),
+      data.focus.length
+        ? el('div', { class: 'review-focus' },
+          el('div', { class: 'review-focus-head', text: '今週まず手を付けるなら' }),
+          ...data.focus.map((f) => el('div', { class: 'review-focus-item' },
+            taskLink(f), el('span', { class: 'hint', text: f.why }))))
+        : null,
+      el('div', { class: 'hint', style: { marginTop: '10px' },
+        text: `${data.model} が上の数字だけをもとに書いています。判断の材料としてお使いください。` }));
+  }
+
+  function riskTone(level) {
+    if (level === '高') return 'blocked';
+    if (level === '中') return 'review';
+    return '';
+  }
+
+  function taskLink(item) {
+    return el('button', {
+      class: 'link-btn', onClick: () => openTaskDetail(item.id, { onChange: reload }),
+    }, item.title);
+  }
+
+  async function askReview() {
+    review.loading = true;
+    review.error = '';
+    drawReview();
+    try {
+      review.data = await api.post(`/api/projects/${projectId}/review`, {});
+    } catch (error) {
+      review.error = error.message;
+    }
+    review.loading = false;
+    drawReview();
   }
 
   function stat(label, value, tone) {

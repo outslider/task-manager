@@ -90,6 +90,106 @@ DECOMPOSE_SCHEMA = {
     "additionalProperties": False,
 }
 
+EXTRACT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tasks": {
+            "type": "array",
+            "description": "メモから読み取った、やるべきこと。書かれていないものは作らない",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string",
+                              "description": "タスク名。一覧で読みやすい簡潔な名詞句にする"},
+                    "assignee_name": {"type": "string",
+                                      "description": "メモに書かれている呼び方をそのまま"
+                                                     "（「鈴木さん」なら「鈴木さん」）。"
+                                                     "誰の担当か書かれていなければ空文字"},
+                    "due_date": {"type": "string",
+                                 "description": "YYYY-MM-DD。書かれていなければ空文字"},
+                    "category": {"type": "string"},
+                    "priority": {"type": "integer", "enum": [0, 1, 2, 3],
+                                 "description": "重要度 0=低 1=中 2=高 3=最重要。既定は 1"},
+                    "description": {"type": "string",
+                                    "description": "メモ中の補足。なければ空文字"},
+                    "source": {"type": "string",
+                               "description": "根拠になったメモ中の一文をそのまま写す"},
+                },
+                "required": ["title", "assignee_name", "due_date", "category",
+                             "priority", "description", "source"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["tasks"],
+    "additionalProperties": False,
+}
+
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "headline": {"type": "string",
+                     "description": "今の状況をひとことで。誇張せず、事実に基づいて書く"},
+        "risks": {
+            "type": "array",
+            "description": "放っておくと困ることを、重い順に 2〜4 件",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "何が問題かを一行で"},
+                    "detail": {"type": "string",
+                               "description": "そう言える根拠。渡したデータの数字を使って書く"},
+                    "action": {"type": "string", "description": "今週やると効くこと。具体的に"},
+                    "level": {"type": "string", "enum": ["高", "中", "低"]},
+                    "task_ids": {"type": "array", "items": {"type": "integer"},
+                                 "description": "関係するタスクの id。渡した一覧にあるものだけ"},
+                },
+                "required": ["title", "detail", "action", "level", "task_ids"],
+                "additionalProperties": False,
+            },
+        },
+        "focus": {
+            "type": "array",
+            "description": "今週いちばん先に手を付けるべきタスク 1〜3 件",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer"},
+                    "why": {"type": "string", "description": "なぜそれが先かを一行で"},
+                },
+                "required": ["task_id", "why"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["headline", "risks", "focus"],
+    "additionalProperties": False,
+}
+
+EXTRACT_SYSTEM = """あなたは社内の会議メモから、やるべきことを拾い出すアシスタントです。
+
+- 「やる」と決まったことだけを拾う。検討中の話、感想、決定事項の記録は拾わない
+- title は依頼文のままにせず、一覧で読みやすい簡潔な名詞句にする
+- 日付は必ず YYYY-MM-DD に変換する。相対表現は「今日の日付」を基準に解釈する。
+  「来週◯曜」は今日を含む週（月曜始まり）の次の週、「月末」はその月の最終日とする。
+  曜日から出した日付が今日より前になってしまう場合は、次に来るその曜日にする
+  （「先週」「昨日」のように過去を明示しているときを除く）
+- 担当者は、メモに書かれている呼び方をそのまま書く（「鈴木さん」ならそのまま）。
+  誰の担当か書かれていなければ空文字
+- メモに書かれていない期限や担当者を推測で埋めない
+- description にはメモ中の補足だけを書く。自分の判断や注記は書かない
+- 同じことを指す記述が複数あってもタスクは 1 つにまとめる
+- 拾うものがなければ空の配列を返す"""
+
+REVIEW_SYSTEM = """あなたは社内プロジェクトの進行を見ているアシスタントです。
+渡された数字をもとに、今週この先どこが危ないかを、担当者に向けて日本語で書きます。
+
+- 渡されたデータに書かれていないことは言わない。推測で数字を作らない
+- 「頑張りましょう」のような一般論は書かない。どのタスクをどうするかを書く
+- 期限超過そのものより、他の作業を止めているものを重く見る
+- 担当者を責める書き方はしない。事実と、次にやると効くことだけを書く"""
+
+
 PARSE_SYSTEM = """あなたは社内タスク管理システムの入力アシスタントです。
 担当者が書いた一文から、登録すべきタスクの項目を抜き出します。
 
@@ -226,6 +326,36 @@ def decompose(title, description="", start_date=None, due_date=None):
     steps = [(s.get("title", "").strip(), s.get("category", ""), int(s.get("weight", 1)))
              for s in data.get("steps", []) if s.get("title")]
     return steps
+
+
+def extract(text, users=(), projects=(), base=None):
+    """会議メモから、登録できる形のタスク候補をまとめて取り出す。失敗時は LlmError。"""
+    base = base or date.today()
+    data = _ask(
+        EXTRACT_SYSTEM,
+        "{}\n\n---\n会議メモ:\n{}".format(_context_block(users, projects, base), text),
+        with_categories(EXTRACT_SCHEMA), effort="medium")
+
+    rows = []
+    for item in data.get("tasks", []):
+        title = (item.get("title") or "").strip()
+        if not title:
+            continue
+        rows.append({
+            "title": title,
+            "assignee": (item.get("assignee_name") or "").strip(),
+            "due_date": _iso_or_none(item.get("due_date")) or "",
+            "category": item.get("category") or "",
+            "priority": int(item.get("priority", 1)),
+            "description": item.get("description") or "",
+            "source": (item.get("source") or "").strip(),
+        })
+    return rows
+
+
+def review(context):
+    """進行状況の要約テキストを渡し、今週の見立てを書いてもらう。失敗時は LlmError。"""
+    return _ask(REVIEW_SYSTEM, context, REVIEW_SCHEMA, effort="medium")
 
 
 def _iso_or_none(value):

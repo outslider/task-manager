@@ -601,6 +601,23 @@ def project_member_users_map(project_ids):
     return out
 
 
+def assignable_users(project_id):
+    """担当者に指定できる人。メンバーに加えて、現にそのプロジェクトで担当になっている人も含める。
+
+    メンバー登録が追いついていないだけで、実際には担当している、という状態が
+    起きうる。取り込みのたびに「メンバーに見つかりません」で止まると使えないため。
+    """
+    people = project_member_users(project_id)
+    known = {p["id"] for p in people}
+    extra = db.query(
+        "SELECT DISTINCT u.id, u.name, u.email, u.avatar_color "
+        "FROM tasks t JOIN users u ON u.id = t.assignee_id "
+        "WHERE t.project_id=%s AND u.is_active=1", (project_id,))
+    people += [row for row in extra if row["id"] not in known]
+    people.sort(key=lambda row: row["name"])
+    return people
+
+
 def project_member_rows(project_id):
     users = db.query(
         "SELECT pm.role, u.id, u.name, u.email, u.avatar_color FROM project_members pm "
@@ -2062,7 +2079,7 @@ def import_tasks(ctx, project_id):
     dry_run = as_bool(ctx.body.get("dry_run"))
 
     members = {}
-    for person in project_member_users(project_id):
+    for person in assignable_users(project_id):
         members[person["name"].strip()] = person["id"]
         members[person["email"].strip().lower()] = person["id"]
 
@@ -3181,6 +3198,233 @@ def create_subtasks(ctx, task_id):
     touch_task(task_id)
     rows = db.query(TASK_SELECT + " WHERE t.id IN %s ORDER BY t.sort_order", (tuple(created),))
     return json_response({"tasks": rows, "created": len(created)}, 201)
+
+
+# --------------------------------------------------------------------------
+# 会議メモからの一括起票と、進行レビュー（どちらも人が押したときだけ呼ぶ）
+# --------------------------------------------------------------------------
+
+MEMO_BULLET = re.compile(r"^\s*(?:[-*・･>＞\u25a0\u25cf\u25c6]|\d+[.)、]|[(\uff08]\d+[)\uff09])\s*")
+
+
+HONORIFIC = re.compile(r"(さん|サン|氏|様|君|くん|ちゃん|先生|部長|課長|主任)$")
+
+
+def _match_member(written, members):
+    """メモの「鈴木さん」を、一覧の「鈴木 一郎」に結びつける。
+
+    Claude にはメモの呼び方をそのまま書かせて、突き合わせはこちらでやる。
+    敬称を外し、完全一致 → 姓または名の一致 → 部分一致 の順に探す。
+    候補が 2 人以上いるときは、取り違えるより空欄のままにする。
+    """
+    name = HONORIFIC.sub("", (written or "").strip()).replace("\u3000", " ").strip()
+    if not name:
+        return ""
+    flat = name.replace(" ", "")
+    exact = [m["name"] for m in members if m["name"].replace(" ", "") == flat]
+    if exact:
+        return exact[0]
+    parts = []
+    for member in members:
+        pieces = [p for p in member["name"].replace("\u3000", " ").split(" ") if p]
+        if flat in pieces:
+            parts.append(member["name"])
+    if len(parts) == 1:
+        return parts[0]
+    loose = [m["name"] for m in members if flat and flat in m["name"].replace(" ", "")]
+    return loose[0] if len(loose) == 1 else ""
+
+
+def _extract_by_rule(text, users, projects):
+    """Claude が使えないときの代替。1 行 1 タスクとみなして拾う。"""
+    rows = []
+    seen = set()
+    for raw in text.splitlines():
+        line = MEMO_BULLET.sub("", raw).strip()
+        if len(line) < 4 or line.startswith("#"):
+            continue
+        draft = nlp.parse(line, users=users, projects=projects)
+        title = (draft.get("title") or "").strip()
+        if not title or title in seen:
+            continue
+        seen.add(title)
+        name = next((u["name"] for u in users if u["id"] == draft.get("assignee_id")), "")
+        rows.append({
+            "title": title,
+            "assignee": name,
+            "due_date": draft.get("due_date") or "",
+            "category": draft.get("category") or "",
+            "priority": int(draft.get("priority") or 1),
+            "description": "",
+            "source": line,
+        })
+    return rows
+
+
+@route("POST", r"/api/nl/extract")
+def nl_extract(ctx):
+    """会議メモから、登録できる形のタスク候補をまとめて取り出す。DB には書き込まない。"""
+    user = me(ctx)
+    text = require(ctx.body, "text", "メモ")
+    if len(text) > 20000:
+        raise bad_request("メモが長すぎます（2 万文字まで）")
+    project_id = as_int(ctx.body.get("project_id"))
+    if project_id:
+        project_or_404(user, project_id, "editor")
+
+    users, projects = _nl_context(user)
+    if project_id:
+        # 宛先が決まっているなら、そのプロジェクトに関わる人だけを候補にする
+        users = assignable_users(project_id) or users
+
+    rows, engine, warning = None, "llm", None
+    if llm.available() and not as_bool(ctx.body.get("force_rule")):
+        try:
+            rows = llm.extract(text, users=users, projects=projects)
+        except llm.LlmError as error:
+            warning = "{}（簡易読み取りで代替しました）".format(error)
+        except Exception as error:  # noqa: BLE001 - 読み取り失敗で操作を止めない
+            warning = "読み取りに失敗しました（簡易読み取りで代替しました）"
+            log_llm_failure(error)
+    if rows is None:
+        rows = _extract_by_rule(text, users, projects)
+        engine = "rule"
+    for row in rows:
+        row["assignee"] = _match_member(row.get("assignee"), users)
+    return json_response({"rows": rows[:200], "engine": engine, "warning": warning})
+
+
+REVIEW_STALE_DAYS = 14
+
+
+def _review_context(project, tasks, deps, analysis, load):
+    """AI に渡す「今どうなっているか」を、数字のまま文章にまとめる。"""
+    today = db.today()
+    by_id = {t["id"]: t for t in tasks}
+    metrics = analysis["metrics"]
+
+    def line(task, extra=""):
+        due = task.get("due_date")
+        late = ""
+        if due and str(due) < today.isoformat() and task["status"] != "done":
+            late = "（{}日超過）".format((today - date.fromisoformat(str(due)[:10])).days)
+        return "  #{} {} / 担当:{} / 状態:{} / 期限:{}{} / 進捗:{}%{}".format(
+            task["id"], task["title"], task.get("assignee_name") or "未割当",
+            status_label(task["status"]), due or "未設定", late,
+            task.get("progress") or 0, extra)
+
+    parts = ["プロジェクト: {}".format(project["name"]),
+             "今日の日付: {}".format(today.isoformat()),
+             "未完了 {} 件 / 全 {} 件".format(
+                 sum(1 for t in tasks if t["status"] != "done"), len(tasks))]
+
+    overdue = [t for t in tasks if t["status"] != "done" and t.get("due_date")
+               and str(t["due_date"]) < today.isoformat()]
+    overdue.sort(key=lambda t: str(t["due_date"]))
+    if overdue:
+        parts.append("\n[期限を過ぎているもの]")
+        parts += [line(t) for t in overdue[:15]]
+
+    if analysis.get("critical_path"):
+        parts.append("\n[クリティカルパス（この並びが全体の長さを決めている）]")
+        parts += ["  #{} {}".format(i, by_id[i]["title"])
+                  for i in analysis["critical_path"] if i in by_id]
+
+    blocking = [t for t in tasks if t["status"] != "done"
+                and metrics.get(t["id"], {}).get("blocks_open")]
+    blocking.sort(key=lambda t: -metrics[t["id"]]["blocks_open"])
+    if blocking:
+        parts.append("\n[他の作業を止めているもの]")
+        parts += [line(t, " / 後続{}件が待機".format(metrics[t["id"]]["blocks_open"]))
+                  for t in blocking[:10]]
+
+    if analysis.get("conflicts"):
+        parts.append("\n[前後関係と日程が矛盾しているところ]")
+        for c in analysis["conflicts"][:8]:
+            parts.append("  「{}」の期限が「{}」の開始より {} 日あと".format(
+                c.get("depends_on_title"), c.get("task_title"), c.get("overlap_days")))
+
+    stale_before = (today - timedelta(days=REVIEW_STALE_DAYS)).isoformat()
+    stale = [t for t in tasks if t["status"] not in ("done",)
+             and str(t.get("updated_at") or "")[:10] < stale_before
+             and t.get("progress", 0) < 100]
+    if stale:
+        parts.append("\n[{} 日以上動いていない未完了]".format(REVIEW_STALE_DAYS))
+        parts += [line(t, " / 最終更新:{}".format(str(t.get("updated_at"))[:10]))
+                  for t in stale[:10]]
+
+    rows = [r for r in load.get("rows", []) if r.get("user_id")]
+    if rows:
+        parts.append("\n[担当者ごとの週あたりの負荷（時間 / 使える時間）]")
+        for row in rows[:8]:
+            cells = ["{}:{}h/{}h".format(w["label"], c["hours"], c["capacity"])
+                     for w, c in zip(load["weeks"], row["cells"])][:4]
+            parts.append("  {} → {}".format(row["name"], "、".join(cells)))
+        if load.get("missing_estimate"):
+            parts.append("  ※ 見積が入っていない未完了が {} 件あるため、負荷は実際より軽く出ている".format(
+                load["missing_estimate"]))
+
+    milestones = [t for t in tasks if t.get("is_milestone") and t["status"] != "done"]
+    milestones.sort(key=lambda t: str(t.get("due_date") or "9999"))
+    if milestones:
+        parts.append("\n[これから来るマイルストーン]")
+        parts += [line(t) for t in milestones[:6]]
+
+    return "\n".join(parts)
+
+
+@route("POST", r"/api/projects/(\d+)/review")
+def project_review(ctx, project_id):
+    """いまの進み具合を Claude に見てもらう。ボタンを押したときだけ呼ぶ。"""
+    user = me(ctx)
+    project = project_or_404(user, project_id)
+    tasks = db.query(
+        "SELECT t.id, t.title, t.status, t.progress, t.start_date, t.due_date, "
+        "t.is_milestone, t.updated_at, t.assignee_id, t.estimate_hours, t.actual_hours, "
+        "t.project_id, u.name AS assignee_name "
+        "FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id WHERE t.project_id=%s",
+        (project_id,))
+    if not tasks:
+        raise bad_request("タスクがまだないので、見てもらえることがありません")
+    if not llm.available():
+        raise bad_request(
+            "Claude 連携が有効になっていません（システム設定から有効にしてください）")
+    deps = project_deps(project_id)
+    analysis = graph.bottlenecks(tasks, deps)
+    members = db.query("SELECT id, name, avatar_color FROM users WHERE is_active=1")
+    hours_per_day = float(db.get_setting("work_hours_per_day", "8") or 8)
+    off_days = ()
+    if db.get_setting("use_holidays", "1") == "1":
+        today = db.today()
+        off_days = set(holidays.holidays_between(
+            today - timedelta(days=14), today + timedelta(weeks=10)))
+    load = workload.build(tasks, members, weeks=6, hours_per_day=hours_per_day,
+                          holidays=off_days)
+
+    try:
+        data = llm.review(_review_context(project, tasks, deps, analysis, load))
+    except llm.LlmError as error:
+        raise bad_request(str(error))
+    except Exception as error:  # noqa: BLE001 - 画面に出して終わる
+        log_llm_failure(error)
+        raise bad_request("レビューの生成に失敗しました")
+
+    known = {t["id"]: t["title"] for t in tasks}
+    risks = []
+    for risk in data.get("risks", []):
+        ids = [i for i in risk.get("task_ids", []) if i in known]
+        risks.append({"title": risk.get("title", ""), "detail": risk.get("detail", ""),
+                      "action": risk.get("action", ""), "level": risk.get("level", "中"),
+                      "tasks": [{"id": i, "title": known[i]} for i in ids[:6]]})
+    focus = [{"id": f["task_id"], "title": known[f["task_id"]], "why": f.get("why", "")}
+             for f in data.get("focus", []) if f.get("task_id") in known]
+    return json_response({
+        "headline": data.get("headline", ""),
+        "risks": risks[:5],
+        "focus": focus[:3],
+        "generated_at": db.now().isoformat(sep=" ", timespec="seconds"),
+        "model": llm.settings()["model"],
+    })
 
 
 @route("POST", r"/api/settings/test-llm")

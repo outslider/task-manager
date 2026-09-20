@@ -102,6 +102,15 @@ export async function render(container, route) {
       }, '⬆ 取り込み')
       : null,
     canEdit
+      ? el('button', {
+        class: 'btn', title: '会議メモを貼り付けて、やることをまとめて登録します',
+        onClick: async () => {
+          const { openMemoDialog } = await import('./memoTasks.js');
+          if (await openMemoDialog(project)) reload();
+        },
+      }, '📝 メモから')
+      : null,
+    canEdit
       ? el('button', { class: 'btn btn-primary', onClick: () => addTask(null) }, '＋ タスク')
       : null,
   ]);
