@@ -9,9 +9,10 @@ from urllib.parse import quote
 import pymysql
 
 from . import (auth, db, graph, holidays, llm, mentions, nlp, notify, prefs,
-               recurrence, slack, taxonomy, workload)
+               recurrence, slack, taxonomy, tickets, workload)
 from .config import MAX_UPLOAD_BYTES, UPLOAD_DIR
-from .http_util import (HttpError, as_bool, as_date, as_int, bad_request, forbidden,
+from .http_util import (HttpError, as_bool, as_date, as_datetime, as_int, bad_request,
+                        forbidden,
                         json_response, not_found, require, unauthorized, Response)
 
 # 状態のキーは判定に使うので固定。表示名と色は画面から変えられる（taxonomy）。
@@ -1023,7 +1024,16 @@ def _apply_status_progress(body, current):
 
 @route("POST", r"/api/tasks")
 def create_task(ctx):
-    user = me(ctx)
+    return json_response({"task": _create_task(me(ctx), ctx.body)}, 201)
+
+
+def _create_task(user, body):
+    """タスクを 1 件作って、作った行を返す。
+
+    チケットからの起票でも同じ検証を通したいので、
+    HTTP の文脈から切り離してある。
+    """
+    ctx = _Body(body)
     project_id = as_int(ctx.body.get("project_id"))
     if project_id is None:
         raise bad_request("project_id は必須です")
@@ -1067,8 +1077,14 @@ def create_task(ctx):
         set_task_deps(task_id, project_id, ctx.body["depends_on"])
     if assignee_id and assignee_id != user["id"]:
         _notify_assignment(task_id, title, assignee_id, user)
-    row = db.query_one(TASK_SELECT + " WHERE t.id=%s", (task_id,))
-    return json_response({"task": row}, 201)
+    return db.query_one(TASK_SELECT + " WHERE t.id=%s", (task_id,))
+
+
+class _Body:
+    """_create_task が ctx.body と書けるようにするだけの入れ物。"""
+
+    def __init__(self, body):
+        self.body = body or {}
 
 
 def _notify_assignment(task_id, title, assignee_id, actor):
@@ -1469,6 +1485,13 @@ def delete_comment(ctx, comment_id):
     comment = db.query_one("SELECT * FROM comments WHERE id=%s", (comment_id,))
     if not comment:
         raise not_found("コメントが見つかりません")
+    if comment["ticket_id"]:
+        # チケットはプロジェクトに属さないので、本人か管理者かだけを見る
+        ticket_or_404(comment["ticket_id"])
+        if comment["user_id"] != user["id"] and not auth.is_admin(user):
+            raise forbidden("自分のコメントのみ削除できます")
+        db.execute("DELETE FROM comments WHERE id=%s", (comment_id,))
+        return json_response({"ok": True})
     if comment["task_id"]:
         owner = task_or_404(user, comment["task_id"], "commenter")
     else:
@@ -1514,7 +1537,7 @@ def add_attachment(ctx, task_id):
 
 
 def _store_attachments(ctx, user, target):
-    """Save uploaded files, or register a link, against a task or an issue."""
+    """Save uploaded files, or register a link, against a task, issue or ticket."""
     column, owner_id = next(iter(target.items()))
     if ctx.files:
         created = []
@@ -1560,6 +1583,8 @@ def attachment_or_404(user, attachment_id, minimum="viewer"):
         task_or_404(user, att["task_id"], minimum)
     elif att["issue_id"]:
         issue_or_404(user, att["issue_id"], minimum)
+    elif att["ticket_id"]:
+        ticket_or_404(att["ticket_id"])  # チケットは社内の誰でも見られる
     else:
         raise not_found("添付が見つかりません")
     return att
@@ -1707,17 +1732,20 @@ def search(ctx):
         " ORDER BY i.severity DESC, i.seq DESC LIMIT %s",
         (scope, like, like, like, limit))
     comments = db.query(
-        "SELECT c.id, c.body, c.created_at, c.task_id, c.issue_id, u.name AS user_name, "
-        "       COALESCE(t.title, i.title) AS parent_title, "
-        "       COALESCE(pt.name, pi.name) AS project_name "
+        "SELECT c.id, c.body, c.created_at, c.task_id, c.issue_id, c.ticket_id, "
+        "       u.name AS user_name, "
+        "       COALESCE(t.title, i.title, tk.title) AS parent_title, "
+        "       COALESCE(pt.name, pi.name, q.name) AS project_name "
         "  FROM comments c "
         "  LEFT JOIN users u ON u.id = c.user_id "
         "  LEFT JOIN tasks t ON t.id = c.task_id "
         "  LEFT JOIN projects pt ON pt.id = t.project_id "
         "  LEFT JOIN issues i ON i.id = c.issue_id "
         "  LEFT JOIN projects pi ON pi.id = i.project_id "
+        "  LEFT JOIN tickets tk ON tk.id = c.ticket_id "
+        "  LEFT JOIN ticket_queues q ON q.id = tk.queue_id "
         " WHERE c.kind='comment' AND c.body LIKE %s "
-        "   AND (t.project_id IN %s OR i.project_id IN %s) "
+        "   AND (t.project_id IN %s OR i.project_id IN %s OR c.ticket_id IS NOT NULL) "
         " ORDER BY c.created_at DESC LIMIT %s",
         (like, scope, scope, limit))
     projects = db.query(
@@ -1729,6 +1757,16 @@ def search(ctx):
         " WHERE user_id=%s AND (title LIKE %s OR note LIKE %s) "
         " ORDER BY is_done, (due_date IS NULL), due_date LIMIT %s",
         (user["id"], like, like, limit))
+    # チケットは社内の誰でも読めるので、プロジェクトの見える範囲では絞らない
+    ticket_rows = db.query(
+        "SELECT t.id, t.title, t.status, t.kind, t.due_date, t.on_behalf_of, "
+        "       q.name AS queue_name, q.color AS queue_color, a.name AS assignee_name "
+        "  FROM tickets t JOIN ticket_queues q ON q.id = t.queue_id "
+        "  LEFT JOIN users a ON a.id = t.assignee_id "
+        " WHERE t.title LIKE %s OR t.body LIKE %s OR t.resolution LIKE %s "
+        "       OR t.on_behalf_of LIKE %s "
+        " ORDER BY t.status IN %s, t.id DESC LIMIT %s",
+        (like, like, like, like, tickets.CLOSED_STATUSES, limit))
 
     groups = []
     if tasks:
@@ -1737,6 +1775,9 @@ def search(ctx):
         groups.append({"kind": "issue", "label": "課題", "icon": "📌", "items": issues})
     if todos:
         groups.append({"kind": "todo", "label": "マイ ToDo", "icon": "📝", "items": todos})
+    if ticket_rows:
+        groups.append({"kind": "ticket", "label": "チケット", "icon": "🎫",
+                       "items": ticket_rows})
     if projects:
         groups.append({"kind": "project", "label": "プロジェクト", "icon": "📁",
                        "items": projects})
@@ -2646,6 +2687,7 @@ def meta(ctx):
         "severity": [{"value": k, "label": v}
                      for k, v in sorted(SEVERITY_LABEL.items(), reverse=True)],
         "llm_available": llm.available(),
+        "tickets": tickets.meta(),
         "slack_events": [{"value": k, "label": label, "help": help_text}
                          for k, label, help_text in prefs.SLACK_EVENTS],
         "slack_enabled": db.get_setting("slack_enabled", "0") == "1",
@@ -3051,6 +3093,525 @@ def add_issue_attachment(ctx, issue_id):
     user = me(ctx)
     issue_or_404(user, issue_id, "editor")
     return _store_attachments(ctx, user, {"issue_id": issue_id})
+
+
+# --------------------------------------------------------------------------
+# チケット（受付窓口に届く依頼・問い合わせ・障害）
+#
+# プロジェクト管理とは別建て。窓口ごとに受けて、作業が要るものだけを
+# タスクへ、論点として残すものは課題へ渡す。つなぎは連結テーブルだけで、
+# チケット側はプロジェクトの権限を持たない。
+# --------------------------------------------------------------------------
+
+TICKET_SELECT = """
+    SELECT t.*, q.name AS queue_name, q.color AS queue_color, q.icon AS queue_icon,
+           a.name AS assignee_name, a.avatar_color AS assignee_color,
+           r.name AS requester_name, r.avatar_color AS requester_color,
+           (SELECT COUNT(*) FROM ticket_tasks tt WHERE tt.ticket_id = t.id) AS task_count,
+           (SELECT COUNT(*) FROM ticket_tasks tt JOIN tasks tk ON tk.id = tt.task_id
+             WHERE tt.ticket_id = t.id AND tk.status <> 'done') AS open_task_count,
+           (SELECT COUNT(*) FROM ticket_issues ti WHERE ti.ticket_id = t.id) AS issue_count,
+           (SELECT COUNT(*) FROM comments c
+             WHERE c.ticket_id = t.id AND c.kind = 'comment') AS comment_count,
+           (SELECT COUNT(*) FROM attachments at WHERE at.ticket_id = t.id) AS attachment_count
+      FROM tickets t
+      JOIN ticket_queues q ON q.id = t.queue_id
+      LEFT JOIN users a ON a.id = t.assignee_id
+      LEFT JOIN users r ON r.id = t.requester_id
+"""
+
+
+def next_issue_seq(project_id):
+    """プロジェクト内の課題 No. を採番する。"""
+    return (db.scalar("SELECT COALESCE(MAX(seq), 0) AS m FROM issues WHERE project_id=%s "
+                      "FOR UPDATE", (project_id,), default=0) or 0) + 1
+
+
+def ticket_or_404(ticket_id):
+    """チケットは社内の誰でも読める。見えない範囲がないので所属は見ない。"""
+    row = db.query_one(TICKET_SELECT + " WHERE t.id=%s", (ticket_id,))
+    if not row:
+        raise not_found("チケットが見つかりません")
+    return row
+
+
+def can_drop_ticket(user, ticket):
+    """消せるのは出した本人と管理者だけ。対応履歴を他人に消させない。"""
+    return auth.is_admin(user) or ticket["requester_id"] == user["id"]
+
+
+def queue_or_404(queue_id):
+    row = db.query_one("SELECT * FROM ticket_queues WHERE id=%s", (queue_id,))
+    if not row:
+        raise not_found("窓口が見つかりません")
+    return row
+
+
+@route("GET", r"/api/ticket-queues")
+def list_queues(ctx):
+    me(ctx)
+    rows = db.query(
+        "SELECT q.*, "
+        "(SELECT COUNT(*) FROM tickets t WHERE t.queue_id = q.id) AS ticket_count, "
+        "(SELECT COUNT(*) FROM tickets t WHERE t.queue_id = q.id AND t.status IN %s) "
+        "  AS open_count "
+        "FROM ticket_queues q ORDER BY q.sort_order, q.id",
+        (tickets.OPEN_STATUSES,))
+    return json_response({"queues": rows})
+
+
+@route("POST", r"/api/ticket-queues")
+def create_queue(ctx):
+    admin_only(ctx)
+    name = require(ctx.body, "name", "窓口名")
+    order = as_int(ctx.body.get("sort_order"))
+    if order is None:
+        order = (db.scalar("SELECT COALESCE(MAX(sort_order), 0) AS m FROM ticket_queues",
+                           default=0) or 0) + 10
+    try:
+        queue_id = db.insert(
+            "INSERT INTO ticket_queues(name, description, color, icon, sort_order, "
+            "is_active, created_at) VALUES(%s,%s,%s,%s,%s,%s,%s)",
+            (name[:80], (ctx.body.get("description") or "")[:300],
+             (ctx.body.get("color") or "#3b6ef5")[:20], (ctx.body.get("icon") or "")[:8],
+             order, 0 if "is_active" in ctx.body and not as_bool(ctx.body["is_active"]) else 1,
+             db.now()))
+    except pymysql.err.IntegrityError:
+        raise bad_request("同じ名前の窓口があります")
+    return json_response({"queue": queue_or_404(queue_id)}, 201)
+
+
+@route("PATCH", r"/api/ticket-queues/(\d+)")
+def update_queue(ctx, queue_id):
+    admin_only(ctx)
+    queue_or_404(queue_id)
+    fields, params = [], []
+    if "name" in ctx.body:
+        fields.append("name=%s")
+        params.append(require(ctx.body, "name", "窓口名")[:80])
+    for key, limit in (("description", 300), ("color", 20), ("icon", 8)):
+        if key in ctx.body:
+            fields.append(key + "=%s")
+            params.append((ctx.body.get(key) or "")[:limit])
+    if "sort_order" in ctx.body:
+        fields.append("sort_order=%s")
+        params.append(as_int(ctx.body["sort_order"], 0))
+    if "is_active" in ctx.body:
+        fields.append("is_active=%s")
+        params.append(1 if as_bool(ctx.body["is_active"]) else 0)
+    if not fields:
+        raise bad_request("更新する項目がありません")
+    params.append(queue_id)
+    try:
+        db.execute("UPDATE ticket_queues SET {} WHERE id=%s".format(", ".join(fields)), params)
+    except pymysql.err.IntegrityError:
+        raise bad_request("同じ名前の窓口があります")
+    return json_response({"queue": queue_or_404(queue_id)})
+
+
+@route("DELETE", r"/api/ticket-queues/(\d+)")
+def delete_queue(ctx, queue_id):
+    admin_only(ctx)
+    queue_or_404(queue_id)
+    left = db.scalar("SELECT COUNT(*) AS c FROM tickets WHERE queue_id=%s",
+                     (queue_id,), default=0)
+    if left:
+        raise bad_request(
+            "この窓口には {} 件のチケットが残っています。"
+            "先に移すか、窓口を「受付停止」にしてください".format(left))
+    db.execute("DELETE FROM ticket_queues WHERE id=%s", (queue_id,))
+    return json_response({"ok": True})
+
+
+@route("GET", r"/api/tickets")
+def list_tickets(ctx):
+    user = me(ctx)
+    where, params = [], []
+    queue_id = as_int(ctx.query.get("queue_id"))
+    if queue_id:
+        where.append("t.queue_id=%s")
+        params.append(queue_id)
+    status = (ctx.query.get("status") or "open").strip()
+    if status == "open":
+        where.append("t.status IN %s")
+        params.append(tickets.OPEN_STATUSES)
+    elif status and status != "all":
+        where.append("t.status=%s")
+        params.append(tickets.status(status))
+    kind = (ctx.query.get("kind") or "").strip()
+    if kind in tickets.KIND_VALUES:
+        where.append("t.kind=%s")
+        params.append(kind)
+    scope = (ctx.query.get("scope") or "").strip()
+    if scope == "mine":
+        where.append("t.assignee_id=%s")
+        params.append(user["id"])
+    elif scope == "raised":
+        where.append("t.requester_id=%s")
+        params.append(user["id"])
+    elif scope == "unassigned":
+        where.append("t.assignee_id IS NULL")
+    assignee_id = as_int(ctx.query.get("assignee_id"))
+    if assignee_id:
+        where.append("t.assignee_id=%s")
+        params.append(assignee_id)
+    q = (ctx.query.get("q") or "").strip()
+    if q:
+        where.append("(t.title LIKE %s OR t.body LIKE %s OR t.on_behalf_of LIKE %s)")
+        params += ["%{}%".format(q)] * 3
+
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    rows = db.query(
+        TICKET_SELECT + clause
+        + " ORDER BY t.status IN %s DESC, t.priority DESC, "
+          "t.due_date IS NULL, t.due_date, t.id DESC LIMIT 400",
+        tuple(params) + (tickets.CLOSED_STATUSES,))
+    summary = db.query_one(
+        "SELECT COUNT(*) AS total, "
+        "SUM(status IN %s) AS open, "
+        "SUM(status='new') AS waiting, "
+        "SUM(assignee_id IS NULL AND status IN %s) AS unassigned, "
+        "SUM(due_date IS NOT NULL AND due_date < %s AND status IN %s) AS overdue "
+        "FROM tickets",
+        (tickets.OPEN_STATUSES, tickets.OPEN_STATUSES, db.today(), tickets.OPEN_STATUSES))
+    return json_response({
+        "tickets": rows,
+        "summary": {k: int(v or 0) for k, v in (summary or {}).items()},
+    })
+
+
+@route("POST", r"/api/tickets")
+def create_ticket(ctx):
+    user = me(ctx)
+    queue_id = as_int(ctx.body.get("queue_id"))
+    if queue_id is None:
+        raise bad_request("窓口を選んでください")
+    queue = queue_or_404(queue_id)
+    if not queue["is_active"]:
+        raise bad_request("この窓口はいま受付を止めています")
+    title = require(ctx.body, "title", "件名")
+    assignee_id = as_int(ctx.body.get("assignee_id"))
+    if assignee_id and not db.query_one(
+            "SELECT 1 AS x FROM users WHERE id=%s AND is_active=1", (assignee_id,)):
+        raise bad_request("担当者が見つかりません")
+    now = db.now()
+    ticket_id = db.insert(
+        "INSERT INTO tickets(queue_id, kind, title, body, status, priority, requester_id, "
+        "on_behalf_of, assignee_id, due_date, occurred_at, created_at, updated_at) "
+        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        (queue_id, tickets.kind(ctx.body.get("kind")), title, ctx.body.get("body") or "",
+         tickets.status(ctx.body.get("status")),
+         as_int(ctx.body.get("priority"), 1, 0, 3), user["id"],
+         (ctx.body.get("on_behalf_of") or "")[:120], assignee_id,
+         as_date(ctx.body.get("due_date")), as_datetime(ctx.body.get("occurred_at")),
+         now, now))
+    if assignee_id and assignee_id != user["id"]:
+        _notify_ticket_assignee(ticket_id, title, assignee_id, user)
+    return json_response({"ticket": ticket_or_404(ticket_id)}, 201)
+
+
+@route("GET", r"/api/tickets/(\d+)")
+def get_ticket(ctx, ticket_id):
+    user = me(ctx)
+    ticket = ticket_or_404(ticket_id)
+    linked_tasks = db.query(
+        TASK_SELECT + " JOIN ticket_tasks tt ON tt.task_id = t.id WHERE tt.ticket_id=%s "
+        "ORDER BY t.id", (ticket_id,))
+    linked_issues = db.query(
+        ISSUE_SELECT + " JOIN ticket_issues ti ON ti.issue_id = i.id WHERE ti.ticket_id=%s "
+        "ORDER BY i.id", (ticket_id,))
+    comments = db.query(
+        "SELECT c.*, u.name AS user_name, u.avatar_color FROM comments c "
+        "LEFT JOIN users u ON u.id = c.user_id WHERE c.ticket_id=%s "
+        "ORDER BY c.created_at, c.id", (ticket_id,))
+    attachments = db.query(
+        "SELECT a.*, u.name AS uploaded_by_name FROM attachments a "
+        "LEFT JOIN users u ON u.id = a.uploaded_by WHERE a.ticket_id=%s ORDER BY a.created_at",
+        (ticket_id,))
+    return json_response({
+        "ticket": ticket, "tasks": linked_tasks, "issues": linked_issues,
+        "comments": comments, "attachments": attachments,
+        "can_delete": can_drop_ticket(user, ticket),
+    })
+
+
+@route("PATCH", r"/api/tickets/(\d+)")
+def update_ticket(ctx, ticket_id):
+    user = me(ctx)
+    current = ticket_or_404(ticket_id)
+    body = ctx.body
+    fields, params, notes = [], [], []
+
+    if "title" in body:
+        fields.append("title=%s")
+        params.append(require(body, "title", "件名"))
+    for key in ("body", "resolution"):
+        if key in body:
+            fields.append(key + "=%s")
+            params.append(body[key] or "")
+    if "on_behalf_of" in body:
+        fields.append("on_behalf_of=%s")
+        params.append((body["on_behalf_of"] or "")[:120])
+    if "queue_id" in body:
+        queue_id = as_int(body["queue_id"])
+        queue = queue_or_404(queue_id)
+        if queue_id != current["queue_id"]:
+            notes.append("窓口: {} → {}".format(current["queue_name"], queue["name"]))
+        fields.append("queue_id=%s")
+        params.append(queue_id)
+    if "kind" in body:
+        kind = tickets.kind(body["kind"], current["kind"])
+        if kind != current["kind"]:
+            notes.append("種別: {} → {}".format(
+                tickets.KIND_LABEL.get(current["kind"], "-"),
+                tickets.KIND_LABEL.get(kind, "-")))
+        fields.append("kind=%s")
+        params.append(kind)
+    if "priority" in body:
+        priority = as_int(body["priority"], current["priority"], 0, 3)
+        if priority != current["priority"]:
+            notes.append("優先度: {} → {}".format(
+                tickets.PRIORITY_LABEL.get(current["priority"], "-"),
+                tickets.PRIORITY_LABEL.get(priority, "-")))
+        fields.append("priority=%s")
+        params.append(priority)
+    if "status" in body:
+        status = tickets.status(body["status"], current["status"])
+        if status != current["status"]:
+            notes.append("状態: {} → {}".format(
+                tickets.STATUS_LABEL.get(current["status"], "-"),
+                tickets.STATUS_LABEL.get(status, "-")))
+            # 完了・取り下げにしたら対応日時を入れ、戻したら消す
+            if status in tickets.CLOSED_STATUSES and not current["resolved_at"]:
+                fields.append("resolved_at=%s")
+                params.append(db.now())
+            elif tickets.is_open(status) and current["resolved_at"]:
+                fields.append("resolved_at=%s")
+                params.append(None)
+        fields.append("status=%s")
+        params.append(status)
+
+    new_assignee = current["assignee_id"]
+    if "assignee_id" in body:
+        new_assignee = as_int(body["assignee_id"])
+        if new_assignee and not db.query_one(
+                "SELECT 1 AS x FROM users WHERE id=%s AND is_active=1", (new_assignee,)):
+            raise bad_request("担当者が見つかりません")
+        if new_assignee != current["assignee_id"]:
+            notes.append("担当: {} → {}".format(
+                current["assignee_name"] or "未割当",
+                db.scalar("SELECT name AS n FROM users WHERE id=%s",
+                          (new_assignee,), default="未割当") or "未割当"))
+        fields.append("assignee_id=%s")
+        params.append(new_assignee)
+
+    if "due_date" in body:
+        value = as_date(body["due_date"])
+        old = current["due_date"].isoformat() if current["due_date"] else None
+        if (value or None) != old:
+            notes.append("期限: {} → {}".format(old or "未設定", value or "未設定"))
+        fields.append("due_date=%s")
+        params.append(value)
+    if "occurred_at" in body:
+        fields.append("occurred_at=%s")
+        params.append(as_datetime(body["occurred_at"]))
+
+    if not fields:
+        raise bad_request("更新する項目がありません")
+    fields.append("updated_at=%s")
+    params.append(db.now())
+    params.append(ticket_id)
+    db.execute("UPDATE tickets SET {} WHERE id=%s".format(", ".join(fields)), params)
+
+    if notes:
+        ticket_note(ticket_id, user["id"], " / ".join(notes))
+    if new_assignee and new_assignee != current["assignee_id"] and new_assignee != user["id"]:
+        _notify_ticket_assignee(ticket_id, current["title"], new_assignee, user)
+    return json_response({"ticket": ticket_or_404(ticket_id)})
+
+
+@route("DELETE", r"/api/tickets/(\d+)")
+def delete_ticket(ctx, ticket_id):
+    user = me(ctx)
+    ticket = ticket_or_404(ticket_id)
+    if not can_drop_ticket(user, ticket):
+        raise forbidden("削除できるのは起票した本人か管理者だけです")
+    stored = db.query(
+        "SELECT stored_name FROM attachments WHERE ticket_id=%s AND kind='file'", (ticket_id,))
+    db.execute("DELETE FROM tickets WHERE id=%s", (ticket_id,))
+    for row in stored:
+        _remove_stored_file(row["stored_name"])
+    return json_response({"ok": True})
+
+
+def ticket_note(ticket_id, user_id, text):
+    """やりとりの経緯が残るよう、変更はコメント欄に書き足す。"""
+    db.execute(
+        "INSERT INTO comments(ticket_id, user_id, body, kind, created_at) "
+        "VALUES(%s,%s,%s,'system',%s)", (ticket_id, user_id, text, db.now()))
+
+
+def ticket_url(ticket_id):
+    base = db.get_setting("app_base_url", "").rstrip("/")
+    return "{}/#/ticket/{}".format(base, ticket_id) if base else ""
+
+
+def _notify_ticket_assignee(ticket_id, title, assignee_id, actor):
+    notify.create(
+        assignee_id, "assigned", "チケットの担当になりました: {}".format(title),
+        "担当に設定: {}\n{}".format(actor["name"], ticket_url(ticket_id)))
+
+
+@route("POST", r"/api/tickets/(\d+)/comments")
+def add_ticket_comment(ctx, ticket_id):
+    user = me(ctx)
+    ticket = ticket_or_404(ticket_id)
+    body = require(ctx.body, "body", "コメント")
+    comment_id = db.insert(
+        "INSERT INTO comments(ticket_id, user_id, body, kind, created_at) "
+        "VALUES(%s,%s,%s,'comment',%s)", (ticket_id, user["id"], body, db.now()))
+    db.execute("UPDATE tickets SET updated_at=%s WHERE id=%s", (db.now(), ticket_id))
+    notified = _notify_ticket_comment(ticket, user, body)
+    row = db.query_one(
+        "SELECT c.*, u.name AS user_name, u.avatar_color FROM comments c "
+        "LEFT JOIN users u ON u.id = c.user_id WHERE c.id=%s", (comment_id,))
+    return json_response({"comment": row, "mentioned": notified}, 201)
+
+
+def _notify_ticket_comment(ticket, actor, body):
+    recipients = set()
+    for key in ("assignee_id", "requester_id"):
+        if ticket[key]:
+            recipients.add(ticket[key])
+    for row in db.query("SELECT DISTINCT user_id FROM comments WHERE ticket_id=%s "
+                        "AND kind='comment' AND user_id IS NOT NULL", (ticket["id"],)):
+        recipients.add(row["user_id"])
+    # チケットは全員が見られるので、呼べる相手も全員
+    everyone = db.query("SELECT id, name, email FROM users WHERE is_active=1")
+    mentioned, _labels = mentions.find(body, everyone)
+    mentioned_ids = {m["id"] for m in mentioned} - {actor["id"]}
+    recipients.discard(actor["id"])
+    recipients -= mentioned_ids
+    link = ticket_url(ticket["id"])
+    excerpt = body if len(body) <= 300 else body[:300] + "…"
+    for user_id in mentioned_ids:
+        notify.create(user_id, "mention", "{} さんがあなたを呼んでいます: {}".format(
+            actor["name"], ticket["title"]), "{}\n\n{}".format(excerpt, link))
+    for user_id in recipients:
+        notify.create(user_id, "comment", "チケットのコメント: {}".format(ticket["title"]),
+                      "{} さんのコメント\n\n{}\n\n{}".format(actor["name"], excerpt, link))
+    return [m["name"] for m in mentioned if m["id"] in mentioned_ids]
+
+
+@route("POST", r"/api/tickets/(\d+)/attachments")
+def add_ticket_attachment(ctx, ticket_id):
+    user = me(ctx)
+    ticket_or_404(ticket_id)
+    return _store_attachments(ctx, user, {"ticket_id": ticket_id})
+
+
+@route("PUT", r"/api/tickets/(\d+)/tasks")
+def link_ticket_tasks(ctx, ticket_id):
+    """すでにあるタスクをチケットに結びつける。"""
+    user = me(ctx)
+    ticket_or_404(ticket_id)
+    wanted = [i for i in (as_int(v) for v in (ctx.body.get("task_ids") or [])) if i]
+    allowed = []
+    if wanted:
+        visible = auth.visible_project_ids(user)
+        rows = db.query(
+            "SELECT id FROM tasks WHERE id IN %s AND project_id IN %s",
+            (tuple(set(wanted)), tuple(visible))) if visible else []
+        allowed = [row["id"] for row in rows]
+    before = {r["task_id"] for r in db.query(
+        "SELECT task_id FROM ticket_tasks WHERE ticket_id=%s", (ticket_id,))}
+    db.execute("DELETE FROM ticket_tasks WHERE ticket_id=%s", (ticket_id,))
+    for task_id in allowed:
+        db.execute("INSERT IGNORE INTO ticket_tasks(ticket_id, task_id) VALUES(%s,%s)",
+                   (ticket_id, task_id))
+    if set(allowed) != before:
+        ticket_note(ticket_id, user["id"],
+                    "関連タスク: {} 件 → {} 件".format(len(before), len(allowed)))
+        db.execute("UPDATE tickets SET updated_at=%s WHERE id=%s", (db.now(), ticket_id))
+    return json_response({"task_ids": allowed})
+
+
+@route("POST", r"/api/tickets/(\d+)/task")
+def create_task_from_ticket(ctx, ticket_id):
+    """チケットの内容でタスクを起票し、そのまま結びつける。"""
+    user = me(ctx)
+    ticket = ticket_or_404(ticket_id)
+    project_id = as_int(ctx.body.get("project_id"))
+    if project_id is None:
+        raise bad_request("登録先のプロジェクトを選んでください")
+    project_or_404(user, project_id, "editor")
+
+    payload = {
+        "project_id": project_id,
+        "title": (ctx.body.get("title") or ticket["title"])[:300],
+        "description": ctx.body.get("description", _task_description_from(ticket)),
+        "category": ctx.body.get("category", ""),
+        "priority": as_int(ctx.body.get("priority"), ticket["priority"], 0, 3),
+        "assignee_id": ctx.body.get("assignee_id", ticket["assignee_id"]),
+        "due_date": ctx.body.get("due_date",
+                                 ticket["due_date"].isoformat() if ticket["due_date"] else None),
+    }
+    if "parent_id" in ctx.body:
+        payload["parent_id"] = ctx.body["parent_id"]
+    task = _create_task(user, payload)
+    db.execute("INSERT IGNORE INTO ticket_tasks(ticket_id, task_id) VALUES(%s,%s)",
+               (ticket_id, task["id"]))
+    # 受け付けたまま放置に見えないよう、対応中へ進めておく
+    if ticket["status"] == "new":
+        db.execute("UPDATE tickets SET status='doing' WHERE id=%s", (ticket_id,))
+    ticket_note(ticket_id, user["id"],
+                "タスクを作成: {}（{}）".format(task["title"], task["project_name"]))
+    db.execute("UPDATE tickets SET updated_at=%s WHERE id=%s", (db.now(), ticket_id))
+    return json_response({"task": task, "ticket": ticket_or_404(ticket_id)}, 201)
+
+
+def _task_description_from(ticket):
+    parts = ["チケット #{} から作成".format(ticket["id"])]
+    if ticket["on_behalf_of"]:
+        parts.append("依頼元: {}".format(ticket["on_behalf_of"]))
+    if ticket["body"]:
+        parts.append("")
+        parts.append(ticket["body"])
+    return "\n".join(parts)
+
+
+@route("POST", r"/api/tickets/(\d+)/issue")
+def create_issue_from_ticket(ctx, ticket_id):
+    """作業ではなく論点だったときに、プロジェクトの課題管理表へ移す。"""
+    user = me(ctx)
+    ticket = ticket_or_404(ticket_id)
+    project_id = as_int(ctx.body.get("project_id"))
+    if project_id is None:
+        raise bad_request("登録先のプロジェクトを選んでください")
+    project_or_404(user, project_id, "editor")
+    title = (ctx.body.get("title") or ticket["title"])[:300]
+    now = db.now()
+    seq = next_issue_seq(project_id)
+    issue_id = db.insert(
+        "INSERT INTO issues(project_id, seq, title, description, category, status, severity, "
+        "owner_id, raised_by, raised_on, due_date, created_at, updated_at) "
+        "VALUES(%s,%s,%s,%s,%s,'open',%s,%s,%s,%s,%s,%s,%s)",
+        (project_id, seq, title, _task_description_from(ticket),
+         normalize_issue_category(ctx.body.get("category"), "other"),
+         as_int(ctx.body.get("severity"), min(ticket["priority"], 3), 0, 3),
+         ticket["assignee_id"] if ctx.body.get("owner_id") is None
+         else as_int(ctx.body.get("owner_id")),
+         user["id"], db.today(),
+         ticket["due_date"], now, now))
+    db.execute("INSERT IGNORE INTO ticket_issues(ticket_id, issue_id) VALUES(%s,%s)",
+               (ticket_id, issue_id))
+    if ticket["status"] == "new":
+        db.execute("UPDATE tickets SET status='doing' WHERE id=%s", (ticket_id,))
+    issue = db.query_one(ISSUE_SELECT + " WHERE i.id=%s", (issue_id,))
+    ticket_note(ticket_id, user["id"],
+                "課題に登録: #{} {}（{}）".format(seq, title, issue["project_name"]))
+    db.execute("UPDATE tickets SET updated_at=%s WHERE id=%s", (db.now(), ticket_id))
+    return json_response({"issue": issue, "ticket": ticket_or_404(ticket_id)}, 201)
 
 
 # --------------------------------------------------------------------------

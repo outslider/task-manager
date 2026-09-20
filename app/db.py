@@ -160,6 +160,66 @@ DDL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
+    CREATE TABLE IF NOT EXISTS ticket_queues (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        name        VARCHAR(80)  NOT NULL,             -- 受付窓口の名前（情シス窓口 など）
+        description VARCHAR(300) NOT NULL DEFAULT '',
+        color       VARCHAR(20)  NOT NULL DEFAULT '#3b6ef5',
+        icon        VARCHAR(8)   NOT NULL DEFAULT '',
+        sort_order  INT          NOT NULL DEFAULT 0,
+        is_active   TINYINT(1)   NOT NULL DEFAULT 1,
+        created_at  DATETIME     NOT NULL,
+        UNIQUE KEY uq_queue_name (name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS tickets (
+        id           INT AUTO_INCREMENT PRIMARY KEY,
+        queue_id     INT NOT NULL,
+        kind         VARCHAR(20)  NOT NULL DEFAULT 'request',  -- request|question|incident
+        title        VARCHAR(300) NOT NULL,
+        body         TEXT,                               -- 依頼・問い合わせの内容
+        status       VARCHAR(20)  NOT NULL DEFAULT 'new', -- new|doing|pending|done|canceled
+        priority     TINYINT      NOT NULL DEFAULT 1,     -- 0 低 .. 3 緊急
+        requester_id INT NULL,                            -- 登録した人
+        on_behalf_of VARCHAR(120) NOT NULL DEFAULT '',    -- 代理で出したときの依頼元
+        assignee_id  INT NULL,                            -- 対応する人
+        due_date     DATE NULL,                           -- 回答・対応の期限
+        occurred_at  DATETIME NULL,                       -- 障害の発生日時
+        resolved_at  DATETIME NULL,
+        resolution   TEXT,                                -- 対応結果
+        created_at   DATETIME NOT NULL,
+        updated_at   DATETIME NOT NULL,
+        KEY idx_tickets_queue (queue_id, status),
+        KEY idx_tickets_assignee (assignee_id, status),
+        KEY idx_tickets_requester (requester_id),
+        KEY idx_tickets_due (due_date),
+        CONSTRAINT fk_ticket_queue     FOREIGN KEY (queue_id)     REFERENCES ticket_queues(id),
+        CONSTRAINT fk_ticket_requester FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE SET NULL,
+        CONSTRAINT fk_ticket_assignee  FOREIGN KEY (assignee_id)  REFERENCES users(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ticket_tasks (
+        ticket_id INT NOT NULL,
+        task_id   INT NOT NULL,
+        PRIMARY KEY (ticket_id, task_id),
+        KEY idx_ticket_tasks_task (task_id),
+        CONSTRAINT fk_tt_ticket FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+        CONSTRAINT fk_tt_task   FOREIGN KEY (task_id)   REFERENCES tasks(id)   ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ticket_issues (
+        ticket_id INT NOT NULL,
+        issue_id  INT NOT NULL,
+        PRIMARY KEY (ticket_id, issue_id),
+        KEY idx_ticket_issues_issue (issue_id),
+        CONSTRAINT fk_ti_ticket FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+        CONSTRAINT fk_ti_issue  FOREIGN KEY (issue_id)  REFERENCES issues(id)  ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
     CREATE TABLE IF NOT EXISTS recurrences (
         id             INT AUTO_INCREMENT PRIMARY KEY,
         project_id     INT NOT NULL,
@@ -194,14 +254,17 @@ DDL = [
         id         INT AUTO_INCREMENT PRIMARY KEY,
         task_id    INT NULL,
         issue_id   INT NULL,
+        ticket_id  INT NULL,
         user_id    INT NULL,
         body       TEXT NOT NULL,
         kind       VARCHAR(20) NOT NULL DEFAULT 'comment',   -- comment | system | checkin
         created_at DATETIME NOT NULL,
         KEY idx_comments_task (task_id),
         KEY idx_comments_issue (issue_id),
+        KEY idx_comments_ticket (ticket_id),
         CONSTRAINT fk_comment_task  FOREIGN KEY (task_id)  REFERENCES tasks(id)  ON DELETE CASCADE,
         CONSTRAINT fk_comment_issue FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+        CONSTRAINT fk_comment_ticket FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
         CONSTRAINT fk_comment_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
@@ -210,6 +273,7 @@ DDL = [
         id          INT AUTO_INCREMENT PRIMARY KEY,
         task_id     INT NULL,
         issue_id    INT NULL,
+        ticket_id   INT NULL,
         kind        VARCHAR(10)  NOT NULL,            -- file | link
         name        VARCHAR(300) NOT NULL,
         url         VARCHAR(2000) NOT NULL DEFAULT '',
@@ -220,8 +284,10 @@ DDL = [
         created_at  DATETIME     NOT NULL,
         KEY idx_attachments_task (task_id),
         KEY idx_attachments_issue (issue_id),
+        KEY idx_attachments_ticket (ticket_id),
         CONSTRAINT fk_att_task  FOREIGN KEY (task_id)  REFERENCES tasks(id)  ON DELETE CASCADE,
         CONSTRAINT fk_att_issue FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+        CONSTRAINT fk_att_ticket FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
         CONSTRAINT fk_att_user FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
@@ -532,6 +598,11 @@ MIGRATIONS = [
      "ALTER TABLE projects ADD COLUMN slack_events VARCHAR(120) NOT NULL DEFAULT ''"),
     ("attachments", "issue_id",
      "ALTER TABLE attachments ADD COLUMN issue_id INT NULL AFTER task_id"),
+    # チケットはあとから足した機能なので、既存 DB にも列を足す
+    ("comments", "ticket_id",
+     "ALTER TABLE comments ADD COLUMN ticket_id INT NULL AFTER issue_id"),
+    ("attachments", "ticket_id",
+     "ALTER TABLE attachments ADD COLUMN ticket_id INT NULL AFTER issue_id"),
 ]
 
 MIGRATION_INDEXES = [
@@ -539,6 +610,10 @@ MIGRATION_INDEXES = [
     ("comments", "idx_comments_issue", "ALTER TABLE comments ADD KEY idx_comments_issue (issue_id)"),
     ("attachments", "idx_attachments_issue",
      "ALTER TABLE attachments ADD KEY idx_attachments_issue (issue_id)"),
+    ("comments", "idx_comments_ticket",
+     "ALTER TABLE comments ADD KEY idx_comments_ticket (ticket_id)"),
+    ("attachments", "idx_attachments_ticket",
+     "ALTER TABLE attachments ADD KEY idx_attachments_ticket (ticket_id)"),
 ]
 
 # Comments and attachments originally belonged to a task only; issues reuse them.
@@ -554,6 +629,12 @@ MIGRATION_FKS = [
     ("attachments", "fk_att_issue",
      "ALTER TABLE attachments ADD CONSTRAINT fk_att_issue "
      "FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE"),
+    ("comments", "fk_comment_ticket",
+     "ALTER TABLE comments ADD CONSTRAINT fk_comment_ticket "
+     "FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE"),
+    ("attachments", "fk_att_ticket",
+     "ALTER TABLE attachments ADD CONSTRAINT fk_att_ticket "
+     "FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE"),
 ]
 
 
@@ -631,8 +712,9 @@ def init_db():
         if query_one("SELECT 1 FROM settings WHERE setting_key=%s", (k,)) is None:
             set_setting(k, v)
             added_settings.append(k)
-    from . import taxonomy          # 循環 import を避けるため、ここで取り込む
+    from . import taxonomy, tickets  # 循環 import を避けるため、ここで取り込む
     taxonomy.seed()
+    tickets.seed()
     # 何が変わったのかは残しておく（黙って直っていると、後で追えなくなる）
     if created:
         log.info("テーブルを作成しました: %s", ", ".join(created))

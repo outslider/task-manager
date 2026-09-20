@@ -16,11 +16,13 @@ export async function render(container, route) {
   const titles = {
     users: 'ユーザー管理', groups: 'グループ管理', settings: 'システム設定',
     taxonomy: '状態とカテゴリ',
+    queues: 'チケット窓口',
   };
   setHeader(titles[tab]);
   if (tab === 'users') await renderUsers(container);
   else if (tab === 'groups') await renderGroups(container);
   else if (tab === 'taxonomy') await renderTaxonomy(container);
+  else if (tab === 'queues') await renderQueues(container);
   else await renderSettings(container);
 }
 
@@ -732,4 +734,111 @@ async function renderTaxonomy(container) {
         categoryHost)),
     el('div', { style: { marginTop: '14px' } },
       el('button', { class: 'btn btn-primary', onClick: save }, '保存')));
+}
+
+
+/* --------------------------------------------------------------- 窓口 */
+
+/** チケットの受付窓口。部署や用途ごとに分けて、閉じた窓口は受付だけ止める。 */
+async function renderQueues(container) {
+  const grid = el('div', { class: 'grid cols-3' });
+
+  fill(container,
+    el('div', { class: 'page-head' },
+      el('div', { class: 'grow' },
+        el('div', { class: 'page-sub',
+          text: 'チケットを受ける窓口です。部署や用途ごとに分けられます。'
+            + '使わなくなった窓口は「受付停止」にすると、新しい起票だけ止まります。' })),
+      el('button', { class: 'btn btn-primary', onClick: () => edit(null) }, '＋ 窓口を追加')),
+    grid);
+
+  async function load() {
+    const { queues } = await api.get('/api/ticket-queues');
+    clear(grid);
+    if (!queues.length) {
+      grid.append(el('div', { class: 'card' },
+        el('div', { class: 'empty' }, el('div', { class: 'big', text: '📮' }), '窓口がありません')));
+    }
+    for (const queue of queues) {
+      grid.append(el('div', { class: `card${queue.is_active ? '' : ' is-muted'}` },
+        el('div', { class: 'card-head' },
+          el('h2', {}, `${queue.icon || '📮'} ${queue.name}`),
+          queue.is_active
+            ? el('span', { class: 'badge', text: `未完了 ${queue.open_count}` })
+            : el('span', { class: 'badge blocked', text: '受付停止' })),
+        el('div', { class: 'card-body' },
+          el('div', { class: 'page-sub', text: queue.description || '（説明なし）' }),
+          el('div', { class: 'meta-row', style: { margin: '10px 0' } },
+            el('span', { class: 'legend-swatch',
+              style: { background: queue.color, width: '14px', height: '14px' } }),
+            el('span', { class: 'hint', text: `全 ${queue.ticket_count} 件` })),
+          el('div', { style: { display: 'flex', gap: '6px' } },
+            el('button', { class: 'btn btn-sm', onClick: () => edit(queue) }, '編集'),
+            el('button', {
+              class: 'btn btn-sm btn-quiet-danger',
+              onClick: async () => {
+                if (!await confirmDialog(`「${queue.name}」を削除しますか？`,
+                  { danger: true, okLabel: '削除する' })) return;
+                try {
+                  await api.del(`/api/ticket-queues/${queue.id}`);
+                  toast('削除しました', 'ok');
+                  load();
+                } catch (error) { toast(error.message, 'error'); }
+              },
+            }, '削除')))));
+    }
+  }
+
+  async function edit(queue) {
+    const name = el('input', { class: 'input', placeholder: '例）情シス窓口' });
+    name.value = queue?.name || '';
+    const description = el('input', {
+      class: 'input', placeholder: '何を受ける窓口かひとこと',
+    });
+    description.value = queue?.description || '';
+    const icon = el('input', { class: 'input', maxlength: '4', placeholder: '📮' });
+    icon.value = queue?.icon || '';
+    const color = el('input', { type: 'color', class: 'input', value: queue?.color || '#3b6ef5' });
+    const order = el('input', { class: 'input', type: 'number', step: '10' });
+    order.value = String(queue?.sort_order ?? 0);
+    const active = el('input', { type: 'checkbox' });
+    active.checked = queue ? Boolean(queue.is_active) : true;
+
+    const result = await openModal({
+      title: queue ? '窓口を編集' : '窓口を追加',
+      build: () => el('div', {},
+        el('div', { class: 'field' }, el('label', { text: '窓口名 *' }), name),
+        el('div', { class: 'field' }, el('label', { text: '説明' }), description),
+        el('div', { class: 'row' },
+          el('div', { class: 'field' }, el('label', { text: '記号' }), icon,
+            el('div', { class: 'hint', text: '絵文字ひとつ' })),
+          el('div', { class: 'field' }, el('label', { text: '色' }), color),
+          el('div', { class: 'field' }, el('label', { text: '並び順' }), order)),
+        el('div', { class: 'field' },
+          el('label', { class: 'check' }, active, el('span', { text: '新しい起票を受け付ける' })))),
+      footer: (close) => [
+        el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
+        el('button', {
+          class: 'btn btn-primary',
+          onClick: async () => {
+            const payload = {
+              name: name.value.trim(), description: description.value.trim(),
+              icon: icon.value.trim(), color: color.value,
+              sort_order: Number(order.value) || 0, is_active: active.checked,
+            };
+            if (!payload.name) { toast('窓口名を入れてください', 'error'); return; }
+            try {
+              if (queue) await api.patch(`/api/ticket-queues/${queue.id}`, payload);
+              else await api.post('/api/ticket-queues', payload);
+              toast('保存しました', 'ok');
+              close(true);
+            } catch (error) { toast(error.message, 'error'); }
+          },
+        }, '保存'),
+      ],
+    });
+    if (result) load();
+  }
+
+  await load();
 }

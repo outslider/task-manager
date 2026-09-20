@@ -15,6 +15,7 @@ const NAV = [
   { id: 'gantt', icon: '📊', label: '全体ガント', hash: '#/gantt' },
   { id: 'links', icon: '🔗', label: 'リンク集', hash: '#/links' },
   { id: 'issues', icon: '📌', label: '課題', hash: '#/issues' },
+  { id: 'tickets', icon: '🎫', label: 'チケット', hash: '#/tickets' },
   { id: 'notifications', icon: '🔔', label: '通知', hash: '#/notifications', badge: true },
 ];
 
@@ -22,6 +23,7 @@ const ADMIN_NAV = [
   { id: 'users', icon: '👥', label: 'ユーザー', hash: '#/admin/users' },
   { id: 'groups', icon: '🏷️', label: 'グループ', hash: '#/admin/groups' },
   { id: 'taxonomy', icon: '🎨', label: '状態とカテゴリ', hash: '#/admin/taxonomy' },
+  { id: 'queues', icon: '📮', label: 'チケット窓口', hash: '#/admin/queues' },
   { id: 'settings', icon: '⚙️', label: 'システム設定', hash: '#/admin/settings' },
 ];
 
@@ -241,11 +243,14 @@ const ROUTES = [
   [/^#\/p\/(\d+)$/, (m) => ({ view: 'tasks', projectId: Number(m[1]) })],
   [/^#\/task\/(\d+)$/, (m) => ({ view: 'task', taskId: Number(m[1]) })],
   [/^#\/links$/, () => ({ view: 'links' })],
+  [/^#\/tickets$/, () => ({ view: 'tickets' })],
+  [/^#\/ticket\/(\d+)$/, (m) => ({ view: 'ticket', ticketId: Number(m[1]) })],
   [/^#\/notifications$/, () => ({ view: 'notifications' })],
   [/^#\/profile$/, () => ({ view: 'profile' })],
   [/^#\/admin\/users$/, () => ({ view: 'admin', tab: 'users' })],
   [/^#\/admin\/groups$/, () => ({ view: 'admin', tab: 'groups' })],
   [/^#\/admin\/taxonomy$/, () => ({ view: 'admin', tab: 'taxonomy' })],
+  [/^#\/admin\/queues$/, () => ({ view: 'admin', tab: 'queues' })],
   [/^#\/admin\/settings$/, () => ({ view: 'admin', tab: 'settings' })],
 ];
 
@@ -269,6 +274,7 @@ const LOADERS = {
   issues: () => import('./views/issues.js'),
   workload: () => import('./views/workload.js'),
   links: () => import('./views/links.js'),
+  tickets: () => import('./views/tickets.js'),
   notifications: () => import('./views/notifications.js'),
   profile: () => import('./views/profile.js'),
   admin: () => import('./views/admin.js'),
@@ -294,6 +300,13 @@ async function renderRoute() {
     }
     location.hash = `#/p/${detail.task.project_id}/tasks`;
     setTimeout(() => openTaskDetail(route.taskId), 60);
+    return;
+  }
+
+  if (route.view === 'ticket') {
+    const { openTicketDetail } = await import('./views/ticketDetail.js');
+    location.hash = '#/tickets';
+    setTimeout(() => openTicketDetail(route.ticketId), 60);
     return;
   }
 

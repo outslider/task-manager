@@ -82,11 +82,18 @@ function hit(kind, item, input) {
       closeAllOverlays();
       const { openIssueDetail } = await import('./issueDetail.js');
       openIssueDetail(item.id, { onChange });
+    } else if (kind === 'ticket') {
+      closeAllOverlays();
+      const { openTicketDetail } = await import('./ticketDetail.js');
+      openTicketDetail(item.id, { onChange });
     } else if (kind === 'comment') {
       closeAllOverlays();
       if (item.task_id) {
         const { openTaskDetail } = await import('./taskDetail.js');
         openTaskDetail(item.task_id, { onChange });
+      } else if (item.ticket_id) {
+        const { openTicketDetail } = await import('./ticketDetail.js');
+        openTicketDetail(item.ticket_id, { onChange });
       } else {
         const { openIssueDetail } = await import('./issueDetail.js');
         openIssueDetail(item.issue_id, { onChange });
@@ -125,6 +132,16 @@ function hit(kind, item, input) {
         el('span', { class: 'dot', style: { background: item.color } }),
         el('span', { text: item.name })),
       el('span', { class: 'search-sub', text: item.description || '' }));
+    return node;
+  }
+  if (kind === 'ticket') {
+    fill(node,
+      el('span', { class: 'search-title', text: `#${item.id} ${item.title}` }),
+      el('span', { class: 'search-sub' },
+        el('span', { class: 'dot', style: { background: item.queue_color || '#98a2b3' } }),
+        el('span', { text: item.queue_name || '' }),
+        item.on_behalf_of ? el('span', { text: ` · 依頼元 ${item.on_behalf_of}` }) : null,
+        item.assignee_name ? el('span', { text: ` · ${item.assignee_name}` }) : null));
     return node;
   }
   if (kind === 'todo') {

@@ -177,6 +177,7 @@ def as_bool(value, default=False):
 
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$")
 
 
 def as_date(value):
@@ -187,6 +188,21 @@ def as_date(value):
     if not _DATE_RE.match(value):
         raise bad_request("日付は YYYY-MM-DD 形式で指定してください: " + value)
     return value
+
+
+def as_datetime(value):
+    """'YYYY-MM-DDTHH:MM' / 'YYYY-MM-DD HH:MM(:SS)' / 空 を受ける。戻り値は文字列か None。
+
+    障害の発生日時のように、日付だけでは足りない項目に使う。
+    """
+    if value in (None, "", "null"):
+        return None
+    text = str(value).strip().replace("T", " ")
+    if _DATE_RE.match(text[:10]) and len(text) == 10:
+        return text + " 00:00:00"
+    if not _DATETIME_RE.match(text):
+        raise bad_request("日時は YYYY-MM-DD HH:MM 形式で指定してください: " + str(value))
+    return text if len(text) > 16 else text + ":00"
 
 
 def require(data, key, label=None):
