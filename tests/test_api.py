@@ -1365,9 +1365,15 @@ class TestSubdirectory(unittest.TestCase):
         self.assertEqual(location, "/tasks/")
 
     def test_api_works_under_the_prefix(self):
+        self.client.post("/tasks/api/auth/login",
+                         {"email": ADMIN[0], "password": ADMIN[1]})
         status, data = self.client.get("/tasks/api/meta")
         self.assertEqual(status, 200)
         self.assertIn("statuses", data)
+
+    def test_meta_needs_a_login(self):
+        # カテゴリ名などは社内情報なので、ログインしていない相手には返さない
+        self.assertEqual(self.client.get("/tasks/api/meta")[0], 401)
 
     def test_paths_outside_the_prefix_are_not_served(self):
         self.assertEqual(self.client.get("/")[0], 404)

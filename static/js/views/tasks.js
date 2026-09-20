@@ -396,10 +396,10 @@ export async function render(container, route) {
           onClick: (event) => { event.stopPropagation(); rowMenu(event.currentTarget, task); },
         }, '⋯')
         : null),
+    // 依存のバッジはタイトル行に出ているので、ここでは繰り返さない
     el('div', { class: 'task-sub' },
       el('span', { class: `badge ${task.status}`, text: STATUS_LABEL[task.status] }),
       task.category ? categoryChip(task.category, { small: true }) : null,
-      ...dependencyBadges(task),
       task.assignee_id ? el('span', { text: `👤 ${task.assignee_name}` }) : null,
       task.due_date
         ? el('span', { class: `cell-due ${dueClass(task.due_date, task.status)}`,

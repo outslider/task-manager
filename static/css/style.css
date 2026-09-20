@@ -1184,9 +1184,12 @@ input[type="color"].input {
   padding: 2px; cursor: pointer;
 }
 
-/* マイタスクはプロジェクト名の列がぶんだけ列が多く、既定の割付では右端が切れる */
-.mytask-list .task-row {
-  grid-template-columns: minmax(200px, 1fr) 118px 88px 84px 74px 128px 112px;
+/* マイタスクはプロジェクト名のぶんだけ列が多く、既定の割付では右端が切れる。
+   スマホは 1 列表示に切り替わるので、広い画面だけに効かせる。 */
+@media (min-width: 901px) {
+  .mytask-list .task-row {
+    grid-template-columns: minmax(200px, 1fr) 118px 88px 84px 74px 128px 112px;
+  }
 }
 .mytask-list .chip { max-width: 100%; }
 
@@ -1198,3 +1201,14 @@ input[type="color"].input {
 }
 .warn-fold .hint { margin-left: auto; }
 .warn-box .warn-fold + div { margin-top: 7px; }
+
+/* タブが画面に収まらないときは横に流す。続きがあることが分かるよう端をぼかす */
+.proj-tabs {
+  overflow-x: auto; scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+}
+.proj-tabs::-webkit-scrollbar { display: none; }
+@media (min-width: 901px) {
+  .proj-tabs { -webkit-mask-image: none; mask-image: none; }
+}

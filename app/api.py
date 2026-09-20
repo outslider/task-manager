@@ -2611,6 +2611,7 @@ def run_digest(ctx):
 
 @route("GET", r"/api/meta")
 def meta(ctx):
+    me(ctx)  # カテゴリ名などは社内情報なので、ログインしていない相手には返さない
     return json_response({
         "statuses": taxonomy.statuses(),
         "importance": [{"value": k, "label": v}
