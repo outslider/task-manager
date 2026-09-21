@@ -16,12 +16,20 @@ export function projectTabs(projectId, active) {
     bottlenecks: project?.stats?.blocked || 0,
     issues: project?.stats?.open_issues || 0,
   };
+  // このプロジェクト専用の窓口があるときだけ、チケットへの入口を出す
+  const openTickets = project?.stats?.open_tickets || 0;
+  const tabs = openTickets
+    ? [...TABS, { key: 'tickets', label: 'チケット', icon: '🎫',
+      href: `#/tickets?project=${projectId}`, count: openTickets }]
+    : TABS;
   return el('div', { class: 'proj-tabs' },
-    ...TABS.map((tab) => el('a', {
+    ...tabs.map((tab) => el('a', {
       class: `proj-tab${tab.key === active ? ' active' : ''}`,
-      href: `#/p/${projectId}/${tab.key}`,
+      href: tab.href || `#/p/${projectId}/${tab.key}`,
     },
     el('span', { class: 'ico', text: tab.icon }),
     el('span', { text: tab.label }),
-    counts[tab.key] ? el('span', { class: 'count', text: String(counts[tab.key]) }) : null)));
+    (tab.count ?? counts[tab.key])
+      ? el('span', { class: 'count', text: String(tab.count ?? counts[tab.key]) })
+      : null)));
 }

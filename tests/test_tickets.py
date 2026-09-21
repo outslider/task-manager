@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from test_api import ADMIN, ApiTestCase, Client  # noqa: E402
 
 ADMIN_EMAIL = ADMIN[0]
+ADMIN_NAME = "管理者"
 from app import db, tickets  # noqa: E402
 
 
@@ -1025,6 +1026,82 @@ class TestDailyTickets(TicketTestCase):
         self.make_ticket("窓口つき", assignee_id=self.admin_id())
         row = next(t for t in self.daily()["tickets"] if t["title"] == "窓口つき")
         self.assertEqual(row["queue_name"], self.queue["name"])
+
+
+class TestCrossLinks(TicketTestCase):
+    """チケットとタスク・課題・通知のあいだを行き来できる。"""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project("行き来PJ")
+
+    def test_the_task_knows_which_ticket_it_came_from(self):
+        ticket = self.make_ticket("もとの依頼")
+        _status, made = self.admin.post("/api/tickets/{}/task".format(ticket["id"]),
+                                        {"project_id": self.project["id"]})
+        _status, detail = self.admin.get("/api/tasks/{}".format(made["task"]["id"]))
+        self.assertEqual([t["id"] for t in detail["tickets"]], [ticket["id"]])
+        self.assertEqual(detail["tickets"][0]["queue_name"], self.queue["name"])
+
+    def test_the_issue_knows_too(self):
+        ticket = self.make_ticket("論点になった依頼")
+        _status, made = self.admin.post("/api/tickets/{}/issue".format(ticket["id"]),
+                                        {"project_id": self.project["id"]})
+        _status, detail = self.admin.get("/api/issues/{}".format(made["issue"]["id"]))
+        self.assertEqual([t["id"] for t in detail["tickets"]], [ticket["id"]])
+
+    def test_a_task_with_no_ticket_says_so(self):
+        task = self.make_task(self.project["id"], title="ふつうのタスク")
+        _status, detail = self.admin.get("/api/tasks/{}".format(task["id"]))
+        self.assertEqual(detail["tickets"], [])
+
+    def test_the_mention_notification_points_at_the_ticket(self):
+        user, email = self.make_user(name="呼ぶ人")
+        ticket = self.make_ticket("呼ばれるチケット")
+        self.client_for(email).post("/api/tickets/{}/comments".format(ticket["id"]),
+                                    {"body": "@{} お願いします".format(ADMIN_NAME)})
+        rows = db.query(
+            "SELECT type, ticket_id FROM notifications WHERE user_id=%s "
+            "ORDER BY id DESC LIMIT 1", (self.admin_user_id(),))
+        void = user
+        del void
+        self.assertEqual(rows[0]["ticket_id"], ticket["id"])
+
+    def admin_user_id(self):
+        return db.query_one("SELECT id FROM users WHERE email=%s", (ADMIN_EMAIL,))["id"]
+
+    def test_the_assignment_notification_points_at_the_ticket(self):
+        user, _email = self.make_user(name="担当にされる人")
+        ticket = self.make_ticket("担当をつける")
+        self.admin.patch("/api/tickets/{}".format(ticket["id"]),
+                         {"assignee_id": user["id"]})
+        row = db.query_one(
+            "SELECT ticket_id FROM notifications WHERE user_id=%s ORDER BY id DESC LIMIT 1",
+            (user["id"],))
+        self.assertEqual(row["ticket_id"], ticket["id"])
+
+    def test_deleting_the_ticket_takes_its_notifications_with_it(self):
+        user, _email = self.make_user(name="消える通知の人")
+        ticket = self.make_ticket("消すチケット")
+        self.admin.patch("/api/tickets/{}".format(ticket["id"]),
+                         {"assignee_id": user["id"]})
+        self.admin.delete("/api/tickets/{}".format(ticket["id"]))
+        left = db.scalar("SELECT COUNT(*) AS c FROM notifications WHERE ticket_id=%s",
+                         (ticket["id"],), default=0)
+        self.assertEqual(left, 0)
+
+    def test_a_project_queue_shows_up_in_the_project_stats(self):
+        queue = self.make_queue("PJ専用窓口", project_id=self.project["id"])
+        self.admin.post("/api/tickets", {"queue_id": queue["id"], "title": "PJ宛て"})
+        row = next(p for p in self.admin.get("/api/projects")[1]["projects"]
+                   if p["id"] == self.project["id"])
+        self.assertEqual(row["stats"]["open_tickets"], 1)
+
+    def test_a_loose_queue_is_not_counted_for_any_project(self):
+        self.make_ticket("どこ宛てでもない")
+        row = next(p for p in self.admin.get("/api/projects")[1]["projects"]
+                   if p["id"] == self.project["id"])
+        self.assertEqual(row["stats"]["open_tickets"], 0)
 
 
 class TestTicketSearch(TicketTestCase):

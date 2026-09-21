@@ -73,6 +73,10 @@ def parse_create_tables(sql):
             entry = line_buffer.strip().rstrip(",")
             line_buffer = ""
             upper = entry.upper()
+            # 「... REFERENCES x(id)」で改行して「ON DELETE ...」と続く書き方がある。
+            # 括弧は閉じているので前の行で切れてしまうため、ここで拾い直す。
+            if upper.startswith(("ON DELETE", "ON UPDATE", "REFERENCES")):
+                continue
             if upper.startswith(("PRIMARY KEY", "UNIQUE KEY", "KEY", "INDEX", "CONSTRAINT")):
                 keys.add(canonical_key(entry))
                 continue

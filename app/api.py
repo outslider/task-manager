@@ -127,6 +127,7 @@ def public_user(row):
         "avatar_color": row.get("avatar_color", "#4f8cff"),
         "ui_theme": row.get("ui_theme", "auto"),
         "ui_accent": row.get("ui_accent", ""),
+        "nav_order": [k for k in (row.get("nav_order") or "").split(",") if k],
     }
 
 
@@ -323,6 +324,19 @@ def update_profile(ctx):
     if "ui_accent" in ctx.body:
         fields.append("ui_accent=%s")
         params.append(normalize_color(ctx.body["ui_accent"]))
+    if "nav_order" in ctx.body:
+        # 並びは本人の好み。中身の妥当性は画面側が持つので、形だけ整えて預かる。
+        wanted = ctx.body["nav_order"] or []
+        if not isinstance(wanted, list):
+            raise bad_request("並び順の形式が正しくありません")
+        keys, seen = [], set()
+        for item in wanted:
+            key = re.sub(r"[^a-z0-9_-]", "", str(item).lower())[:20]
+            if key and key not in seen:
+                seen.add(key)
+                keys.append(key)
+        fields.append("nav_order=%s")
+        params.append(",".join(keys)[:300])
     if fields:
         params.append(user["id"])
         db.execute("UPDATE users SET {} WHERE id=%s".format(", ".join(fields)), params)
@@ -535,7 +549,7 @@ def delete_group(ctx, group_id):
 # --------------------------------------------------------------------------
 
 EMPTY_STATS = {"total": 0, "done": 0, "overdue": 0, "milestones": 0, "blocked": 0,
-               "open_issues": 0}
+               "open_issues": 0, "open_tickets": 0}
 
 
 def project_stats(project_ids):
@@ -563,8 +577,16 @@ def project_stats(project_ids):
             "WHERE project_id IN %s AND status IN %s GROUP BY project_id",
             (tuple(project_ids), OPEN_ISSUE_STATUSES)):
         stats.setdefault(r["project_id"], dict(EMPTY_STATS))["open_issues"] = int(r["c"])
+    # そのプロジェクト専用の窓口に来ている未完了チケット
+    for r in db.query(
+            "SELECT q.project_id, COUNT(*) AS c FROM tickets t "
+            "JOIN ticket_queues q ON q.id = t.queue_id "
+            "WHERE q.project_id IN %s AND t.status IN %s GROUP BY q.project_id",
+            (tuple(project_ids), tickets.OPEN_STATUSES)):
+        stats.setdefault(r["project_id"], dict(EMPTY_STATS))["open_tickets"] = int(r["c"])
     for row in stats.values():
         row.setdefault("open_issues", 0)
+        row.setdefault("open_tickets", 0)
     return stats
 
 
@@ -1141,9 +1163,16 @@ def get_task(ctx, task_id):
         "SELECT i.id, i.seq, i.title, i.status, i.severity, i.due_date FROM issues i "
         "JOIN issue_tasks it ON it.issue_id = i.id WHERE it.task_id=%s ORDER BY i.seq",
         (task_id,))
+    linked_tickets = db.query(
+        "SELECT t.id, t.title, t.status, t.kind, t.on_behalf_of, "
+        "       q.name AS queue_name, q.icon AS queue_icon "
+        "  FROM tickets t JOIN ticket_tasks tt ON tt.ticket_id = t.id "
+        "  JOIN ticket_queues q ON q.id = t.queue_id "
+        " WHERE tt.task_id=%s ORDER BY t.id", (task_id,))
     return json_response({
         "task": task, "path": path, "children": children, "comments": comments,
         "attachments": attachments, "deps": deps, "blocking": blocking, "issues": issues,
+        "tickets": linked_tickets,
         "metrics": metrics, "impact": impact, "conflicts": conflicts,
         "members": project_member_users(task["project_id"]),
         "my_role": auth.project_role(user, task["project_id"]),
@@ -2915,7 +2944,7 @@ def _notify_issue_owner(issue_id, title, owner_id, actor, project_id=None):
     link = "{}/#/issue/{}".format(base, issue_id) if base else ""
     notify.create(owner_id, "assigned", "課題の対応者に設定されました: {}".format(title),
                   "{} さんが対応者に設定しました\n{}".format(actor["name"], link),
-                  project_id=project_id)
+                  project_id=project_id, issue_id=issue_id)
 
 
 @route("GET", r"/api/issues/(\d+)")
@@ -2934,8 +2963,15 @@ def get_issue(ctx, issue_id):
         "SELECT a.*, u.name AS uploaded_by_name FROM attachments a "
         "LEFT JOIN users u ON u.id = a.uploaded_by WHERE a.issue_id=%s ORDER BY a.created_at",
         (issue_id,))
+    linked_tickets = db.query(
+        "SELECT t.id, t.title, t.status, t.kind, t.on_behalf_of, "
+        "       q.name AS queue_name, q.icon AS queue_icon "
+        "  FROM tickets t JOIN ticket_issues ti ON ti.ticket_id = t.id "
+        "  JOIN ticket_queues q ON q.id = t.queue_id "
+        " WHERE ti.issue_id=%s ORDER BY t.id", (issue_id,))
     return json_response({
         "issue": issue, "tasks": tasks, "comments": comments, "attachments": attachments,
+        "tickets": linked_tickets,
         "members": project_member_users(issue["project_id"]),
         "my_role": auth.project_role(user, issue["project_id"]),
     })
@@ -3091,11 +3127,12 @@ def _notify_issue_comment(issue, actor, body):
     for user_id in mentioned_ids:
         notify.create(user_id, "mention", "{} さんがあなたを呼んでいます: {}".format(
             actor["name"], issue["title"]),
-            "{}\n\n{}".format(excerpt, link), project_id=issue["project_id"])
+            "{}\n\n{}".format(excerpt, link), project_id=issue["project_id"],
+            issue_id=issue["id"])
     for user_id in recipients:
         notify.create(user_id, "comment", "課題コメント: {}".format(issue["title"]),
                       "{} さんのコメント\n\n{}\n\n{}".format(actor["name"], excerpt, link),
-                      project_id=issue["project_id"])
+                      project_id=issue["project_id"], issue_id=issue["id"])
     return [m["name"] for m in mentioned if m["id"] in mentioned_ids]
 
 
@@ -3985,7 +4022,8 @@ def ticket_url(ticket_id):
 def _notify_ticket_assignee(ticket_id, title, assignee_id, actor):
     notify.create(
         assignee_id, "assigned", "チケットの担当になりました: {}".format(title),
-        "担当に設定: {}\n{}".format(actor["name"], ticket_url(ticket_id)))
+        "担当に設定: {}\n{}".format(actor["name"], ticket_url(ticket_id)),
+        ticket_id=ticket_id)
 
 
 @route("POST", r"/api/tickets/(\d+)/comments")
@@ -4022,10 +4060,12 @@ def _notify_ticket_comment(ticket, actor, body):
     excerpt = body if len(body) <= 300 else body[:300] + "…"
     for user_id in mentioned_ids:
         notify.create(user_id, "mention", "{} さんがあなたを呼んでいます: {}".format(
-            actor["name"], ticket["title"]), "{}\n\n{}".format(excerpt, link))
+            actor["name"], ticket["title"]), "{}\n\n{}".format(excerpt, link),
+            ticket_id=ticket["id"])
     for user_id in recipients:
         notify.create(user_id, "comment", "チケットのコメント: {}".format(ticket["title"]),
-                      "{} さんのコメント\n\n{}\n\n{}".format(actor["name"], excerpt, link))
+                      "{} さんのコメント\n\n{}\n\n{}".format(actor["name"], excerpt, link),
+                      ticket_id=ticket["id"])
     return [m["name"] for m in mentioned if m["id"] in mentioned_ids]
 
 

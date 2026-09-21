@@ -175,6 +175,46 @@ class ApiTestCase(unittest.TestCase):
         return data["task"]
 
 
+class TestNavOrder(ApiTestCase):
+    """左メニューの並びは本人ごとに持つ。"""
+
+    def test_it_starts_empty(self):
+        # 他のテストが管理者の並びを変えているので、作りたての人で見る
+        _user, email = self.make_user(name="並び未設定")
+        rows = self.admin.get("/api/users")[1]["users"]
+        self.assertEqual(next(u for u in rows if u["email"] == email)["nav_order"], [])
+
+    def test_it_can_be_saved(self):
+        _status, data = self.admin.patch("/api/auth/profile",
+                                         {"nav_order": ["tickets", "daily", "mytasks"]})
+        self.assertEqual(data["user"]["nav_order"], ["tickets", "daily", "mytasks"])
+
+    def test_duplicates_and_junk_are_dropped(self):
+        _status, data = self.admin.patch("/api/auth/profile", {
+            "nav_order": ["daily", "daily", "  ", "<script>", "mytasks"]})
+        self.assertEqual(data["user"]["nav_order"], ["daily", "script", "mytasks"])
+
+    def test_it_can_be_emptied(self):
+        self.admin.patch("/api/auth/profile", {"nav_order": ["tickets"]})
+        _status, data = self.admin.patch("/api/auth/profile", {"nav_order": []})
+        self.assertEqual(data["user"]["nav_order"], [])
+
+    def test_a_wrong_shape_is_refused(self):
+        status, _ = self.admin.patch("/api/auth/profile", {"nav_order": "daily"})
+        self.assertEqual(status, 400)
+
+    def test_it_is_kept_per_person(self):
+        _user, email = self.make_user()
+        other = self.client_for(email)
+        self.admin.patch("/api/auth/profile", {"nav_order": ["tickets"]})
+        other.patch("/api/auth/profile", {"nav_order": ["links"]})
+        mine = self.admin.get("/api/users")[1]["users"]
+        self.assertEqual(
+            next(u for u in mine if u["email"] == ADMIN[0])["nav_order"], ["tickets"])
+        self.assertEqual(
+            next(u for u in mine if u["email"] == email)["nav_order"], ["links"])
+
+
 class TestAuth(ApiTestCase):
     def test_login_rejects_bad_password(self):
         client = Client(self.base)

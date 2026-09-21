@@ -22,7 +22,7 @@ OPEN_STATUSES = taxonomy.OPEN_STATUS_KEYS
 # --------------------------------------------------------------------------
 
 def create(user_id, ntype, title, body="", task_id=None, dedupe_key=None, email=True,
-           project_id=None):
+           project_id=None, issue_id=None, ticket_id=None):
     """Insert a notification.  A repeated dedupe_key for the same user is a no-op.
 
     画面の通知一覧には必ず残し、メールを送るかどうかだけ通知設定で判断する。
@@ -31,9 +31,9 @@ def create(user_id, ntype, title, body="", task_id=None, dedupe_key=None, email=
         return False
     try:
         db.insert(
-            "INSERT INTO notifications(user_id, task_id, type, title, body, dedupe_key, created_at) "
-            "VALUES(%s,%s,%s,%s,%s,%s,%s)",
-            (user_id, task_id, ntype, title, body, dedupe_key, db.now()),
+            "INSERT INTO notifications(user_id, task_id, issue_id, ticket_id, type, title, "
+            "body, dedupe_key, created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, task_id, issue_id, ticket_id, ntype, title, body, dedupe_key, db.now()),
         )
     except pymysql.err.IntegrityError:
         return False  # already sent

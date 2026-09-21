@@ -37,7 +37,8 @@ async function renderDetail(instance, taskId, onChange) {
   }
   const {
     task, path, children, comments, attachments, deps, blocking,
-    metrics = {}, impact = [], conflicts = [], issues = [], members = null, my_role: role,
+    metrics = {}, impact = [], conflicts = [], issues = [], tickets = [],
+    members = null, my_role: role,
   } = data;
   const canEdit = role === 'owner' || role === 'editor';
   const canComment = canEdit || role === 'commenter';
@@ -260,6 +261,24 @@ async function renderDetail(instance, taskId, onChange) {
     el('span', { class: 'name', text: item.title }),
     el('span', { class: 'size', text: direct.has(item.id) ? '直後' : '間接' }),
     item.due_date ? el('span', { class: 'size', text: formatDate(item.due_date) }) : null)));
+  }
+
+
+  /* ---- もとになったチケット ---- */
+  if ((tickets || []).length) {
+    body.append(sectionTitle(`関連チケット (${tickets.length})`));
+    body.append(...tickets.map((ticket) => el('div', {
+      class: 'att-item', style: { cursor: 'pointer' },
+      onClick: async () => {
+        const { openTicketDetail } = await import('./ticketDetail.js');
+        openTicketDetail(ticket.id, { onChange });
+      },
+    },
+    el('span', { class: 'kind-tag ticket', text: 'チケット' }),
+    el('span', { class: 'issue-no', text: `#${ticket.id}` }),
+    el('span', { class: 'name', text: ticket.title }),
+    el('span', { class: 'size', text: `${ticket.queue_icon || '📮'} ${ticket.queue_name}` }),
+    ticket.on_behalf_of ? el('span', { class: 'size', text: ticket.on_behalf_of }) : null)));
   }
 
   /* ---- linked issues ---- */

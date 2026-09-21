@@ -1368,3 +1368,37 @@ input[type="color"].input {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px;
 }
 .tk-range-label { font-size: 12.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* ---------- 今日の確認：種類の見分け ----------
+   タスク・課題・チケット・ToDo が同じ見た目で続くと取り違えるので、
+   左の色帯と見出しの色で区別する。 */
+.daily-bucket { border-left: 3px solid transparent; }
+.daily-bucket.kind-task { border-left-color: var(--accent); }
+.daily-bucket.kind-issue { border-left-color: var(--warn); }
+.daily-bucket.kind-ticket { border-left-color: #9061f9; }
+.daily-bucket.kind-todo { border-left-color: var(--text-faint); }
+.daily-bucket.kind-issue > .card-head h2 { color: var(--warn); }
+.daily-bucket.kind-ticket > .card-head h2 { color: #9061f9; }
+
+.daily-divider {
+  display: flex; align-items: center; gap: 10px;
+  margin: 20px 2px 10px; font-size: 12px; font-weight: 650; color: var(--text-faint);
+}
+.daily-divider::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+.kind-tag {
+  flex: none; font-size: 10.5px; font-weight: 700; letter-spacing: .04em;
+  padding: 1px 6px; border-radius: 5px;
+}
+.kind-tag.issue { background: var(--warn-soft); color: var(--warn); }
+.kind-tag.ticket { background: #f1ebfd; color: #7c4ddb; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .kind-tag.ticket { background: #2c2140; color: #b794f6; }
+}
+:root[data-theme="dark"] .kind-tag.ticket { background: #2c2140; color: #b794f6; }
+
+/* 開ける知らせだけカーソルを変える（開けないものまで押せそうに見せない） */
+.notif-item { cursor: default; }
+.notif-item.openable { cursor: pointer; }

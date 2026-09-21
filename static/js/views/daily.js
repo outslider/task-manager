@@ -80,7 +80,7 @@ export async function render(container) {
     const statusOf = (value) =>
       meta.statuses.find((x) => x.value === value) || { label: value };
     const list = data.tickets || [];
-    return el('div', { class: 'card daily-bucket' },
+    return el('div', { class: 'card daily-bucket kind-ticket' },
       el('div', { class: 'card-head' },
         el('h2', {}, '🎫 自分が担当のチケット'),
         list.length ? el('span', { class: 'badge', text: `${list.length} 件` }) : null,
@@ -106,6 +106,7 @@ export async function render(container) {
       el('div', {},
         el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center',
           flexWrap: 'wrap' } },
+        el('span', { class: 'kind-tag ticket', text: 'チケット' }),
         el('span', { class: 'issue-no', text: `#${ticket.id}` }),
         el('span', { text: kindOf(ticket.kind).icon }),
         el('a', { href: '#', style: { fontWeight: 550 }, text: ticket.title,
@@ -163,14 +164,20 @@ export async function render(container) {
       listHost.append(bucketCard(bucket, items));
     }
     if (data.stale.length) {
-      listHost.append(el('div', { class: 'card daily-bucket' },
+      listHost.append(el('div', { class: 'card daily-bucket kind-task' },
         el('div', { class: 'card-head' },
           el('h2', {}, '💤 1週間以上動きのないタスク'),
           el('span', { class: 'badge', text: `${data.stale.length} 件` })),
         el('div', { class: 'card-body tight' }, ...data.stale.map(taskItem))));
     }
+    // ここから先はタスクではない。同じ見た目で続くと取り違えるので、区切りを挟む。
+    if ((data.issues || []).length || (data.tickets || []).length
+        || data.unclaimed_tickets || (data.todos || []).length) {
+      listHost.append(el('div', { class: 'daily-divider' },
+        el('span', { text: 'タスク以外で自分に来ているもの' })));
+    }
     if ((data.issues || []).length) {
-      listHost.append(el('div', { class: 'card daily-bucket' },
+      listHost.append(el('div', { class: 'card daily-bucket kind-issue' },
         el('div', { class: 'card-head' },
           el('h2', {}, '📌 自分が対応者の課題'),
           el('span', { class: 'badge', text: `${data.issues.length} 件` })),
@@ -181,6 +188,7 @@ export async function render(container) {
           },
           el('div', {},
             el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+              el('span', { class: 'kind-tag issue', text: '課題' }),
               el('span', { class: 'issue-no', text: `#${issue.seq}` }),
               el('a', { href: '#', style: { fontWeight: 550 }, text: issue.title,
                 onClick: (event) => event.preventDefault() }),
@@ -201,7 +209,7 @@ export async function render(container) {
       listHost.append(ticketCard());
     }
     if ((data.todos || []).length) {
-      listHost.append(el('div', { class: 'card daily-bucket' },
+      listHost.append(el('div', { class: 'card daily-bucket kind-todo' },
         el('div', { class: 'card-head' },
           el('h2', {}, '📝 マイ ToDo'),
           el('a', { class: 'btn btn-sm', href: '#/todos' }, '一覧を開く')),
@@ -268,7 +276,9 @@ export async function render(container) {
       saveFolded(folded);
       draw();
     });
-    return el('div', { class: `card daily-bucket${closed ? ' folded' : ''}` }, head, body);
+    return el('div', {
+      class: `card daily-bucket kind-task${closed ? ' folded' : ''}`,
+    }, head, body);
   }
 
   function taskItem(task) {

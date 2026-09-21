@@ -1,6 +1,6 @@
 /* Personal settings: display name, colour, notification preference, password. */
 import { api } from '../api.js';
-import { setHeader } from '../app.js';
+import { defaultNavOrder, navChoices, setHeader } from '../app.js';
 import { store } from '../store.js';
 import { el, fill, toast } from '../util.js';
 import { ACCENT_PRESETS, applyAccent, applyTheme } from '../theme.js';
@@ -119,11 +119,78 @@ export async function render(container) {
           },
         }, 'パスワードを変更'))));
 
-  fill(container, grid, notificationCard(notifySettings));
+  fill(container, grid, navOrderCard(), notificationCard(notifySettings));
 }
 
 
 /** メールで受け取る通知の種類と、黙らせたいプロジェクトを選ぶ。 */
+/**
+ * 左メニューの並び替え。よく使うものを上に持ってこられるようにする。
+ * スマホ下部のタブは、この並びの先頭 4 つを使う。
+ */
+function navOrderCard() {
+  let items = navChoices();
+  const listHost = el('div', { class: 'nav-order' });
+  const saveButton = el('button', {
+    class: 'btn btn-primary',
+    onClick: async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const result = await api.patch('/api/auth/profile',
+          { nav_order: items.map((item) => item.id) });
+        store.user = result.user;
+        store.emit();
+        toast('並び順を保存しました', 'ok');
+      } catch (error) { toast(error.message, 'error'); }
+      button.disabled = false;
+    },
+  }, '並び順を保存');
+
+  const move = (index, direction) => {
+    const to = index + direction;
+    if (to < 0 || to >= items.length) return;
+    items.splice(to, 0, items.splice(index, 1)[0]);
+    draw();
+  };
+
+  function draw() {
+    fill(listHost, ...items.map((item, index) => el('div', { class: 'nav-order-row' },
+      el('span', { class: 'nav-order-no', text: String(index + 1) }),
+      el('span', { class: 'ico', text: item.icon }),
+      el('span', { class: 'grow', text: item.label }),
+      index < 4 ? el('span', { class: 'hint', text: 'スマホ下部' }) : null,
+      el('button', {
+        class: 'icon-btn', title: '上へ', disabled: index === 0 ? true : null,
+        onClick: () => move(index, -1),
+      }, '↑'),
+      el('button', {
+        class: 'icon-btn', title: '下へ',
+        disabled: index === items.length - 1 ? true : null,
+        onClick: () => move(index, 1),
+      }, '↓'))));
+  }
+  draw();
+
+  return el('div', { class: 'card', style: { marginTop: '14px' } },
+    el('div', { class: 'card-head' },
+      el('h2', {}, '左メニューの並び順'),
+      el('button', {
+        class: 'btn btn-sm',
+        onClick: () => {
+          const order = defaultNavOrder();
+          items = [...items].sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+          draw();
+        },
+      }, '既定の並びに戻す')),
+    el('div', { class: 'card-body' },
+      el('p', { class: 'page-sub', style: { marginTop: 0 },
+        text: 'よく使うものを上に動かせます。保存すると自分の画面だけに反映されます。'
+          + 'スマホでは、上から 4 つが画面下のタブになります。' }),
+      listHost,
+      el('div', { style: { marginTop: '12px' } }, saveButton)));
+}
+
 function notificationCard(data) {
   const prefs = data.prefs || {};
   const master = el('input', { type: 'checkbox' });

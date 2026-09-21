@@ -52,7 +52,8 @@ export async function render(container) {
 
   function row(item) {
     const node = el('div', {
-      class: `notif-item ${item.is_read ? 'read' : 'unread'}`,
+      class: `notif-item ${item.is_read ? 'read' : 'unread'}`
+        + (item.task_id || item.ticket_id || item.issue_id ? ' openable' : ''),
       onClick: async () => {
         if (!item.is_read) {
           await api.post('/api/notifications/read', { ids: [item.id] });
@@ -61,7 +62,16 @@ export async function render(container) {
           node.classList.add('read');
           store.refreshUnread().catch(() => {});
         }
-        if (item.task_id) openTaskDetail(item.task_id, { onChange: load });
+        // どこから来た知らせかで、開く先を変える
+        if (item.task_id) {
+          openTaskDetail(item.task_id, { onChange: load });
+        } else if (item.ticket_id) {
+          const { openTicketDetail } = await import('./ticketDetail.js');
+          openTicketDetail(item.ticket_id, { onChange: load });
+        } else if (item.issue_id) {
+          const { openIssueDetail } = await import('./issueDetail.js');
+          openIssueDetail(item.issue_id, { onChange: load });
+        }
       },
     },
     el('span', { class: 'dot' }),

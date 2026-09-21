@@ -106,13 +106,40 @@ function navItem(item, active) {
   return node;
 }
 
+/**
+ * 左メニューの並び。本人が決めた順があればそれに従い、
+ * あとから増えた項目は末尾に回す（設定を消さずに新機能を足せるように）。
+ */
+export function orderedNav() {
+  const wanted = store.user?.nav_order || [];
+  if (!wanted.length) return NAV;
+  const byId = new Map(NAV.map((item) => [item.id, item]));
+  const picked = [];
+  for (const id of wanted) {
+    if (byId.has(id)) {
+      picked.push(byId.get(id));
+      byId.delete(id);
+    }
+  }
+  return [...picked, ...byId.values()];
+}
+
+/** 並び替え画面のための一覧（id・記号・名前だけ）。 */
+export function navChoices() {
+  return orderedNav().map(({ id, icon, label }) => ({ id, icon, label }));
+}
+
+export function defaultNavOrder() {
+  return NAV.map((item) => item.id);
+}
+
 function renderSidebar() {
   const active = (location.hash || '#/daily');
   const projects = store.projects.filter((p) => !p.archived).slice(0, 12);
   fill(shell.sidebar, 
     brandLockup('md'),
     el('div', { class: 'sidebar-section' },
-      ...NAV.map((item) => navItem(item, active.startsWith(item.hash)))),
+      ...orderedNav().map((item) => navItem(item, active.startsWith(item.hash)))),
     el('div', { class: 'sidebar-section' },
       el('div', { class: 'sidebar-title', text: 'プロジェクト' }),
       ...projects.map((p) => navItem({
@@ -146,11 +173,12 @@ function renderSidebar() {
   );
 }
 
-const MOBILE_NAV = ['daily', 'mytasks', 'todos', 'projects'];
+/** スマホ下部に出す数。並び替えた先頭から取る。 */
+const MOBILE_NAV_COUNT = 4;
 
 function renderMobileNav() {
   const active = location.hash || '#/daily';
-  const items = NAV.filter((item) => MOBILE_NAV.includes(item.id));
+  const items = orderedNav().slice(0, MOBILE_NAV_COUNT);
   fill(shell.mobileNav, ...items.map((item) => {
     const button = el('button', {
       class: active.startsWith(item.hash) ? 'active' : '',
@@ -243,7 +271,10 @@ const ROUTES = [
   [/^#\/p\/(\d+)$/, (m) => ({ view: 'tasks', projectId: Number(m[1]) })],
   [/^#\/task\/(\d+)$/, (m) => ({ view: 'task', taskId: Number(m[1]) })],
   [/^#\/links$/, () => ({ view: 'links' })],
-  [/^#\/tickets$/, () => ({ view: 'tickets' })],
+  [/^#\/tickets(?:\?(.*))?$/, (m) => ({
+    view: 'tickets',
+    projectId: Number(new URLSearchParams(m[1] || '').get('project')) || null,
+  })],
   [/^#\/ticket\/(\d+)$/, (m) => ({ view: 'ticket', ticketId: Number(m[1]) })],
   [/^#\/notifications$/, () => ({ view: 'notifications' })],
   [/^#\/profile$/, () => ({ view: 'profile' })],

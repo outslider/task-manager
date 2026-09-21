@@ -33,6 +33,7 @@ DDL = [
         avatar_color  VARCHAR(20)  NOT NULL DEFAULT '#4f8cff',
         ui_theme      VARCHAR(10)  NOT NULL DEFAULT 'auto',   -- auto|light|dark
         ui_accent     VARCHAR(20)  NOT NULL DEFAULT '',       -- 空なら組織の既定色
+        nav_order     VARCHAR(300) NOT NULL DEFAULT '',       -- 左メニューの並び（本人ごと）
         created_at    DATETIME     NOT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
@@ -330,6 +331,8 @@ DDL = [
         id         INT AUTO_INCREMENT PRIMARY KEY,
         user_id    INT NOT NULL,
         task_id    INT NULL,
+        issue_id   INT NULL,
+        ticket_id  INT NULL,
         type       VARCHAR(30)  NOT NULL,
         title      VARCHAR(300) NOT NULL,
         body       TEXT,
@@ -339,7 +342,10 @@ DDL = [
         KEY idx_notif_user (user_id, is_read),
         UNIQUE KEY uq_notif_dedupe (user_id, dedupe_key),
         CONSTRAINT fk_notif_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-        CONSTRAINT fk_notif_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        CONSTRAINT fk_notif_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+        CONSTRAINT fk_notif_issue FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+        CONSTRAINT fk_notif_ticket FOREIGN KEY (ticket_id) REFERENCES tickets(id)
+            ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
@@ -595,6 +601,8 @@ MIGRATIONS = [
      "ALTER TABLE users ADD COLUMN ui_theme VARCHAR(10) NOT NULL DEFAULT 'auto'"),
     ("users", "ui_accent",
      "ALTER TABLE users ADD COLUMN ui_accent VARCHAR(20) NOT NULL DEFAULT ''"),
+    ("users", "nav_order",
+     "ALTER TABLE users ADD COLUMN nav_order VARCHAR(300) NOT NULL DEFAULT ''"),
     ("tasks", "estimate_hours",
      "ALTER TABLE tasks ADD COLUMN estimate_hours DECIMAL(6,1) NULL AFTER progress"),
     ("tasks", "actual_hours",
@@ -636,6 +644,11 @@ MIGRATIONS = [
      "ALTER TABLE tickets ADD COLUMN category_id INT NULL AFTER kind"),
     ("tickets", "spent_hours",
      "ALTER TABLE tickets ADD COLUMN spent_hours DECIMAL(6,1) NULL AFTER resolved_at"),
+    # 通知から課題・チケットへ直接飛べるようにする
+    ("notifications", "issue_id",
+     "ALTER TABLE notifications ADD COLUMN issue_id INT NULL AFTER task_id"),
+    ("notifications", "ticket_id",
+     "ALTER TABLE notifications ADD COLUMN ticket_id INT NULL AFTER issue_id"),
 ]
 
 MIGRATION_INDEXES = [
@@ -682,6 +695,12 @@ MIGRATION_FKS = [
     ("tickets", "fk_ticket_category",
      "ALTER TABLE tickets ADD CONSTRAINT fk_ticket_category "
      "FOREIGN KEY (category_id) REFERENCES ticket_categories(id) ON DELETE SET NULL"),
+    ("notifications", "fk_notif_issue",
+     "ALTER TABLE notifications ADD CONSTRAINT fk_notif_issue "
+     "FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE"),
+    ("notifications", "fk_notif_ticket",
+     "ALTER TABLE notifications ADD CONSTRAINT fk_notif_ticket "
+     "FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE"),
 ]
 
 

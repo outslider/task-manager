@@ -36,6 +36,7 @@ async function renderDetail(instance, issueId, onChange) {
     return;
   }
   const { issue, tasks, comments, attachments, my_role: role } = data;
+  const linkedTickets = data.tickets || [];
   const canEdit = role === 'owner' || role === 'editor';
   const canComment = canEdit || role === 'commenter';
   const info = issueCategory(issue.category);
@@ -179,6 +180,24 @@ async function renderDetail(instance, issueId, onChange) {
         text: formatDate(task.due_date),
       })
       : null)));
+  }
+
+
+  /* ---- もとになったチケット ---- */
+  if ((linkedTickets || []).length) {
+    body.append(sectionTitle(`関連チケット (${linkedTickets.length})`));
+    body.append(...linkedTickets.map((ticket) => el('div', {
+      class: 'att-item', style: { cursor: 'pointer' },
+      onClick: async () => {
+        const { openTicketDetail } = await import('./ticketDetail.js');
+        openTicketDetail(ticket.id, { onChange: reload });
+      },
+    },
+    el('span', { class: 'kind-tag ticket', text: 'チケット' }),
+    el('span', { class: 'issue-no', text: `#${ticket.id}` }),
+    el('span', { class: 'name', text: ticket.title }),
+    el('span', { class: 'size', text: `${ticket.queue_icon || '📮'} ${ticket.queue_name}` }),
+    ticket.on_behalf_of ? el('span', { class: 'size', text: ticket.on_behalf_of }) : null)));
   }
 
   /* ---- attachments ---- */

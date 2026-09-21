@@ -25,8 +25,10 @@ function saveFilter(state) {
   try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* 使えなくても困らない */ }
 }
 
-export async function render(container) {
+export async function render(container, route) {
   const state = loadFilter();
+  // プロジェクトから来たときは、その窓口を最初から選んでおく
+  const fromProject = route?.projectId || null;
   const meta = store.meta?.tickets || { kinds: [], statuses: [], priorities: [] };
   const kindLabel = Object.fromEntries(meta.kinds.map((k) => [k.value, k]));
   const statusLabel = Object.fromEntries(meta.statuses.map((s) => [s.value, s]));
@@ -124,9 +126,15 @@ export async function render(container) {
   }
 
   let queues = [];
+  let pickedFromProject = false;
 
   async function drawQueues() {
     ({ queues } = await api.get('/api/ticket-queues'));
+    if (fromProject && !pickedFromProject) {
+      const match = queues.find((q) => q.project_id === fromProject);
+      if (match) { state.queue_id = match.id; state.category_id = ''; }
+      pickedFromProject = true;
+    }
     const tab = (id, label, count, project) => el('button', {
       class: `queue-tab${String(state.queue_id) === String(id) ? ' active' : ''}`,
       title: project ? `${project} 専用の窓口` : '',
