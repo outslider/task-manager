@@ -71,7 +71,7 @@ export async function render(container) {
       statCard('担当の課題', (data.issues || []).length, '', 'issues'),
       statCard('担当のチケット', counts.tickets, '', 'tickets'),
       statCard('まもなく期限', counts.soon, '', 'soon'),
-      statCard('今週の完了', data.recently_done.length, 'ok', 'done')),
+      statCard('直近7日の完了', data.recently_done.length, 'ok', 'done')),
     listHost, saveBar);
 
   /**
