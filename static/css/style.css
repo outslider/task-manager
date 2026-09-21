@@ -1441,3 +1441,21 @@ input[type="color"].input {
 /* 開ける知らせだけカーソルを変える（開けないものまで押せそうに見せない） */
 .notif-item { cursor: default; }
 .notif-item.openable { cursor: pointer; }
+
+/* 今日の確認の集計。件数がひと目でそろうよう 6 枚を横並びにし、
+   0 でないものは押すとその欄へ飛べるようにしている。 */
+.daily-stats { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.daily-stats .stat { padding: 10px 13px; }
+.daily-stats .stat .v { font-size: 25px; }
+.card.stat.jump { cursor: pointer; }
+.card.stat.jump:hover { border-color: var(--accent); background: var(--surface-2); }
+.daily-bucket.kind-done { border-left-color: var(--ok); }
+@media (max-width: 1200px) { .daily-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+/* 狭い画面では 6 枚が縦に伸びて、肝心の一覧が画面外へ追いやられる。
+   3 列に詰めて、2 行で収まるようにする。 */
+@media (max-width: 700px) {
+  .daily-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .daily-stats .stat { padding: 7px 8px; }
+  .daily-stats .stat .k { font-size: 10.5px; line-height: 1.35; }
+  .daily-stats .stat .v { font-size: 19px; }
+}

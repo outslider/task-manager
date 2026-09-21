@@ -15,6 +15,8 @@ const BUCKETS = [
   { key: 'no_due', label: '期限未設定', tone: '', icon: '❓', folded: true },
   { key: 'later', label: '先の予定', tone: '', icon: '🗓', folded: true },
 ];
+/** 停滞は「今日やること」ではないので、件数だけ見せて既定ではたたむ。 */
+const STALE_KEY = 'stale';
 const FOLD_KEY = 'tm.daily.folded';
 
 function loadFolded() {
@@ -22,7 +24,7 @@ function loadFolded() {
     const saved = localStorage.getItem(FOLD_KEY);
     if (saved !== null) return new Set(JSON.parse(saved));
   } catch { /* private mode */ }
-  return new Set(BUCKETS.filter((b) => b.folded).map((b) => b.key));
+  return new Set([...BUCKETS.filter((b) => b.folded).map((b) => b.key), STALE_KEY]);
 }
 
 function saveFolded(set) {
@@ -63,11 +65,13 @@ export async function render(container) {
             ? el('span', { class: 'badge', style: { marginLeft: '8px' },
               text: `🔥 ${data.streak}日連続チェックイン` })
             : null))),
-    el('div', { class: 'grid cols-4', style: { marginBottom: '14px' } },
-      statCard('期限超過', counts.overdue, counts.overdue ? 'danger' : ''),
-      statCard('本日期限', counts.today, counts.today ? 'warn' : ''),
-      statCard('まもなく期限', counts.soon, ''),
-      statCard('今週の完了', data.recently_done.length, 'ok')),
+    el('div', { class: 'grid daily-stats', style: { marginBottom: '14px' } },
+      statCard('期限超過', counts.overdue, counts.overdue ? 'danger' : '', 'overdue'),
+      statCard('本日期限', counts.today, counts.today ? 'warn' : '', 'today'),
+      statCard('担当の課題', (data.issues || []).length, '', 'issues'),
+      statCard('担当のチケット', counts.tickets, '', 'tickets'),
+      statCard('まもなく期限', counts.soon, '', 'soon'),
+      statCard('今週の完了', data.recently_done.length, 'ok', 'done')),
     listHost, saveBar);
 
   /**
@@ -147,37 +151,111 @@ export async function render(container) {
       : `${day} — 期限が迫っているものはありません`;
   }
 
-  function statCard(label, value, tone) {
+  /**
+   * 上の集計。押すとその節へ飛ぶ。
+   * スクロールしないと全体が分からない、という状態を避けるため、
+   * 今日見るものの件数はここだけで全部そろうようにしてある。
+   */
+  function statCard(label, value, tone, anchor) {
     // 0 のカードまで同じ濃さだと、目を向けるべきところが分からなくなる
-    return el('div', { class: `card stat${value ? '' : ' zero'}` },
-      el('div', { class: 'k', text: label }),
-      el('div', { class: `v ${value ? tone : ''}`.trim(), text: String(value) }));
+    const node = el('div', {
+      class: `card stat${value ? '' : ' zero'}${value && anchor ? ' jump' : ''}`,
+      title: value && anchor ? 'ここを押すと該当の欄へ移動します' : '',
+      onClick: value && anchor ? () => {
+        const target = listHost.querySelector(`[data-sec="${anchor}"]`);
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } : null,
+    },
+    el('div', { class: 'k', text: label }),
+    el('div', { class: `v ${value ? tone : ''}`.trim(), text: String(value) }));
+    return node;
+  }
+
+  /** 節に目印を付けて、上の集計から飛べるようにする。 */
+  function section(id, node) {
+    if (node) node.dataset.sec = id;
+    return node;
   }
 
   function draw() {
     clear(listHost);
-    let rendered = 0;
-    for (const bucket of BUCKETS) {
-      const items = data.buckets[bucket.key] || [];
-      if (!items.length) continue;
-      rendered += items.length;
-      listHost.append(bucketCard(bucket, items));
+    const bucket = (key) => {
+      const items = data.buckets[key] || [];
+      if (!items.length) return null;
+      return section(key, bucketCard(BUCKETS.find((b) => b.key === key), items));
+    };
+
+    // いま見るもの。期限切れ・今日・課題・チケットを先に置く。
+    const urgent = [
+      bucket('overdue'),
+      bucket('today'),
+      (data.issues || []).length ? section('issues', issueCard()) : null,
+      (data.tickets || []).length || data.unclaimed_tickets
+        ? section('tickets', ticketCard())
+        : null,
+    ].filter(Boolean);
+    listHost.append(...urgent);
+
+    // そのあとで見るもの
+    const later = [
+      bucket('soon'),
+      (data.todos || []).length ? section('todos', todoCard()) : null,
+      bucket('later'),
+      bucket('no_due'),
+      data.stale.length ? section('stale', staleCard()) : null,
+    ].filter(Boolean);
+    if (later.length) {
+      if (urgent.length) {
+        listHost.append(el('div', { class: 'daily-divider' },
+          el('span', { text: 'そのあとで見るもの' })));
+      }
+      listHost.append(...later);
     }
-    if (data.stale.length) {
-      listHost.append(el('div', { class: 'card daily-bucket kind-task' },
-        el('div', { class: 'card-head' },
-          el('h2', {}, '💤 1週間以上動きのないタスク'),
-          el('span', { class: 'badge', text: `${data.stale.length} 件` })),
-        el('div', { class: 'card-body tight' }, ...data.stale.map(taskItem))));
+    if (data.recently_done.length) {
+      listHost.append(section('done', el('div', { class: 'card daily-bucket kind-done' },
+        el('div', { class: 'card-head' }, el('h2', {}, '✅ 直近7日で完了したタスク')),
+        el('div', { class: 'card-body tight' },
+          ...data.recently_done.map((task) => el('div', { class: 'daily-item' },
+            el('div', {},
+              el('div', {}, el('a', {
+                href: '#', onClick: (event) => {
+                  event.preventDefault();
+                  openTaskDetail(task.id, { onChange: reload });
+                }, text: task.title,
+              })),
+              el('div', { class: 'page-sub', text: task.project_name })),
+            el('span', { class: 'badge done', text: '完了' })))))));
     }
-    // ここから先はタスクではない。同じ見た目で続くと取り違えるので、区切りを挟む。
-    if ((data.issues || []).length || (data.tickets || []).length
-        || data.unclaimed_tickets || (data.todos || []).length) {
-      listHost.append(el('div', { class: 'daily-divider' },
-        el('span', { text: 'タスク以外で自分に来ているもの' })));
+    if (!urgent.length && !later.length) {
+      listHost.append(el('div', { class: 'card' },
+        el('div', { class: 'empty' },
+          el('div', { class: 'big', text: '🎉' }),
+          '対応が必要なものはありません。お疲れさまです！')));
     }
-    if ((data.issues || []).length) {
-      listHost.append(el('div', { class: 'card daily-bucket kind-issue' },
+  }
+
+  /** 止まっているタスク。開始日がまだのものはサーバー側で除いてある。 */
+  function staleCard() {
+    const closed = folded.has(STALE_KEY);
+    const head = el('div', { class: 'card-head foldable' },
+      el('h2', {},
+        el('span', { class: 'fold-mark', text: closed ? '▶' : '▼' }),
+        ' 💤 1週間以上動きのないタスク'),
+      el('span', { class: 'badge', text: `${data.stale.length} 件` }));
+    head.addEventListener('click', () => {
+      if (folded.has(STALE_KEY)) folded.delete(STALE_KEY);
+      else folded.add(STALE_KEY);
+      saveFolded(folded);
+      draw();
+    });
+    return el('div', { class: `card daily-bucket kind-task${closed ? ' folded' : ''}` },
+      head,
+      el('div', { class: 'card-body tight', hidden: closed },
+        ...(closed ? [] : data.stale.map(taskItem))));
+  }
+
+  function issueCard() {
+    return el('div', { class: 'card daily-bucket kind-issue' },
         el('div', { class: 'card-head' },
           el('h2', {}, '📌 自分が対応者の課題'),
           el('span', { class: 'badge', text: `${data.issues.length} 件` })),
@@ -203,13 +281,11 @@ export async function render(container) {
             el('span', { class: `sev sev-${issue.severity}`,
               text: `影響度 ${SEVERITY_LABEL[issue.severity]}` }),
             el('span', { class: `badge ${issue.status}`,
-              text: ISSUE_STATUS_LABEL[issue.status] })))))));
-    }
-    if ((data.tickets || []).length || data.unclaimed_tickets) {
-      listHost.append(ticketCard());
-    }
-    if ((data.todos || []).length) {
-      listHost.append(el('div', { class: 'card daily-bucket kind-todo' },
+              text: ISSUE_STATUS_LABEL[issue.status] }))))));
+  }
+
+  function todoCard() {
+    return el('div', { class: 'card daily-bucket kind-todo' },
         el('div', { class: 'card-head' },
           el('h2', {}, '📝 マイ ToDo'),
           el('a', { class: 'btn btn-sm', href: '#/todos' }, '一覧を開く')),
@@ -235,29 +311,7 @@ export async function render(container) {
                 class: `badge ${dueClass(todo.due_date, 'todo') || ''}`.trim(),
                 text: `期限 ${formatDate(todo.due_date)}`,
               })
-              : null)))));
-    }
-    if (data.recently_done.length) {
-      listHost.append(el('div', { class: 'card daily-bucket' },
-        el('div', { class: 'card-head' }, el('h2', {}, '✅ 直近7日で完了したタスク')),
-        el('div', { class: 'card-body tight' },
-          ...data.recently_done.map((task) => el('div', { class: 'daily-item' },
-            el('div', {},
-              el('div', {}, el('a', {
-                href: '#', onClick: (event) => {
-                  event.preventDefault();
-                  openTaskDetail(task.id, { onChange: reload });
-                }, text: task.title,
-              })),
-              el('div', { class: 'page-sub', text: task.project_name })),
-            el('span', { class: 'badge done', text: '完了' }))))));
-    }
-    if (rendered === 0 && !data.stale.length) {
-      listHost.append(el('div', { class: 'card' },
-        el('div', { class: 'empty' },
-          el('div', { class: 'big', text: '🎉' }),
-          '対応が必要なタスクはありません。お疲れさまです！')));
-    }
+              : null))));
   }
 
   /** 区分ごとのまとまり。見出しを押すと開け閉めできる。 */

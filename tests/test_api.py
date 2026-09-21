@@ -175,6 +175,43 @@ class ApiTestCase(unittest.TestCase):
         return data["task"]
 
 
+class TestDailyStale(ApiTestCase):
+    """「動きのないタスク」に、まだ始まっていないものを混ぜない。"""
+
+    def stale_titles(self):
+        return [t["title"] for t in self.admin.get("/api/daily")[1]["stale"]]
+
+    def make_old(self, title, **kwargs):
+        from app import db as database
+        user = database.query_one("SELECT id FROM users WHERE email=%s", (ADMIN[0],))
+        task = self.make_task(self.project["id"], title,
+                              assignee_id=user["id"], **kwargs)
+        database.execute("UPDATE tasks SET updated_at=%s WHERE id=%s",
+                         (this_week(-30) + " 00:00:00", task["id"]))
+        return task
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project("停滞PJ")
+
+    def test_an_old_task_shows_up(self):
+        self.make_old("ずっと動いていない")
+        self.assertIn("ずっと動いていない", self.stale_titles())
+
+    def test_a_task_that_has_not_started_is_left_out(self):
+        self.make_old("まだ始まらない", start_date=this_week(60))
+        self.assertNotIn("まだ始まらない", self.stale_titles())
+
+    def test_a_task_started_already_shows_up(self):
+        self.make_old("始まっているのに止まっている", start_date=this_week(-10))
+        self.assertIn("始まっているのに止まっている", self.stale_titles())
+
+    def test_a_task_starting_today_shows_up(self):
+        self.make_old("今日から", start_date=this_week(
+            __import__("datetime").date.today().weekday()))
+        self.assertIn("今日から", self.stale_titles())
+
+
 class TestNavOrder(ApiTestCase):
     """左メニューの並びは本人ごとに持つ。"""
 

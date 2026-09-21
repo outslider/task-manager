@@ -2531,6 +2531,7 @@ def daily(ctx):
          ORDER BY t.completed_at DESC LIMIT 20
         """,
         (user["id"], db.now() - timedelta(days=7), visible))
+    # 開始日がまだ来ていないタスクは、動いていなくて当たり前なので数えない
     stale = db.query(
         """
         SELECT t.id, t.title, t.status, t.progress, t.due_date, p.name AS project_name,
@@ -2538,9 +2539,10 @@ def daily(ctx):
           FROM tasks t JOIN projects p ON p.id = t.project_id
          WHERE t.assignee_id=%s AND t.status IN %s AND p.archived=0
            AND t.updated_at < %s AND t.project_id IN %s
+           AND (t.start_date IS NULL OR t.start_date <= %s)
          ORDER BY t.updated_at LIMIT 20
         """,
-        (user["id"], OPEN_STATUSES, db.now() - timedelta(days=7), visible))
+        (user["id"], OPEN_STATUSES, db.now() - timedelta(days=7), visible, today))
     checkin = db.query_one(
         "SELECT * FROM checkins WHERE user_id=%s AND checkin_date=%s", (user["id"], today))
     issues = db.query(
