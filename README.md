@@ -1492,7 +1492,7 @@ task_manager/
 │       ├── brand.js       ロゴ（アクセントカラーに追随）
 │       └── views/         画面ごとのモジュール（search.js / importTasks.js / todos.js など）
 ├── tests/
-│   ├── test_api.py        API 統合テスト（327 ケース）
+│   ├── test_api.py        API 統合テスト（328 ケース）
 │   ├── test_graph.py      依存グラフ解析の単体テスト（18 ケース）
 │   ├── test_nlp.py        自然言語解析・分解の単体テスト（32 ケース）
 │   ├── test_workload.py   負荷集計・繰り返し規則の単体テスト（20 ケース）
@@ -1500,7 +1500,7 @@ task_manager/
 │   ├── test_migration.py  既存DBを最新へ移行できるかの検証（10 ケース）
 │   ├── test_mentions.py   @メンションの解釈（16 ケース）
 │   ├── test_ai.py         メモの読み取り・名寄せ・進行レビュー（23 ケース）
-│   ├── test_tickets.py    チケットの受付・分類・集計・取り込み（132 ケース）
+│   ├── test_tickets.py    チケットの受付・分類・集計・取り込み（140 ケース）
 │   └── fixtures/          初版のスキーマ（移行検証の基準）
 ├── docs/schema.sql        スキーマ定義（参照用）
 ├── deploy/
@@ -1556,19 +1556,19 @@ TM_DB_PASSWORD='アプリ用ユーザーのパスワード' .venv/bin/python -m 
 | POST | `/api/nl/parse` | 一文からタスク下書きを作る（DB には書き込まない） |
 | POST | `/api/nl/decompose` | 子タスク候補を作る（DB には書き込まない） |
 | GET / POST | `/api/ticket-queues` | 受付窓口の一覧・追加（追加は管理者のみ） |
-| PATCH / DELETE | `/api/ticket-queues/:id` | 窓口の編集・削除（管理者のみ） |
+| PATCH / DELETE | `/api/ticket-queues/{id}` | 窓口の編集・削除（管理者のみ） |
 | GET / POST | `/api/tickets` | チケットの一覧・起票 |
-| GET / PATCH / DELETE | `/api/tickets/:id` | チケットの詳細・更新・削除 |
+| GET / PATCH / DELETE | `/api/tickets/{id}` | チケットの詳細・更新・削除 |
 | GET | `/api/tickets/stats` | 日次・週次の受付数と完了数（`unit` / `span` / `end` / `queue_id` / `project_id`）。`end` は半年前まで |
 | GET | `/api/tickets/import-fields` | 取り込みに使える列の一覧 |
 | POST | `/api/tickets/import` | CSV / Excel からの一括登録（`dry_run` で下見） |
-| POST | `/api/tickets/:id/comments` | やりとりを記録する |
-| POST | `/api/tickets/:id/attachments` | ファイル・URL を添付する |
-| PUT | `/api/tickets/:id/tasks` | 既存タスクへの紐づけを置き換える |
-| POST | `/api/tickets/:id/task` | チケットからタスクを作って紐づける |
-| POST | `/api/tickets/:id/issue` | チケットから課題を作って紐づける |
+| POST | `/api/tickets/{id}/comments` | やりとりを記録する |
+| POST | `/api/tickets/{id}/attachments` | ファイル・URL を添付する |
+| PUT | `/api/tickets/{id}/tasks` | 既存タスクへの紐づけを置き換える |
+| POST | `/api/tickets/{id}/task` | チケットからタスクを作って紐づける |
+| POST | `/api/tickets/{id}/issue` | チケットから課題を作って紐づける |
 | POST | `/api/nl/extract` | 会議メモからタスク候補をまとめて取り出す（DB には書き込まない） |
-| POST | `/api/projects/:id/review` | 進行上の危ないところを書いてもらう（Claude 連携が必要） |
+| POST | `/api/projects/{id}/review` | 進行上の危ないところを書いてもらう（Claude 連携が必要） |
 | POST | `/api/tasks/{id}/subtasks` | 提案された子タスクの一括登録 |
 | GET | `/api/workload?project_id=&weeks=` | 担当者ごとの週別負荷と工数サマリ |
 | GET/POST | `/api/projects/{id}/recurrences` | 定例タスクの一覧・作成 |
