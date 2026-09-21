@@ -18,7 +18,11 @@ export async function render(container) {
 
   setHeader('マイタスク');
 
+  // 「自分の担当」で見ているあいだ、担当者の列は全部自分になるので出さない
   const listHost = el('div', { class: 'mytask-list' });
+  const syncScopeClass = () => {
+    listHost.classList.toggle('no-assignee', state.scope === 'mine');
+  };
   const summary = el('div', { class: 'page-sub' });
   const timeline = el('div', { class: 'card', style: { marginBottom: '14px' } });
 
@@ -71,6 +75,7 @@ export async function render(container) {
         state.scope = value;
         [...event.currentTarget.parentNode.children].forEach((b) => b.classList.remove('active'));
         event.currentTarget.classList.add('active');
+        syncScopeClass();
         load();
       },
     }, label);
@@ -245,12 +250,14 @@ export async function render(container) {
       el('span', { class: 'task-meta-icons' },
         task.comment_count ? el('span', {}, `💬${task.comment_count}`) : null,
         task.attachment_count ? el('span', {}, `📎${task.attachment_count}`) : null)),
-    el('div', { class: 'cell-hide-sm' },
-      task.assignee_id
-        ? el('span', { class: 'avatar-stack' },
-          avatar({ name: task.assignee_name, avatar_color: task.assignee_color }, 'sm'),
-          el('span', { class: 'cell-mut', text: task.assignee_name }))
-        : el('span', { class: 'cell-mut', text: '未割当' })),
+    state.scope === 'mine'
+      ? null
+      : el('div', { class: 'cell-hide-sm' },
+        task.assignee_id
+          ? el('span', { class: 'avatar-stack' },
+            avatar({ name: task.assignee_name, avatar_color: task.assignee_color }, 'sm'),
+            el('span', { class: 'cell-mut', text: task.assignee_name }))
+          : el('span', { class: 'cell-mut', text: '未割当' })),
     el('div', { class: 'cell-hide-sm' },
       el('span', { class: `badge ${task.status}`, text: STATUS_LABEL[task.status] })),
     el('div', { class: `cell-mut cell-due cell-hide-sm ${dueClass(task.due_date, task.status)}` },
@@ -278,5 +285,6 @@ export async function render(container) {
       el('span', { text: `${task.progress}%` })));
   }
 
+  syncScopeClass();
   await load();
 }

@@ -120,11 +120,23 @@ export function applyTaxonomy(meta) {
       STATUS_COLOR[row.value] = row.color;
     }
   }
+  applyStatusColors();
   if (Array.isArray(meta?.categories)) {
     CATEGORIES.length = 0;
     CATEGORIES.push(...meta.categories);
   }
 }
+/**
+ * 状態の色を CSS 変数に流す。管理画面で選んだ色を、
+ * ガントだけでなく一覧のバッジにも効かせるため。
+ */
+export function applyStatusColors() {
+  const root = document.documentElement;
+  for (const [key, color] of Object.entries(STATUS_COLOR)) {
+    root.style.setProperty(`--st-${key}`, color);
+  }
+}
+
 /** 重要度。緊急度は期限から自動的に決まるので、この軸は純粋な重要度だけ。 */
 export const IMPORTANCE_LABEL = { 0: '低', 1: '中', 2: '高', 3: '最重要' };
 

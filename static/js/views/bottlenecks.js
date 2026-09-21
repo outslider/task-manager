@@ -20,6 +20,26 @@ export async function render(container, route) {
   fill(container, host);
   const reviewHost = el('div', { style: { marginBottom: '14px' } });
   const review = { data: null, loading: false, error: '' };
+  // 画面を離れても、前に聞いた内容は残しておく（毎回 API を呼ぶと待たされるため）
+  const REVIEW_KEY = `tm.review.${projectId}`;
+  const REVIEW_TTL_HOURS = 24;
+
+  function loadReview() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(REVIEW_KEY) || 'null');
+      if (!saved?.generated_at) return null;
+      const age = (Date.now() - new Date(saved.generated_at.replace(' ', 'T'))) / 3600000;
+      // 古い見立てを今のものとして見せない
+      if (age > REVIEW_TTL_HOURS) return null;
+      return saved;
+    } catch { return null; }
+  }
+
+  function saveReview(data) {
+    try { localStorage.setItem(REVIEW_KEY, JSON.stringify(data)); } catch { /* 使えなくても困らない */ }
+  }
+
+  review.data = loadReview();
 
   async function reload() {
     const fresh = await api.get(`/api/projects/${projectId}/bottlenecks`);
@@ -81,7 +101,7 @@ export async function render(container, route) {
       el('div', { class: 'card-head' },
         el('h2', {}, '🤖 進行レビュー'),
         review.data
-          ? el('span', { class: 'hint', text: `${review.data.generated_at} 時点` })
+          ? el('span', { class: 'hint', text: `${review.data.generated_at} 時点の数字で` })
           : null,
         button),
       el('div', { class: 'card-body' },
@@ -138,6 +158,7 @@ export async function render(container, route) {
     drawReview();
     try {
       review.data = await api.post(`/api/projects/${projectId}/review`, {});
+      saveReview(review.data);
     } catch (error) {
       review.error = error.message;
     }
