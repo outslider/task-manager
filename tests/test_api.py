@@ -35,6 +35,14 @@ import server as server_module  # noqa: E402
 ADMIN = ("admin@test.local", "admin-test-pw")
 
 
+def this_week(offset_days=0):
+    """今週の月曜を基準にした日付。週の区切りをまたいでも落ちないようにする。"""
+    from datetime import date, timedelta
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    return (monday + timedelta(days=offset_days)).isoformat()
+
+
 def free_port():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -1176,8 +1184,8 @@ class TestEffortAndWorkload(ApiTestCase):
         self.admin.put("/api/projects/{}/members".format(project["id"]), {
             "members": [{"principal_type": "user", "principal_id": user["id"],
                          "role": "editor"}]})
-        self.make_task(project["id"], "来週の作業", assignee_id=user["id"],
-                       start_date="2026-09-14", due_date="2026-09-18", estimate_hours=40)
+        self.make_task(project["id"], "今週の作業", assignee_id=user["id"],
+                       start_date=this_week(0), due_date=this_week(4), estimate_hours=40)
         data = self.admin.get("/api/workload?project_id={}&weeks=12".format(project["id"]))[1]
         self.assertTrue(data["weeks"])
         row = next(r for r in data["rows"] if r["user_id"] == user["id"])
@@ -1193,7 +1201,7 @@ class TestEffortAndWorkload(ApiTestCase):
 
     def test_workload_without_a_project_covers_everything_visible(self):
         project = self.make_project()
-        self.make_task(project["id"], "横断", start_date="2026-09-14", due_date="2026-09-18")
+        self.make_task(project["id"], "横断", start_date=this_week(0), due_date=this_week(4))
         data = self.admin.get("/api/workload")[1]
         self.assertIn("effort", data)
         self.assertTrue(any(p["id"] == project["id"] for p in data["projects"]))

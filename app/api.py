@@ -2523,9 +2523,20 @@ def daily(ctx):
     todos = db.query(
         TODO_SELECT + " WHERE user_id=%s AND is_done=0 "
         "ORDER BY (due_date IS NULL), due_date, sort_order, id LIMIT 20", (user["id"],))
+    # 自分が担当のチケット。期限切れ → 期限の近い順 → 優先度の高い順で並べる。
+    my_tickets = db.query(
+        TICKET_BASE + " WHERE t.assignee_id=%s AND t.status IN %s "
+        "ORDER BY (t.due_date IS NOT NULL AND t.due_date < %s) DESC, "
+        "(t.due_date IS NULL), t.due_date, t.priority DESC, t.id LIMIT 20",
+        (user["id"], tickets.OPEN_STATUSES, today))
+    # 誰も受けていないチケットは、件数だけ知らせて一覧へ送る
+    unclaimed = db.scalar(
+        "SELECT COUNT(*) AS c FROM tickets WHERE assignee_id IS NULL AND status IN %s",
+        (tickets.OPEN_STATUSES,), default=0) or 0
     return json_response({
         "date": today, "buckets": buckets, "recently_done": recent,
         "stale": stale, "checkin": checkin, "issues": issues, "todos": todos,
+        "tickets": my_tickets, "unclaimed_tickets": unclaimed,
         "streak": _checkin_streak(user["id"]),
     })
 

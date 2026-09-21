@@ -5,6 +5,7 @@ import { store, category, STATUS_LABEL, ISSUE_STATUS_LABEL, SEVERITY_LABEL } fro
 import { clear, dueClass, el, fill, formatDate, formatDateTime, toast } from '../util.js';
 import { openTaskDetail } from './taskDetail.js';
 import { openIssueDetail } from './issueDetail.js';
+import { openTicketDetail } from './ticketDetail.js';
 
 const BUCKETS = [
   { key: 'overdue', label: '期限超過', tone: 'overdue', icon: '🔥' },
@@ -41,6 +42,7 @@ export async function render(container) {
     soon: data.buckets.soon.length,
     open: Object.values(data.buckets).reduce((sum, list) => sum + list.length, 0)
       - data.buckets.later.length,
+    tickets: (data.tickets || []).length,
   };
 
   const saveBar = el('div', { class: 'sticky-save', hidden: true });
@@ -56,9 +58,7 @@ export async function render(container) {
       el('div', { class: 'grow' },
         el('h1', { text: `${greeting()}、${store.user.name} さん` }),
         el('div', { class: 'page-sub' },
-          counts.open > 0
-            ? `${formatDate(data.date, true)} — 対応が必要なタスク ${counts.open} 件`
-            : `${formatDate(data.date, true)} — 期限が迫っているタスクはありません`,
+          headline(),
           data.streak > 0
             ? el('span', { class: 'badge', style: { marginLeft: '8px' },
               text: `🔥 ${data.streak}日連続チェックイン` })
@@ -69,6 +69,82 @@ export async function render(container) {
       statCard('まもなく期限', counts.soon, ''),
       statCard('今週の完了', data.recently_done.length, 'ok')),
     listHost, saveBar);
+
+  /**
+   * 自分が担当しているチケット。
+   * 受けたまま誰も見ていないものは、件数だけ添えて一覧へ送る。
+   */
+  function ticketCard() {
+    const meta = store.meta?.tickets || { kinds: [], statuses: [] };
+    const kindOf = (value) => meta.kinds.find((k) => k.value === value) || { icon: '' };
+    const statusOf = (value) =>
+      meta.statuses.find((x) => x.value === value) || { label: value };
+    const list = data.tickets || [];
+    return el('div', { class: 'card daily-bucket' },
+      el('div', { class: 'card-head' },
+        el('h2', {}, '🎫 自分が担当のチケット'),
+        list.length ? el('span', { class: 'badge', text: `${list.length} 件` }) : null,
+        data.unclaimed_tickets
+          ? el('span', { class: 'badge warn-badge',
+            text: `未割当 ${data.unclaimed_tickets} 件` })
+          : null,
+        el('a', { class: 'btn btn-sm', href: '#/tickets' }, '一覧を開く')),
+      el('div', { class: 'card-body tight' },
+        list.length
+          ? el('div', {}, ...list.map(ticketItem))
+          : el('div', { class: 'hint', style: { padding: '12px 15px' },
+            text: '自分が担当のチケットはありません。'
+              + '誰も受けていないものが残っています。' })));
+
+    function ticketItem(ticket) {
+      const overdue = ticket.due_date && ticket.status !== 'done'
+        && ticket.due_date < data.date;
+      return el('div', {
+        class: 'daily-item', style: { cursor: 'pointer' },
+        onClick: () => openTicketDetail(ticket.id, { onChange: reload }),
+      },
+      el('div', {},
+        el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center',
+          flexWrap: 'wrap' } },
+        el('span', { class: 'issue-no', text: `#${ticket.id}` }),
+        el('span', { text: kindOf(ticket.kind).icon }),
+        el('a', { href: '#', style: { fontWeight: 550 }, text: ticket.title,
+          onClick: (event) => event.preventDefault() }),
+        ticket.priority >= 2
+          ? el('span', { class: `prio p${ticket.priority}`,
+            text: ticket.priority === 3 ? '緊急' : '高' })
+          : null,
+        ticket.due_date
+          ? el('span', {
+            class: `badge ${overdue ? 'blocked' : ''}`.trim(),
+            text: `期限 ${formatDate(ticket.due_date)}`,
+          })
+          : null),
+        el('div', { class: 'page-sub' },
+          `${ticket.queue_icon || '📮'} ${ticket.queue_name}`
+          + (ticket.on_behalf_of ? ` ・ 依頼元 ${ticket.on_behalf_of}` : ''))),
+      el('div', { class: 'daily-controls' },
+        ticket.category_label
+          ? el('span', { class: 'cat-chip sm', style: {
+            background: `${ticket.category_color}1f`, color: ticket.category_color,
+            borderColor: `${ticket.category_color}55`,
+          } }, ticket.category_label)
+          : null,
+        el('span', { class: `badge ticket-${ticket.status}`,
+          text: statusOf(ticket.status).label })));
+    }
+  }
+
+  /** 見出しの一行。タスクとチケットの両方を抱えている日もあるので、両方数える。 */
+  function headline() {
+    const day = formatDate(data.date, true);
+    const parts = [];
+    if (counts.open) parts.push(`対応が必要なタスク ${counts.open} 件`);
+    if (counts.tickets) parts.push(`担当チケット ${counts.tickets} 件`);
+    return parts.length
+      ? `${day} — ${parts.join(' / ')}`
+      : `${day} — 期限が迫っているものはありません`;
+  }
 
   function statCard(label, value, tone) {
     // 0 のカードまで同じ濃さだと、目を向けるべきところが分からなくなる
@@ -120,6 +196,9 @@ export async function render(container) {
               text: `影響度 ${SEVERITY_LABEL[issue.severity]}` }),
             el('span', { class: `badge ${issue.status}`,
               text: ISSUE_STATUS_LABEL[issue.status] })))))));
+    }
+    if ((data.tickets || []).length || data.unclaimed_tickets) {
+      listHost.append(ticketCard());
     }
     if ((data.todos || []).length) {
       listHost.append(el('div', { class: 'card daily-bucket' },

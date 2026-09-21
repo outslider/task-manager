@@ -13,7 +13,9 @@ from datetime import timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from test_api import ApiTestCase, Client  # noqa: E402
+from test_api import ADMIN, ApiTestCase, Client  # noqa: E402
+
+ADMIN_EMAIL = ADMIN[0]
 from app import db, tickets  # noqa: E402
 
 
@@ -965,6 +967,64 @@ class TestStatsPeriod(TicketTestCase):
     def test_a_bad_date_is_ignored(self):
         status, _ = self.admin.get("/api/tickets/stats?end=めちゃくちゃ")
         self.assertEqual(status, 400)
+
+
+class TestDailyTickets(TicketTestCase):
+    """「今日の確認」に、自分が担当のチケットを出す。"""
+
+    def daily(self, client=None):
+        return (client or self.admin).get("/api/daily")[1]
+
+    def test_my_open_tickets_are_listed(self):
+        ticket = self.make_ticket("自分の担当", assignee_id=self.admin_id())
+        titles = [t["title"] for t in self.daily()["tickets"]]
+        self.assertIn(ticket["title"], titles)
+
+    def admin_id(self):
+        return db.query_one("SELECT id FROM users WHERE email=%s", (ADMIN_EMAIL,))["id"]
+
+    def test_someone_elses_ticket_is_not_listed(self):
+        user, _email = self.make_user(name="よその担当")
+        self.make_ticket("よその人のもの", assignee_id=user["id"])
+        titles = [t["title"] for t in self.daily()["tickets"]]
+        self.assertNotIn("よその人のもの", titles)
+
+    def test_a_finished_ticket_drops_off(self):
+        ticket = self.make_ticket("終わったもの", assignee_id=self.admin_id())
+        self.admin.patch("/api/tickets/{}".format(ticket["id"]), {"status": "done"})
+        titles = [t["title"] for t in self.daily()["tickets"]]
+        self.assertNotIn("終わったもの", titles)
+
+    def test_overdue_comes_first(self):
+        self.make_ticket("あとの期限", assignee_id=self.admin_id(), due_date="2099-01-01")
+        self.make_ticket("切れている", assignee_id=self.admin_id(), due_date="2020-01-01")
+        titles = [t["title"] for t in self.daily()["tickets"]]
+        self.assertLess(titles.index("切れている"), titles.index("あとの期限"))
+        self.assertEqual(titles[0], "切れている")
+
+    def test_unassigned_ones_are_counted(self):
+        before = self.daily()["unclaimed_tickets"]
+        self.make_ticket("誰も受けていない")
+        self.assertEqual(self.daily()["unclaimed_tickets"], before + 1)
+
+    def test_taking_one_removes_it_from_the_unclaimed_count(self):
+        ticket = self.make_ticket("これから受ける")
+        before = self.daily()["unclaimed_tickets"]
+        self.admin.patch("/api/tickets/{}".format(ticket["id"]),
+                         {"assignee_id": self.admin_id()})
+        self.assertEqual(self.daily()["unclaimed_tickets"], before - 1)
+
+    def test_a_member_sees_their_own(self):
+        user, email = self.make_user(name="メンバー担当")
+        self.make_ticket("その人のもの", assignee_id=user["id"])
+        titles = [t["title"] for t in self.daily(self.client_for(email))["tickets"]]
+        self.assertEqual(titles, ["その人のもの"])
+
+    def test_the_queue_is_carried_along(self):
+        # 同じクラスの他のテストが作ったものも並ぶので、名前で探す
+        self.make_ticket("窓口つき", assignee_id=self.admin_id())
+        row = next(t for t in self.daily()["tickets"] if t["title"] == "窓口つき")
+        self.assertEqual(row["queue_name"], self.queue["name"])
 
 
 class TestTicketSearch(TicketTestCase):
