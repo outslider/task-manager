@@ -150,13 +150,21 @@ export async function render(container, route) {
     drawCategoryFilter();
   }
 
-  async function load() {
+  /**
+   * 一覧を読む。件数が増えたときに全部を一度に返すと重いので、
+   * 少しずつ読み、続きは「さらに読み込む」で足す。
+   */
+  async function load({ append = false } = {}) {
     saveFilter(state);
-    fill(listHost, el('div', { class: 'empty', text: '読み込み中…' }));
+    if (!append) {
+      state.loaded = [];
+      fill(listHost, el('div', { class: 'empty', text: '読み込み中…' }));
+    }
     const params = new URLSearchParams();
     for (const key of ['queue_id', 'status', 'kind', 'scope', 'q', 'category_id']) {
       if (state[key]) params.set(key, state[key]);
     }
+    params.set('offset', String(append ? state.loaded.length : 0));
     let data;
     try {
       data = await api.get(`/api/tickets?${params}`);
@@ -164,17 +172,31 @@ export async function render(container, route) {
       fill(listHost, el('div', { class: 'empty', text: error.message }));
       return;
     }
+    state.loaded = append ? [...state.loaded, ...data.tickets] : data.tickets;
     drawSummary(data.summary, data.turnaround_days);
-    countHost.textContent = `${data.tickets.length} 件`;
-    if (!data.tickets.length) {
+    countHost.textContent = data.matched > state.loaded.length
+      ? `${data.matched} 件中 ${state.loaded.length} 件を表示`
+      : `${data.matched} 件`;
+    if (!state.loaded.length) {
       fill(listHost, el('div', { class: 'empty' },
         el('div', { class: 'big', text: '🎫' }),
-        state.q || state.kind || state.scope || state.status !== 'open'
+        state.q || state.kind || state.scope || state.category_id || state.status !== 'open'
           ? '条件に合うチケットがありません'
           : '未対応のチケットはありません'));
       return;
     }
-    fill(listHost, ...data.tickets.map(row));
+    fill(listHost, ...state.loaded.map(row));
+    if (data.has_more) {
+      const more = el('button', {
+        class: 'btn btn-block load-more',
+        onClick: async (event) => {
+          event.currentTarget.disabled = true;
+          event.currentTarget.textContent = '読み込み中…';
+          await load({ append: true });
+        },
+      }, `さらに読み込む（残り ${data.matched - state.loaded.length} 件）`);
+      listHost.append(more);
+    }
   }
 
   /**
@@ -211,7 +233,7 @@ export async function render(container, route) {
     const kind = kindLabel[ticket.kind] || { icon: '', label: ticket.kind };
     const status = statusLabel[ticket.status] || { label: ticket.status };
     return el('div', {
-      class: `ticket-row${ticket.status === 'done' || ticket.status === 'canceled' ? ' is-closed' : ''}`,
+      class: `ticket-row${isClosed(ticket) ? ' is-closed' : ''}`,
       onClick: () => openTicketDetail(ticket.id, { onChange: load }),
     },
     el('div', { class: 'ticket-no', text: `#${ticket.id}` }),
@@ -255,9 +277,18 @@ export async function render(container, route) {
       ticket.due_date ? formatDate(ticket.due_date) : '—'));
   }
 
+  /**
+   * 手が離れた状態かどうか。状態の種類はサーバー側で決めているので、
+   * ここで名前を決め打ちせず、渡された一覧で判断する。
+   */
+  function isClosed(ticket) {
+    const open = meta.open_statuses || [];
+    return !open.includes(ticket.status);
+  }
+
   /** 期限の色づけは完了扱いのものを赤くしないため。 */
   function closedLike(ticket) {
-    return ticket.status === 'done' || ticket.status === 'canceled' ? 'done' : ticket.status;
+    return isClosed(ticket) ? 'done' : ticket.status;
   }
 
   async function create() {

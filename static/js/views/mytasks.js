@@ -109,6 +109,10 @@ export async function render(container) {
     summary.textContent = state.week
       ? `${shown.length} 件（${formatDate(state.week)} の週）／全 ${tasks.length} 件`
       : `${tasks.length} 件`;
+    // 件数が上限で切れていることを黙って隠さない
+    if (data.truncated) {
+      summary.textContent += `（該当 ${data.matched} 件のうち先頭ぶん。絞り込んでください）`;
+    }
     clear(listHost);
     if (shown.length === 0) {
       listHost.append(el('div', { class: 'empty' },

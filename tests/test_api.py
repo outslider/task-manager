@@ -212,6 +212,38 @@ class TestDailyStale(ApiTestCase):
         self.assertIn("今日から", self.stale_titles())
 
 
+class TestListLimits(ApiTestCase):
+    """一覧が上限で切れたとき、切れたことが分かるようにする。"""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project("件数PJ")
+
+    def test_the_task_search_says_how_many_matched(self):
+        for i in range(5):
+            self.make_task(self.project["id"], "件数 {}".format(i))
+        _status, data = self.admin.get("/api/tasks?limit=2")
+        self.assertEqual(len(data["tasks"]), 2)
+        self.assertGreaterEqual(data["matched"], 5)
+        self.assertTrue(data["truncated"])
+
+    def test_it_does_not_cry_wolf_when_everything_fits(self):
+        self.make_task(self.project["id"], "ひとつ")
+        _status, data = self.admin.get("/api/tasks?limit=500")
+        self.assertFalse(data["truncated"])
+
+    def test_the_issue_list_can_be_paged(self):
+        for i in range(6):
+            self.make_issue(self.project["id"], "課題 {}".format(i))
+        _status, first = self.admin.get("/api/issues?limit=4")
+        self.assertEqual(len(first["issues"]), 4)
+        self.assertTrue(first["has_more"])
+        _status, second = self.admin.get("/api/issues?limit=4&offset=4")
+        self.assertFalse(second["has_more"])
+        ids = {i["id"] for i in first["issues"]} | {i["id"] for i in second["issues"]}
+        self.assertGreaterEqual(len(ids), 6)
+
+
 class TestNavOrder(ApiTestCase):
     """左メニューの並びは本人ごとに持つ。"""
 

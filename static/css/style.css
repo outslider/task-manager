@@ -1459,3 +1459,9 @@ input[type="color"].input {
   .daily-stats .stat .k { font-size: 10.5px; line-height: 1.35; }
   .daily-stats .stat .v { font-size: 19px; }
 }
+
+/* 続きがあることを示すボタン。一覧の下に幅いっぱいで置く。 */
+.load-more {
+  margin: 10px 15px 14px; width: calc(100% - 30px);
+  color: var(--text-muted); font-weight: 600;
+}

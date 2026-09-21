@@ -952,10 +952,15 @@ def search_tasks(ctx):
     if not as_bool(ctx.query.get("include_archived")):
         where.append("p.archived=0")
     limit = as_int(ctx.query.get("limit"), 300, 1, 2000)
+    matched = db.scalar("SELECT COUNT(*) AS c FROM tasks t JOIN projects p "
+                        "ON p.id = t.project_id WHERE " + " AND ".join(where),
+                        tuple(params), default=0) or 0
     sql = (TASK_SELECT + " WHERE " + " AND ".join(where)
            + " ORDER BY (t.due_date IS NULL), t.due_date, t.priority DESC, t.id LIMIT %s")
     params.append(limit)
-    return json_response({"tasks": db.query(sql, params)})
+    rows = db.query(sql, params)
+    return json_response({"tasks": rows, "matched": matched,
+                          "truncated": matched > len(rows)})
 
 
 _HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
@@ -2842,16 +2847,25 @@ def search_issues(ctx):
     if not as_bool(ctx.query.get("include_archived")):
         where.append("p.archived = 0")
     _apply_issue_filters(ctx, where, params)
+    limit = as_int(ctx.query.get("limit"), 300, 1, 1000)
+    offset = as_int(ctx.query.get("offset"), 0, 0, 100000)
+    matched = db.scalar(
+        "SELECT COUNT(*) AS c FROM issues i JOIN projects p ON p.id = i.project_id "
+        "WHERE " + " AND ".join(where), tuple(params), default=0) or 0
     rows = db.query(
         ISSUE_SELECT + " WHERE " + " AND ".join(where)
         + " ORDER BY (i.status IN ('resolved','closed')), i.severity DESC,"
-          " (i.due_date IS NULL), i.due_date, i.id LIMIT %s",
-        params + [as_int(ctx.query.get("limit"), 300, 1, 1000)])
+          " (i.due_date IS NULL), i.due_date, i.id LIMIT %s OFFSET %s",
+        params + [limit, offset])
     overall = db.query(
         "SELECT i.status, i.severity, i.due_date FROM issues i "
         "JOIN projects p ON p.id = i.project_id WHERE i.project_id IN %s AND p.archived = 0",
         (tuple(ids),))
-    return json_response({"issues": rows, "summary": issue_summary(overall)})
+    return json_response({
+        "issues": rows, "summary": issue_summary(overall),
+        "matched": matched, "offset": offset, "limit": limit,
+        "has_more": offset + len(rows) < matched,
+    })
 
 
 def _apply_issue_filters(ctx, where, params):
@@ -3451,11 +3465,17 @@ def list_tickets(ctx):
         params += ["%{}%".format(q)] * 3
 
     clause = (" WHERE " + " AND ".join(where)) if where else ""
+    # 全部返すと数が増えたときに重くなるので、少しずつ渡して続きを読ませる
+    limit = as_int(ctx.query.get("limit"), TICKET_PAGE, 1, 500)
+    offset = as_int(ctx.query.get("offset"), 0, 0, 100000)
+    matched = db.scalar(
+        "SELECT COUNT(*) AS c FROM tickets t JOIN ticket_queues q ON q.id = t.queue_id"
+        + clause, tuple(params), default=0) or 0
     rows = attach_counts(db.query(
         TICKET_SELECT + clause
         + " ORDER BY t.status IN %s DESC, t.priority DESC, "
-          "t.due_date IS NULL, t.due_date, t.id DESC LIMIT 400",
-        tuple(params) + (tickets.CLOSED_STATUSES,)))
+          "t.due_date IS NULL, t.due_date, t.id DESC LIMIT %s OFFSET %s",
+        tuple(params) + (tickets.CLOSED_STATUSES, limit, offset)))
     today = db.today()
     week_start = today - timedelta(days=today.weekday())
     month_start = today.replace(day=1)
@@ -3478,11 +3498,18 @@ def list_tickets(ctx):
         (today - timedelta(days=90),))
     return json_response({
         "tickets": rows,
+        "matched": matched,
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(rows) < matched,
         "summary": {k: int(v or 0) for k, v in (summary or {}).items()},
         "turnaround_days": (round(float(turnaround) / 24, 1)
                             if turnaround is not None else None),
     })
 
+
+# 一覧で一度に渡す件数。続きは「さらに読み込む」で足していく。
+TICKET_PAGE = 100
 
 TICKET_IMPORT_FIELDS = [
     ("title", "件名", "必須"),

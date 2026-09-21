@@ -15,8 +15,9 @@ const BUCKETS = [
   { key: 'no_due', label: '期限未設定', tone: '', icon: '❓', folded: true },
   { key: 'later', label: '先の予定', tone: '', icon: '🗓', folded: true },
 ];
-/** 停滞は「今日やること」ではないので、件数だけ見せて既定ではたたむ。 */
+/** 停滞と完了ぶんは「今日やること」ではないので、件数だけ見せて既定ではたたむ。 */
 const STALE_KEY = 'stale';
+const DONE_KEY = 'done';
 const FOLD_KEY = 'tm.daily.folded';
 
 function loadFolded() {
@@ -24,7 +25,8 @@ function loadFolded() {
     const saved = localStorage.getItem(FOLD_KEY);
     if (saved !== null) return new Set(JSON.parse(saved));
   } catch { /* private mode */ }
-  return new Set([...BUCKETS.filter((b) => b.folded).map((b) => b.key), STALE_KEY]);
+  return new Set([...BUCKETS.filter((b) => b.folded).map((b) => b.key),
+    STALE_KEY, DONE_KEY]);
 }
 
 function saveFolded(set) {
@@ -212,19 +214,7 @@ export async function render(container) {
       listHost.append(...later);
     }
     if (data.recently_done.length) {
-      listHost.append(section('done', el('div', { class: 'card daily-bucket kind-done' },
-        el('div', { class: 'card-head' }, el('h2', {}, '✅ 直近7日で完了したタスク')),
-        el('div', { class: 'card-body tight' },
-          ...data.recently_done.map((task) => el('div', { class: 'daily-item' },
-            el('div', {},
-              el('div', {}, el('a', {
-                href: '#', onClick: (event) => {
-                  event.preventDefault();
-                  openTaskDetail(task.id, { onChange: reload });
-                }, text: task.title,
-              })),
-              el('div', { class: 'page-sub', text: task.project_name })),
-            el('span', { class: 'badge done', text: '完了' })))))));
+      listHost.append(section('done', doneCard()));
     }
     if (!urgent.length && !later.length) {
       listHost.append(el('div', { class: 'card' },
@@ -234,24 +224,47 @@ export async function render(container) {
     }
   }
 
-  /** 止まっているタスク。開始日がまだのものはサーバー側で除いてある。 */
-  function staleCard() {
-    const closed = folded.has(STALE_KEY);
+  /** 片付いたぶん。振り返り用なので、既定ではたたんでおく。 */
+  function doneCard() {
+    return foldableCard(DONE_KEY, '✅ 直近7日で完了したタスク',
+      data.recently_done.length, 'kind-done',
+      () => data.recently_done.map((task) => el('div', { class: 'daily-item' },
+        el('div', {},
+          el('div', {}, el('a', {
+            href: '#',
+            onClick: (event) => {
+              event.preventDefault();
+              openTaskDetail(task.id, { onChange: reload });
+            },
+            text: task.title,
+          })),
+          el('div', { class: 'page-sub', text: task.project_name })),
+        el('span', { class: 'badge done', text: '完了' }))));
+  }
+
+  /** 見出しを押すと開け閉めできるまとまり。開いたかどうかは次回も引き継ぐ。 */
+  function foldableCard(key, title, count, tone, buildItems) {
+    const closed = folded.has(key);
     const head = el('div', { class: 'card-head foldable' },
       el('h2', {},
         el('span', { class: 'fold-mark', text: closed ? '▶' : '▼' }),
-        ' 💤 1週間以上動きのないタスク'),
-      el('span', { class: 'badge', text: `${data.stale.length} 件` }));
+        ` ${title}`),
+      el('span', { class: 'badge', text: `${count} 件` }));
     head.addEventListener('click', () => {
-      if (folded.has(STALE_KEY)) folded.delete(STALE_KEY);
-      else folded.add(STALE_KEY);
+      if (folded.has(key)) folded.delete(key); else folded.add(key);
       saveFolded(folded);
       draw();
     });
-    return el('div', { class: `card daily-bucket kind-task${closed ? ' folded' : ''}` },
+    return el('div', { class: `card daily-bucket ${tone}${closed ? ' folded' : ''}` },
       head,
       el('div', { class: 'card-body tight', hidden: closed },
-        ...(closed ? [] : data.stale.map(taskItem))));
+        ...(closed ? [] : buildItems())));
+  }
+
+  /** 止まっているタスク。開始日がまだのものはサーバー側で除いてある。 */
+  function staleCard() {
+    return foldableCard(STALE_KEY, '💤 1週間以上動きのないタスク',
+      data.stale.length, 'kind-task', () => data.stale.map(taskItem));
   }
 
   function issueCard() {

@@ -17,6 +17,7 @@ export async function render(container, route) {
   const project = projectId ? (await api.project(projectId)).project : null;
   const state = { status: 'open', category: '', owner_id: '', q: '', min_severity: '' };
   let data = { issues: [], summary: {} };
+  let loaded = [];
 
   const canEdit = project ? store.canEdit(project) : false;
 
@@ -71,15 +72,24 @@ export async function render(container, route) {
       head,
       el('div', { class: 'card-body tight' }, rowsHost)));
 
-  async function load() {
-    fill(rowsHost, el('div', { class: 'empty', text: '読み込み中…' }));
+  /**
+   * 全プロジェクト横断のときは件数が読めないので、少しずつ読んで
+   * 続きは「さらに読み込む」で足す。プロジェクト内は全件返る。
+   */
+  async function load({ append = false } = {}) {
+    if (!append) {
+      loaded = [];
+      fill(rowsHost, el('div', { class: 'empty', text: '読み込み中…' }));
+    }
     const query = {
       status: state.status, category: state.category, owner_id: state.owner_id,
       q: state.q, min_severity: state.min_severity,
     };
+    if (!projectId) query.offset = append ? loaded.length : 0;
     data = projectId
       ? await api.get(`/api/projects/${projectId}/issues`, query)
       : await api.get('/api/issues', query);
+    loaded = append ? [...loaded, ...data.issues] : data.issues;
     draw();
   }
 
@@ -91,8 +101,8 @@ export async function render(container, route) {
       stat('影響度 高・重大', s.high ?? 0, s.high ? 'warn' : ''),
       stat('解決済', s.resolved ?? 0, 'ok'));
 
-    fill(rowsHost, ...(data.issues.length
-      ? data.issues.map(issueRow)
+    fill(rowsHost, ...(loaded.length
+      ? loaded.map(issueRow)
       : [el('div', { class: 'empty' },
         el('div', { class: 'big', text: '📌' }),
         state.q || state.status !== 'open' || state.category
@@ -103,6 +113,16 @@ export async function render(container, route) {
             el('button', { class: 'btn btn-primary', onClick: () => createIssue() },
               '課題を起票する'))
           : null)]));
+    if (data.has_more) {
+      rowsHost.append(el('button', {
+        class: 'btn btn-block load-more',
+        onClick: async (event) => {
+          event.currentTarget.disabled = true;
+          event.currentTarget.textContent = '読み込み中…';
+          await load({ append: true });
+        },
+      }, `さらに読み込む（残り ${data.matched - loaded.length} 件）`));
+    }
   }
 
   function stat(label, value, tone) {
@@ -175,7 +195,7 @@ export async function render(container, route) {
   function exportCsv() {
     const header = ['No.', '課題', '区分', '影響度', '状態', '対応者', '起票者',
       '発生日', '期限', '解決日', '内容', '対応方針', '関連タスク数', 'プロジェクト'];
-    const rows = data.issues.map((i) => [
+    const rows = loaded.map((i) => [
       i.seq, i.title, issueCategory(i.category).label, SEVERITY_LABEL[i.severity],
       ISSUE_STATUS_LABEL[i.status], i.owner_name || '', i.raised_by_name || '',
       i.raised_on || '', i.due_date || '', i.resolved_on || '',

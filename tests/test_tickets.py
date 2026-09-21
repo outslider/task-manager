@@ -1104,6 +1104,57 @@ class TestCrossLinks(TicketTestCase):
         self.assertEqual(row["stats"]["open_tickets"], 0)
 
 
+class TestTicketPaging(TicketTestCase):
+    """件数が増えても全部を一度に返さない。切れていることは画面に伝える。"""
+
+    def page(self, **params):
+        query = "&".join("{}={}".format(k, v) for k, v in params.items())
+        return self.admin.get("/api/tickets?" + query)[1]
+
+    def test_it_reports_how_many_matched(self):
+        for i in range(3):
+            self.make_ticket("数える {}".format(i))
+        data = self.page(queue_id=self.queue["id"])
+        self.assertEqual(data["matched"], 3)
+        self.assertFalse(data["has_more"])
+
+    def test_it_stops_at_one_page(self):
+        for i in range(12):
+            self.make_ticket("たくさん {}".format(i))
+        data = self.page(queue_id=self.queue["id"], limit=5)
+        self.assertEqual(len(data["tickets"]), 5)
+        self.assertEqual(data["matched"], 12)
+        self.assertTrue(data["has_more"])
+
+    def test_the_next_page_continues_where_it_left_off(self):
+        for i in range(12):
+            self.make_ticket("続き {}".format(i))
+        first = self.page(queue_id=self.queue["id"], limit=5)
+        second = self.page(queue_id=self.queue["id"], limit=5, offset=5)
+        ids = [t["id"] for t in first["tickets"]] + [t["id"] for t in second["tickets"]]
+        self.assertEqual(len(set(ids)), 10)
+        self.assertTrue(second["has_more"])
+
+    def test_the_last_page_says_there_is_no_more(self):
+        for i in range(7):
+            self.make_ticket("終わり {}".format(i))
+        last = self.page(queue_id=self.queue["id"], limit=5, offset=5)
+        self.assertEqual(len(last["tickets"]), 2)
+        self.assertFalse(last["has_more"])
+
+    def test_narrowing_changes_how_many_matched(self):
+        self.make_ticket("あたり")
+        self.make_ticket("はずれ")
+        data = self.page(queue_id=self.queue["id"], q="あたり")
+        self.assertEqual(data["matched"], 1)
+
+    def test_a_silly_offset_is_harmless(self):
+        self.make_ticket("ひとつだけ")
+        data = self.page(queue_id=self.queue["id"], offset=99999)
+        self.assertEqual(data["tickets"], [])
+        self.assertFalse(data["has_more"])
+
+
 class TestTicketSearch(TicketTestCase):
     def test_a_ticket_turns_up_in_the_global_search(self):
         self.make_ticket("ぷりんたの調子がわるい")
