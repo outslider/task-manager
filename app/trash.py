@@ -124,7 +124,30 @@ def _exists(table, value):
         "SELECT 1 AS x FROM {} WHERE id=%s".format(table), (value,), default=0))
 
 
-def _fix(table, row, coming_back):
+def _living(payload):
+    """写しが参照している相手のうち、いま実在するものを表ごとに集める。
+
+    1 行ずつ確かめると、500 行の部分木で問い合わせが数千回になる。
+    参照先の表ごとに 1 回だけ引いて、あとはその集合と突き合わせる。
+    """
+    wanted = {}
+    for table, rows in payload:
+        links = LINKS.get(table, {})
+        if not links:
+            continue
+        for row in rows:
+            for column, (target, _how) in links.items():
+                value = row.get(column)
+                if value is not None:
+                    wanted.setdefault(target, set()).add(value)
+    alive = {}
+    for target, values in wanted.items():
+        alive[target] = {r["id"] for r in db.query(
+            "SELECT id FROM {} WHERE id IN %s".format(target), (tuple(values),))}
+    return alive
+
+
+def _fix(table, row, coming_back, alive):
     """参照先を確かめる。行ごと諦めるときは None を返す。
 
     coming_back は、この復元で一緒に入れ直す予定の {表: {id,...}}。
@@ -135,7 +158,7 @@ def _fix(table, row, coming_back):
         value = out.get(column)
         if value is None:
             continue
-        if value in coming_back.get(target, ()) or _exists(target, value):
+        if value in coming_back.get(target, ()) or value in alive.get(target, ()):
             continue
         if how == "drop":
             return None
@@ -152,11 +175,12 @@ def restore(entry):
         coming_back.setdefault(table, set()).update(
             r["id"] for r in rows if "id" in r)
 
+    alive = _living(payload)
     restored, skipped = 0, 0
     with db.transaction():
         for table, rows in payload:
             for row in rows:
-                fixed = _fix(table, row, coming_back)
+                fixed = _fix(table, row, coming_back, alive)
                 if fixed is None:
                     skipped += 1
                     continue

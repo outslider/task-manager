@@ -123,7 +123,7 @@ export async function render(container) {
           onClick: async () => {
             if (!await confirmDialog(
               `「${item.title}」を完全に削除しますか？\nここから先は戻せません。`,
-              { danger: true, okLabel: '完全に削除' })) return;
+              { danger: true, okLabel: '完全に削除する' })) return;
             try {
               await api.del(`/api/trash/${item.id}`);
               toast('完全に削除しました', 'ok');

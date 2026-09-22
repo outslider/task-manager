@@ -653,9 +653,19 @@ export async function render(container, route) {
     const run = async (payload, label) => {
       try {
         const result = await api.post('/api/tasks/bulk', { ids: picked(), ...payload });
-        toast(`${result.updated ?? result.deleted} 件を${label}`, 'ok');
+        const done = result.updated ?? result.deleted;
         state.picked.clear();
         await reload();
+        // まとめて消したときは、選んだ数だけゴミ箱の行ができる。まとめて戻せるようにする。
+        if (result.trash_ids?.length) {
+          const { undoToast } = await import('../util.js');
+          undoToast(`${done} 件を${label}`, async () => {
+            for (const id of result.trash_ids) await api.post(`/api/trash/${id}/restore`, {});
+            await reload();
+          });
+        } else {
+          toast(`${done} 件を${label}`, 'ok');
+        }
       } catch (error) { toast(error.message, 'error'); }
     };
 
@@ -704,18 +714,19 @@ export async function render(container, route) {
       el('button', {
         class: 'btn btn-sm', title: '選んだタスクの開始日と期限をまとめてずらします',
         onClick: () => shiftDialog(run),
-      }, '📆 日程をずらす'),
+      }, ...iconLabel('calendar', '日程をずらす')),
       el('div', { class: 'spacer' }),
       el('button', {
         class: 'btn btn-sm btn-danger',
         onClick: async () => {
           const { confirmDialog } = await import('../util.js');
           if (!await confirmDialog(
-            `選択した ${count} 件を削除します。\n子タスクもまとめて削除され、元に戻せません。`,
+            `選択した ${count} 件を削除します。\n子タスクも一緒に消えます。\n`
+            + '間違えたら、ゴミ箱から 30 日以内に戻せます。',
             { danger: true, okLabel: '削除する' })) return;
           run({ action: 'delete' }, '削除しました');
         },
-      }, '🗑 削除'),
+      }, ...iconLabel('trash', '削除')),
       el('button', {
         class: 'btn btn-sm',
         onClick: () => { state.picked.clear(); draw(); },

@@ -827,14 +827,14 @@ def list_project_tasks(ctx, project_id):
 
 
 # 俯瞰ガントは件数が多くなるので、図を描くのに要る列だけにする
+# 全体ガントは 1 回で数千行を返すので、1 行あたりを削ることがそのまま効く。
+# 担当者名・色とプロジェクト名・色は画面側が id から引けるため、ここでは返さない
+# （4,800 行で 0.5MB ぶんの繰り返しになっていた）。
 GANTT_SELECT = """
     SELECT t.id, t.project_id, t.parent_id, t.title, t.status, t.priority, t.category,
            t.assignee_id, t.start_date, t.due_date, t.progress, t.estimate_hours,
-           t.is_milestone, t.marker, t.sort_order,
-           u.name AS assignee_name, u.avatar_color AS assignee_color,
-           p.name AS project_name, p.color AS project_color
+           t.is_milestone, t.marker, t.sort_order
       FROM tasks t
-      LEFT JOIN users u ON u.id = t.assignee_id
       JOIN projects p ON p.id = t.project_id
 """
 
@@ -2288,18 +2288,24 @@ def bulk_update_tasks(ctx):
         project_or_404(user, task["project_id"], "editor")
 
     if action == "delete":
-        targets = set()
-        for task in tasks:
-            targets.add(task["id"])
-            targets.update(descendant_ids(task["id"]))
-        stored = db.query(
-            "SELECT stored_name FROM attachments WHERE task_id IN %s AND kind='file'",
-            (tuple(targets),))
+        # まとめて消すほうが取り返しがつかないので、1 件ずつ消すときと同じく
+        # ゴミ箱を通す。選んだ 1 件ごとに 1 件のゴミ箱行にして、
+        # 「あの一括削除だけ取り消す」ができるようにしておく。
+        deleted, bins = 0, []
         with db.transaction():
-            db.execute("DELETE FROM tasks WHERE id IN %s", (tuple(targets),))
-        for row in stored:
-            _remove_stored_file(row["stored_name"])
-        return json_response({"deleted": len(targets)})
+            gone = set()
+            for task in tasks:
+                if task["id"] in gone:
+                    continue        # 先に消した親の子として、もう消えている
+                ids = [task["id"]] + descendant_ids(task["id"])
+                gone.update(ids)
+                payload = trash.snapshot_task(task["id"], ids)
+                bins.append(trash.keep("task", task["id"], payload, task["title"],
+                                       task["project_id"], user["id"]))
+                for tid in reversed(ids):
+                    db.execute("DELETE FROM tasks WHERE id=%s", (tid,))
+                deleted += len(ids)
+        return json_response({"deleted": deleted, "trash_ids": bins})
 
     if action == "shift":
         days = as_int(ctx.body.get("days"), 0)

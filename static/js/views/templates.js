@@ -64,7 +64,7 @@ export async function openTemplates({ scope = '', project = null, onApplied } = 
         class: 'icon-btn', title: '削除',
         onClick: async () => {
           if (!await confirmDialog(`雛形「${tpl.name}」を削除しますか？`,
-            { danger: true, okLabel: '削除' })) return;
+            { danger: true, okLabel: '削除する' })) return;
           try {
             await api.del(`/api/templates/${tpl.id}`);
             toast('削除しました', 'ok');

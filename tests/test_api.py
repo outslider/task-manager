@@ -2666,6 +2666,32 @@ class TestTrash(ApiTestCase):
         self.assertGreaterEqual(trash_mod.purge_expired(), 1)
         self.assertIsNone(self.find("task", task["id"]))
 
+    def test_bulk_delete_also_goes_through_the_trash(self):
+        """まとめて消すほうが危ないので、1 件ずつと同じく戻せること。"""
+        a = self.make_task(self.project["id"], title="まとめて消すA")
+        b = self.make_task(self.project["id"], title="まとめて消すB")
+        child = self.make_task(self.project["id"], title="Aの子", parent_id=a["id"])
+        status, data = self.admin.post("/api/tasks/bulk", {
+            "ids": [a["id"], b["id"]], "action": "delete"})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["deleted"], 3)          # 子も含めて 3 件
+        self.assertEqual(len(data["trash_ids"]), 2)   # 選んだ 2 件ぶんのゴミ箱行
+        for entry_id in data["trash_ids"]:
+            self.assertEqual(self.admin.post("/api/trash/{}/restore".format(entry_id), {})[0],
+                             200)
+        for task in (a, b, child):
+            self.assertEqual(self.admin.get("/api/tasks/{}".format(task["id"]))[0], 200,
+                             task["title"])
+
+    def test_bulk_delete_does_not_trash_a_child_twice(self):
+        """親と子を一緒に選んでも、子が二重にゴミ箱へ入らないこと。"""
+        parent = self.make_task(self.project["id"], title="親も子も選ぶ")
+        child = self.make_task(self.project["id"], title="その子", parent_id=parent["id"])
+        data = self.admin.post("/api/tasks/bulk", {
+            "ids": [parent["id"], child["id"]], "action": "delete"})[1]
+        self.assertEqual(data["deleted"], 2)
+        self.assertEqual(len(data["trash_ids"]), 1)
+
     def test_it_needs_a_login(self):
         self.assertEqual(Client(self.base).get("/api/trash")[0], 401)
 
@@ -3508,11 +3534,21 @@ class TestGanttOverview(ApiTestCase):
         self.assertIn("俯瞰A", names)
         self.assertIn("俯瞰B", names)
 
-    def test_each_task_carries_its_project(self):
+    def test_each_task_points_at_its_project(self):
+        """どのタスクがどのプロジェクトのものか分かること。
+
+        名前と色はタスク 1 行ごとには持たせない（数千行ぶんの繰り返しになるため）。
+        project_id と、同じ応答に入っている projects を突き合わせて引く。
+        """
         data = self.admin.get("/api/gantt")[1]
         task = next(t for t in data["tasks"] if t["title"] == "A のタスク")
-        self.assertEqual(task["project_name"], "俯瞰A")
-        self.assertTrue(task["project_color"])
+        projects = {p["id"]: p for p in data["projects"]}
+        self.assertIn(task["project_id"], projects)
+        self.assertEqual(projects[task["project_id"]]["name"], "俯瞰A")
+        self.assertTrue(projects[task["project_id"]]["color"])
+        # 1 行ごとの繰り返しは載せない
+        self.assertNotIn("project_name", task)
+        self.assertNotIn("assignee_name", task)
 
     def test_rollup_is_applied(self):
         child = self.make_task(self.a["id"], "子", parent_id=self.ta["id"],

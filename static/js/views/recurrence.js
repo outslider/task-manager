@@ -87,7 +87,7 @@ export async function openRecurrenceManager(project, { onChange } = {}) {
           class: 'icon-btn', title: '削除',
           onClick: async () => {
             if (!await confirmDialog(`「${rule.title}」の繰り返し設定を削除しますか？`,
-              { danger: true, okLabel: '削除' })) return;
+              { danger: true, okLabel: '削除する' })) return;
             await api.del(`/api/recurrences/${rule.id}`);
             changed = true;
             load();

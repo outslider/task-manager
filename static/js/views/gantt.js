@@ -116,6 +116,11 @@ const GROUPINGS = [
   { key: 'category', label: 'カテゴリ', hint: 'カテゴリごとに区切り行を入れます' },
 ];
 
+/** 担当者の名前。全体ガントは行数が多いので、名前は id から引く。 */
+function assigneeName(task) {
+  return task.assignee_id ? (store.usersById.get(Number(task.assignee_id))?.name || '') : '';
+}
+
 export async function render(container, route) {
   const projectId = route.projectId || null;
   const overview = !projectId;               // プロジェクトを横断して見るモード
@@ -1249,7 +1254,7 @@ export function buildGanttSvg({
     group.appendChild(outlineRect);
     group.appendChild(svgEl('title', {
       text: `${task.title}\n${startISO || '?'} 〜 ${dueISO || '?'}  進捗 ${progress}%`
-        + (task.assignee_name ? `\n担当: ${task.assignee_name}` : '')
+        + (assigneeName(task) ? `\n担当: ${assigneeName(task)}` : '')
         + (task.blocks_open ? `\n⛔ 後続 ${task.blocks_open} 件が待機` : '')
         + (critical ? '\n🔗 クリティカルパス上' : ''),
     }));
@@ -1292,7 +1297,7 @@ export function buildGanttSvg({
       labelParts.push(`${shortDate(startISO)}〜${shortDate(dueISO)}`);
     }
     if (show.progress && progress > 0 && progress < 100) labelParts.push(`${progress}%`);
-    if (show.assignee && task.assignee_name) labelParts.push(task.assignee_name);
+    if (show.assignee && assigneeName(task)) labelParts.push(assigneeName(task));
     let sideLabel = null;
     if (labelParts.length && bx + bw + 6 < originX + chartW) {
       sideLabel = svgEl('text', {

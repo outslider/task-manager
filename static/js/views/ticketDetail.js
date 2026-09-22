@@ -455,7 +455,7 @@ function attachmentRow(att, reload) {
       class: 'icon-btn', title: '削除',
       onClick: async () => {
         if (!await confirmDialog(`「${att.name}」を削除しますか？`,
-          { danger: true, okLabel: '削除' })) return;
+          { danger: true, okLabel: '削除する' })) return;
         await api.del(`/api/attachments/${att.id}`);
         reload();
       },
