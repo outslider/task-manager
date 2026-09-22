@@ -14,7 +14,8 @@ const ICONS = { task: 'check', issue: 'pin', ticket: 'ticket' };
 
 export async function render(container) {
   setHeader('ゴミ箱');
-  const state = { kind: '', items: [], keepDays: 30, kinds: [] };
+  const state = { kind: '', items: [], keepDays: 30, kinds: [], matched: 0,
+    truncated: false };
 
   const filterHost = el('div', { class: 'seg' });
   const listHost = el('div', {});
@@ -49,6 +50,8 @@ export async function render(container) {
       state.items = data.items;
       state.keepDays = data.keep_days;
       state.kinds = data.kinds;
+      state.matched = data.matched ?? data.items.length;
+      state.truncated = Boolean(data.truncated);
     } catch (error) {
       fill(listHost, el('div', { class: 'empty', text: error.message }));
       return;
@@ -72,7 +75,11 @@ export async function render(container) {
       return;
     }
     fill(listHost, ...state.items.map(row));
-    summary.textContent = `${state.items.length} 件`;
+    // 切れているときは黙らない。隠れるのは、いちばん先に消える古いものなので。
+    summary.textContent = state.truncated
+      ? `${state.matched} 件のうち、新しい ${state.items.length} 件を表示しています`
+      + '（古いものから順に消えていきます）'
+      : `${state.matched} 件`;
   }
 
   /** 残り日数。今日が最終日なら 0。 */

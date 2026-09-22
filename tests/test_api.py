@@ -2693,6 +2693,18 @@ class TestTrash(ApiTestCase):
         self.assertEqual(data["deleted"], 2)
         self.assertEqual(len(data["trash_ids"]), 1)
 
+    def test_the_list_says_how_many_are_hidden(self):
+        """多いときに黙って切らないこと。隠れるのは先に消える古いものなので。"""
+        before = self.admin.get("/api/trash")[1]
+        self.assertIn("matched", before)
+        self.assertFalse(before["truncated"])
+        for i in range(3):
+            task = self.make_task(self.project["id"], title="切り詰め確認 {}".format(i))
+            self.admin.delete("/api/tasks/{}".format(task["id"]))
+        after = self.admin.get("/api/trash")[1]
+        self.assertEqual(after["matched"], before["matched"] + 3)
+        self.assertEqual(len(after["items"]), after["matched"])
+
     def test_it_needs_a_login(self):
         self.assertEqual(Client(self.base).get("/api/trash")[0], 401)
 

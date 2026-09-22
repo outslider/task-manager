@@ -2904,6 +2904,9 @@ def apply_template(ctx, template_id):
 # ここは「誰が見て良いか」と「いつ本当に消すか」だけを持つ。
 # --------------------------------------------------------------------------
 
+# 一度に返す件数。ゴミ箱は 30 日で消えるので、普通はここまで溜まらない。
+TRASH_PAGE = 200
+
 TRASH_SELECT = ("SELECT t.id, t.kind, t.item_id, t.project_id, t.title, t.summary, "
                 "t.deleted_at, t.purge_after, u.name AS deleted_by_name, "
                 "p.name AS project_name FROM trash t "
@@ -2954,12 +2957,18 @@ def list_trash(ctx):
         where.append("t.kind=%s")
         params.append(kind)
     clause = " WHERE {}".format(" AND ".join(where)) if where else ""
-    rows = db.query(TRASH_SELECT + clause + " ORDER BY t.deleted_at DESC LIMIT 200",
-                    tuple(params))
+    # 新しい順に返す（取り消したいのはたいてい直前のもの）。多いときは頭だけになるが、
+    # 黙って切ると「消えかけの古いもの」から見えなくなるので、件数を添えて知らせる。
+    matched = db.scalar(
+        "SELECT COUNT(*) AS c FROM trash t" + clause, tuple(params), default=0) or 0
+    rows = db.query(TRASH_SELECT + clause + " ORDER BY t.deleted_at DESC LIMIT %s",
+                    tuple(params) + (TRASH_PAGE,))
     for row in rows:
         row["label"] = trash.LABELS.get(row["kind"], row["kind"])
     return json_response({
         "items": rows,
+        "matched": matched,
+        "truncated": matched > len(rows),
         "keep_days": trash.KEEP_DAYS,
         "kinds": [{"value": k, "label": v} for k, v in trash.LABELS.items()],
     })

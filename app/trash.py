@@ -45,6 +45,11 @@ LINKS = {
 }
 
 
+# 入れ直してよい表。写しは自分で書いたものしか入らないが、SQL に表名を
+# 差し込む以上、ここに無い名前は受け付けないでおく。
+RESTORABLE = frozenset(LINKS) | {"tasks", "issues", "tickets"}
+
+
 def _rows(table, where, params):
     return [dict(r) for r in db.query(
         "SELECT * FROM {} WHERE {}".format(table, where), params)]
@@ -179,6 +184,10 @@ def restore(entry):
     restored, skipped = 0, 0
     with db.transaction():
         for table, rows in payload:
+            if table not in RESTORABLE:
+                log.warning("知らない表が写しに入っている: %s", table)
+                skipped += len(rows)
+                continue
             for row in rows:
                 fixed = _fix(table, row, coming_back, alive)
                 if fixed is None:
