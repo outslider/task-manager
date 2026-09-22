@@ -1,8 +1,9 @@
 /* Gantt chart: SVG rendering plus PowerPoint-friendly SVG / PNG export. */
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
-import { store, STATUS_COLOR, STATUS_LABEL, IMPORTANCE_LABEL, CATEGORIES, category }
-  from '../store.js';
+import {
+  store, STATUS_COLOR, STATUS_LABEL, IMPORTANCE_LABEL, CATEGORIES, category, markerChar,
+} from '../store.js';
 import {
   addDays, daysBetween, downloadBlob, el, fill, isWeekend, openModal, parseDate, svgEl,
   toISO, toast, today, weekday,
@@ -1353,7 +1354,7 @@ export function buildGanttSvg({
       x: indent, y: y + rowH / 2 + 4, 'font-size': 11.5,
       'font-weight': hasChildren || row.lead ? 650 : 400,
       fill: task.status === 'done' ? colors.muted : colors.text,
-      text: (task.is_milestone ? '◆ ' : '')
+      text: (task.is_milestone ? `${markerChar(task)} ` : '')
         + (task.blocks_open && task.status !== 'done' ? '⛔ ' : '') + label
         + (row.collapsed && task.child_count ? ` (${task.child_count})` : ''),
     });
