@@ -993,6 +993,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   cursor: text;
 }
 .todo-row.is-done .todo-title { text-decoration: line-through; color: var(--text-muted); }
+.todo-repeat { font-size: 12px; flex: 0 0 auto; opacity: .7; cursor: default; }
 .todo-due { font-size: 12px; color: var(--text-muted); flex: 0 0 auto; }
 .todo-due.overdue { color: var(--danger); font-weight: 600; }
 .todo-due.soon { color: var(--warn); }

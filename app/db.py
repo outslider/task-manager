@@ -366,6 +366,27 @@ DDL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
+    CREATE TABLE IF NOT EXISTS todo_recurrences (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        user_id     INT NOT NULL,
+        title       VARCHAR(300) NOT NULL,
+        note        VARCHAR(1000) NOT NULL DEFAULT '',
+        freq        VARCHAR(10) NOT NULL,            -- daily | weekly | monthly
+        interval_n  INT         NOT NULL DEFAULT 1,
+        weekdays    VARCHAR(20) NOT NULL DEFAULT '', -- weekly のとき '0,2,4'（月=0）
+        month_day   TINYINT     NULL,                -- monthly のとき 1-31
+        lead_days   INT         NOT NULL DEFAULT 3,  -- 期限の何日前に ToDo を出すか
+        next_on     DATE        NOT NULL,            -- 次に作る ToDo の期限
+        last_created_on DATE    NULL,
+        active      TINYINT(1)  NOT NULL DEFAULT 1,
+        created_at  DATETIME    NOT NULL,
+        updated_at  DATETIME    NOT NULL,
+        KEY idx_todo_rec_user (user_id, active),
+        KEY idx_todo_rec_next (active, next_on),
+        CONSTRAINT fk_todorec_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
     CREATE TABLE IF NOT EXISTS todos (
         id         INT AUTO_INCREMENT PRIMARY KEY,
         user_id    INT NOT NULL,
@@ -374,11 +395,15 @@ DDL = [
         due_date   DATE NULL,
         is_done    TINYINT(1) NOT NULL DEFAULT 0,
         sort_order INT NOT NULL DEFAULT 0,
+        recurrence_id INT NULL,                      -- 繰り返しから作られたものだけ入る
         done_at    DATETIME NULL,
         created_at DATETIME NOT NULL,
         updated_at DATETIME NOT NULL,
         KEY idx_todos_user (user_id, is_done, sort_order),
-        CONSTRAINT fk_todo_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        KEY idx_todos_recurrence (recurrence_id),
+        CONSTRAINT fk_todo_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_todo_recurrence FOREIGN KEY (recurrence_id)
+            REFERENCES todo_recurrences(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
@@ -603,6 +628,8 @@ MIGRATIONS = [
      "ALTER TABLE users ADD COLUMN ui_accent VARCHAR(20) NOT NULL DEFAULT ''"),
     ("users", "nav_order",
      "ALTER TABLE users ADD COLUMN nav_order VARCHAR(300) NOT NULL DEFAULT ''"),
+    ("todos", "recurrence_id",
+     "ALTER TABLE todos ADD COLUMN recurrence_id INT NULL AFTER sort_order"),
     ("tasks", "estimate_hours",
      "ALTER TABLE tasks ADD COLUMN estimate_hours DECIMAL(6,1) NULL AFTER progress"),
     ("tasks", "actual_hours",
@@ -668,6 +695,8 @@ MIGRATION_INDEXES = [
      "ALTER TABLE tickets ADD KEY idx_tickets_created (created_at)"),
     ("tickets", "idx_tickets_resolved",
      "ALTER TABLE tickets ADD KEY idx_tickets_resolved (resolved_at)"),
+    ("todos", "idx_todos_recurrence",
+     "ALTER TABLE todos ADD KEY idx_todos_recurrence (recurrence_id)"),
 ]
 
 # Comments and attachments originally belonged to a task only; issues reuse them.
@@ -701,6 +730,9 @@ MIGRATION_FKS = [
     ("notifications", "fk_notif_ticket",
      "ALTER TABLE notifications ADD CONSTRAINT fk_notif_ticket "
      "FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE"),
+    ("todos", "fk_todo_recurrence",
+     "ALTER TABLE todos ADD CONSTRAINT fk_todo_recurrence "
+     "FOREIGN KEY (recurrence_id) REFERENCES todo_recurrences(id) ON DELETE SET NULL"),
 ]
 
 

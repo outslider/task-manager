@@ -5,6 +5,7 @@ Runs against a real MariaDB/MySQL database (TM_TEST_DB_NAME, default
 
     python -m unittest discover -s tests -v
 """
+import datetime
 import json
 import os
 import socket
@@ -15,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import timedelta
 from http.cookiejar import CookieJar
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2139,6 +2141,156 @@ class TestTodos(ApiTestCase):
 
     def test_todos_need_a_login(self):
         self.assertEqual(Client(self.base).get("/api/todos")[0], 401)
+
+
+class TestTodoRecurrences(ApiTestCase):
+    """繰り返しの ToDo（毎月1日のことを3日前に出す、など）。"""
+
+    def day(self, offset):
+        """今日から offset 日の日付。今日が何日でも壊れないようにする。"""
+        return (db.today() + timedelta(days=offset)).isoformat()
+
+    def add(self, client=None, title="月初の締め作業", **kwargs):
+        payload = {"title": title, "freq": "monthly", "month_day": 1,
+                   "lead_days": 3, "next_on": self.day(30)}
+        payload.update(kwargs)
+        status, data = (client or self.admin).post("/api/todo-recurrences", payload)
+        self.assertEqual(status, 201, data)
+        return data
+
+    def titles(self, client=None):
+        return [t["title"] for t in (client or self.admin).get("/api/todos")[1]["todos"]]
+
+    def test_a_rule_that_is_not_due_yet_creates_nothing(self):
+        result = self.add(title="まだ先の用事", next_on=self.day(10), lead_days=3)
+        self.assertEqual(result["created"], 0)
+        self.assertNotIn("まだ先の用事", self.titles())
+
+    def test_it_appears_the_given_number_of_days_early(self):
+        # 3日後が予定日で「3日前に出す」なら、今日出る
+        result = self.add(title="請求書を出す", next_on=self.day(3), lead_days=3)
+        self.assertEqual(result["created"], 1)
+        todos = self.admin.get("/api/todos")[1]["todos"]
+        made = [t for t in todos if t["title"] == "請求書を出す"]
+        self.assertEqual(len(made), 1, todos)
+        self.assertEqual(made[0]["due_date"], self.day(3))
+        self.assertEqual(made[0]["recurrence_id"], result["recurrence"]["id"])
+
+    def test_the_next_date_moves_on_and_nothing_is_created_twice(self):
+        result = self.add(title="毎月の棚卸し", next_on=self.day(3), lead_days=3,
+                          month_day=(db.today() + timedelta(days=3)).day)
+        rule = result["recurrence"]
+        # 次回は 1 ヶ月先へ進んでいる
+        self.assertGreater(rule["next_on"], self.day(3))
+        # 何度開いても増えない
+        for _ in range(3):
+            self.admin.get("/api/todos")
+        self.assertEqual(self.titles().count("毎月の棚卸し"), 1)
+
+    def test_a_rule_that_is_switched_off_stays_quiet(self):
+        result = self.add(title="止めてある用事", next_on=self.day(0), lead_days=0, active=False)
+        self.assertEqual(result["created"], 0)
+        self.admin.get("/api/todos")
+        self.assertNotIn("止めてある用事", self.titles())
+
+    def test_weekly_rules_need_a_weekday_and_monthly_ones_a_day(self):
+        status, data = self.admin.post("/api/todo-recurrences",
+                                       {"title": "曜日なし", "freq": "weekly",
+                                        "weekdays": "", "next_on": self.day(7)})
+        self.assertEqual(status, 400, data)
+        status, data = self.admin.post("/api/todo-recurrences",
+                                       {"title": "日なし", "freq": "monthly",
+                                        "next_on": self.day(7)})
+        self.assertEqual(status, 400, data)
+
+    def test_a_title_is_required(self):
+        self.assertEqual(self.admin.post("/api/todo-recurrences",
+                                         {"title": "  ", "freq": "daily",
+                                          "next_on": self.day(1)})[0], 400)
+
+    def test_running_it_now_creates_one_and_moves_on(self):
+        rule = self.add(title="今すぐ出す用事", next_on=self.day(30))["recurrence"]
+        status, data = self.admin.post(
+            "/api/todo-recurrences/{}/run".format(rule["id"]), {})
+        self.assertEqual(status, 200, data)
+        self.assertIn("今すぐ出す用事", self.titles())
+        self.assertGreater(data["recurrence"]["next_on"], rule["next_on"])
+
+    def test_skipping_moves_on_without_creating(self):
+        rule = self.add(title="今回は飛ばす", next_on=self.day(30))["recurrence"]
+        status, data = self.admin.post(
+            "/api/todo-recurrences/{}/skip".format(rule["id"]), {})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["skipped"], rule["next_on"])
+        self.assertGreater(data["next_on"], rule["next_on"])
+        self.assertNotIn("今回は飛ばす", self.titles())
+
+    def test_deleting_a_rule_keeps_the_todos_it_already_made(self):
+        result = self.add(title="残る用事", next_on=self.day(0), lead_days=0)
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(
+            self.admin.delete("/api/todo-recurrences/{}".format(result["recurrence"]["id"]))[0],
+            200)
+        self.assertIn("残る用事", self.titles())
+
+    def test_a_rule_belongs_to_one_person_only(self):
+        _, email = self.make_user("よその人")
+        other = self.client_for(email)
+        rule = self.add(title="自分だけの用事")["recurrence"]
+        self.assertEqual(other.get("/api/todo-recurrences")[1]["recurrences"], [])
+        path = "/api/todo-recurrences/{}".format(rule["id"])
+        self.assertEqual(other.patch(path, {"title": "書き換え"})[0], 404)
+        self.assertEqual(other.delete(path)[0], 404)
+        self.assertEqual(other.post(path + "/run", {})[0], 404)
+        self.assertEqual(other.post(path + "/skip", {})[0], 404)
+
+    def test_the_todo_lands_with_its_owner_not_the_batch(self):
+        _, email = self.make_user("当番の人")
+        client = self.client_for(email)
+        self.add(client, title="当番の用事", next_on=self.day(0), lead_days=0)
+        self.assertIn("当番の用事", self.titles(client))
+        self.assertNotIn("当番の用事", self.titles())
+
+    def test_the_daily_screen_also_brings_them_out(self):
+        self.add(title="今日の確認で出る用事", next_on=self.day(1), lead_days=1)
+        blob = json.dumps(self.admin.get("/api/daily")[1], ensure_ascii=False)
+        self.assertIn("今日の確認で出る用事", blob)
+
+    def test_rules_go_away_with_the_account(self):
+        user, email = self.make_user("退職者")
+        self.add(self.client_for(email), title="消える繰り返し")
+        self.admin.delete("/api/users/{}".format(user["id"]))
+        self.assertEqual(
+            db.scalar("SELECT COUNT(*) AS c FROM todo_recurrences WHERE user_id=%s",
+                      (user["id"],), default=0), 0)
+
+    def test_editing_keeps_the_switch_where_it_was(self):
+        rule = self.add(title="止めたまま直す", active=False)["recurrence"]
+        status, data = self.admin.patch(
+            "/api/todo-recurrences/{}".format(rule["id"]), {"title": "名前だけ変える"})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["recurrence"]["title"], "名前だけ変える")
+        self.assertFalse(data["recurrence"]["active"])
+
+    def next_weekday(self, weekday):
+        """次に来る指定曜日（今日は含めない）。月=0。"""
+        ahead = (weekday - db.today().weekday()) % 7 or 7
+        return (db.today() + timedelta(days=ahead)).isoformat()
+
+    def test_weekly_rules_repeat_on_the_chosen_weekdays(self):
+        friday = self.next_weekday(4)
+        rule = self.add(title="週報を書く", freq="weekly", weekdays="4",
+                        month_day=None, lead_days=0, next_on=friday)["recurrence"]
+        self.assertEqual(rule["summary"], "毎週 金曜")
+        self.assertEqual(rule["next_on"], friday)
+        data = self.admin.post("/api/todo-recurrences/{}/skip".format(rule["id"]), {})[1]
+        # 金曜の 1 週間後はまた金曜
+        self.assertEqual(
+            (datetime.date.fromisoformat(data["next_on"])
+             - datetime.date.fromisoformat(friday)).days, 7)
+
+    def test_it_needs_a_login(self):
+        self.assertEqual(Client(self.base).get("/api/todo-recurrences")[0], 401)
 
 
 class TestTaskImport(ApiTestCase):

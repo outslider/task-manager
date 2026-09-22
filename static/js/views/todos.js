@@ -6,6 +6,7 @@ import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store } from '../store.js';
 import { confirmDialog, dueClass, el, fill, formatDate, toast } from '../util.js';
+import { openTodoRecurrences } from './todoRecurrence.js';
 
 export async function render(container) {
   setHeader('マイ ToDo');
@@ -33,7 +34,12 @@ export async function render(container) {
     el('div', { class: 'card' },
       el('div', { class: 'card-head' },
         el('h2', {}, 'マイ ToDo'),
-        el('label', { class: 'check' }, doneToggle, el('span', { text: '完了も表示' }))),
+        el('div', { style: { display: 'flex', gap: '12px', alignItems: 'center' } },
+          el('button', {
+            class: 'btn btn-sm', title: '決まった日に出てくる ToDo を登録する',
+            onClick: () => openTodoRecurrences({ onChange: load }),
+          }, '🔁 繰り返し'),
+          el('label', { class: 'check' }, doneToggle, el('span', { text: '完了も表示' })))),
       el('div', { class: 'card-body' },
         el('p', { class: 'page-sub',
           text: 'プロジェクトに紐づかない、ちょっとした用事の置き場です。'
@@ -98,7 +104,12 @@ export async function render(container) {
     });
 
     const node = el('div', { class: `todo-row${todo.is_done ? ' is-done' : ''}` },
-      check, title, due,
+      check, title,
+      // 繰り返しから出てきたものは、消しても次回また出ることが分かるようにしておく
+      todo.recurrence_id
+        ? el('span', { class: 'todo-repeat', title: '繰り返しから出た ToDo', text: '🔁' })
+        : null,
+      due,
       el('div', { class: 'todo-actions' },
         el('button', {
           class: 'icon-btn', title: '期限を設定',

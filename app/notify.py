@@ -308,6 +308,7 @@ def _run_daily_digest():
     today = db.today().isoformat()
     from . import recurrence          # 循環 import を避けるため遅延読み込み
     recurring = recurrence.run()
+    recurring_todos = recurrence.run_todos()
     scanned = scan_due_tasks()
     slack_posts = slack_daily_summary()
     sent = 0
@@ -322,7 +323,8 @@ def _run_daily_digest():
                   dedupe_key="digest:{}".format(today), email=True):
             sent += 1
     return {"sent": sent, "due_notifications": scanned,
-            "recurring_tasks": recurring, "slack_posts": slack_posts}
+            "recurring_tasks": recurring, "recurring_todos": recurring_todos,
+            "slack_posts": slack_posts}
 
 
 def slack_daily_summary():

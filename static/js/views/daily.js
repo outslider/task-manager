@@ -319,6 +319,9 @@ export async function render(container) {
                 },
               }),
               el('span', { text: todo.title })),
+            todo.recurrence_id
+              ? el('span', { class: 'todo-repeat', title: '繰り返しから出た ToDo', text: '🔁' })
+              : null,
             todo.due_date
               ? el('span', {
                 class: `badge ${dueClass(todo.due_date, 'todo') || ''}`.trim(),

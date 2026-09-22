@@ -2385,7 +2385,8 @@ def bulk_update_tasks(ctx):
 # 個人 ToDo（プロジェクトに属さない、自分だけのメモ書き）
 # --------------------------------------------------------------------------
 
-TODO_SELECT = "SELECT id, title, note, due_date, is_done, sort_order, done_at, created_at FROM todos"
+TODO_SELECT = ("SELECT id, title, note, due_date, is_done, sort_order, recurrence_id, "
+               "done_at, created_at FROM todos")
 
 
 def todo_or_404(user, todo_id):
@@ -2400,6 +2401,8 @@ def todo_or_404(user, todo_id):
 @route("GET", r"/api/todos")
 def list_todos(ctx):
     user = me(ctx)
+    # 日次バッチを待たずに済むよう、開いた時点で出す時期の来た繰り返しを反映する
+    recurrence.run_todos(user["id"])
     sql = TODO_SELECT + " WHERE user_id=%s"
     params = [user["id"]]
     if not as_bool(ctx.query.get("include_done")):
@@ -2517,12 +2520,161 @@ def promote_todo(ctx, todo_id):
 
 
 # --------------------------------------------------------------------------
+# ToDo の繰り返し
+#
+# 「毎月1日の締め作業を3日前に出す」のような、自分だけの定例。
+# 規則も作られる ToDo も本人のものなので、どの入口でも user_id で絞る。
+# --------------------------------------------------------------------------
+
+TODO_RULE_SELECT = ("SELECT id, title, note, freq, interval_n, weekdays, month_day, lead_days, "
+                    "next_on, last_created_on, active FROM todo_recurrences")
+
+
+def todo_rule_or_404(user, rule_id):
+    """自分の規則でなければ、存在自体を伏せる。"""
+    rule = db.query_one("SELECT * FROM todo_recurrences WHERE id=%s AND user_id=%s",
+                        (rule_id, user["id"]))
+    if not rule:
+        raise not_found("繰り返しの設定が見つかりません")
+    return rule
+
+
+def todo_rule_row(rule_id):
+    row = db.query_one(TODO_RULE_SELECT + " WHERE id=%s", (rule_id,))
+    row["summary"] = recurrence.describe(row)
+    return row
+
+
+def _todo_rule_body(ctx, current=None):
+    body = ctx.body
+    freq = body.get("freq", current["freq"] if current else "monthly")
+    if freq not in ("daily", "weekly", "monthly"):
+        raise bad_request("繰り返しの種類が不正です")
+    weekdays = body.get("weekdays", current["weekdays"] if current else "")
+    if isinstance(weekdays, list):
+        weekdays = ",".join(str(as_int(d, 0, 0, 6)) for d in weekdays)
+    weekdays = ",".join(str(d) for d in recurrence.parse_weekdays(weekdays))
+    if freq == "weekly" and not weekdays:
+        raise bad_request("曜日を1つ以上選んでください")
+    month_day = as_int(body.get("month_day"), current["month_day"] if current else None, 1, 31)
+    if freq == "monthly" and not month_day:
+        raise bad_request("何日に出すかを指定してください")
+    next_on = as_date(body.get("next_on")) or (
+        current["next_on"].isoformat() if current else None)
+    if not next_on:
+        raise bad_request("次回の予定日を指定してください")
+    title = require(body, "title", "やること") if "title" in body or not current \
+        else current["title"]
+    return {
+        "title": title,
+        "note": (body.get("note", current["note"] if current else "") or "")[:1000],
+        "freq": freq,
+        "interval_n": as_int(body.get("interval_n"),
+                             current["interval_n"] if current else 1, 1, 99),
+        "weekdays": weekdays,
+        "month_day": month_day,
+        "lead_days": as_int(body.get("lead_days"),
+                            current["lead_days"] if current else 3, 0, 60),
+        "next_on": next_on,
+        # 送られてこなければ今の状態のまま。止めてある規則が勝手に動き出さないように。
+        "active": 1 if as_bool(body.get(
+            "active", bool(current["active"]) if current else True)) else 0,
+    }
+
+
+@route("GET", r"/api/todo-recurrences")
+def list_todo_recurrences(ctx):
+    user = me(ctx)
+    rows = db.query(TODO_RULE_SELECT + " WHERE user_id=%s ORDER BY active DESC, next_on, id",
+                    (user["id"],))
+    for row in rows:
+        row["summary"] = recurrence.describe(row)
+    return json_response({"recurrences": rows})
+
+
+@route("POST", r"/api/todo-recurrences")
+def create_todo_recurrence(ctx):
+    user = me(ctx)
+    values = _todo_rule_body(ctx)
+    now = db.now()
+    rule_id = db.insert(
+        "INSERT INTO todo_recurrences(user_id, title, note, freq, interval_n, weekdays, "
+        "month_day, lead_days, next_on, active, created_at, updated_at) "
+        "VALUES(%(user_id)s,%(title)s,%(note)s,%(freq)s,%(interval_n)s,%(weekdays)s,"
+        "%(month_day)s,%(lead_days)s,%(next_on)s,%(active)s,%(now)s,%(now)s)",
+        dict(values, user_id=user["id"], now=now))
+    # 既に出す時期に入っているなら、待たせずにその場で 1 件出す
+    created = recurrence.run_todos(user["id"], rule_id=rule_id)
+    return json_response({"recurrence": todo_rule_row(rule_id), "created": created}, 201)
+
+
+@route("PATCH", r"/api/todo-recurrences/(\d+)")
+def update_todo_recurrence(ctx, rule_id):
+    user = me(ctx)
+    current = todo_rule_or_404(user, rule_id)
+    values = _todo_rule_body(ctx, current)
+    db.execute(
+        "UPDATE todo_recurrences SET title=%(title)s, note=%(note)s, freq=%(freq)s, "
+        "interval_n=%(interval_n)s, weekdays=%(weekdays)s, month_day=%(month_day)s, "
+        "lead_days=%(lead_days)s, next_on=%(next_on)s, active=%(active)s, updated_at=%(now)s "
+        "WHERE id=%(id)s",
+        dict(values, id=current["id"], now=db.now()))
+    return json_response({"recurrence": todo_rule_row(current["id"])})
+
+
+@route("DELETE", r"/api/todo-recurrences/(\d+)")
+def delete_todo_recurrence(ctx, rule_id):
+    user = me(ctx)
+    current = todo_rule_or_404(user, rule_id)
+    # 既に出した ToDo は本人の持ち物なので消さない（recurrence_id が外れるだけ）
+    db.execute("DELETE FROM todo_recurrences WHERE id=%s", (current["id"],))
+    return json_response({"deleted": current["id"]})
+
+
+@route("POST", r"/api/todo-recurrences/(\d+)/run")
+def run_todo_recurrence(ctx, rule_id):
+    """次回ぶんを今すぐ ToDo にする。"""
+    user = me(ctx)
+    rule = todo_rule_or_404(user, rule_id)
+    due = rule["next_on"]
+    recurrence._create_todo(rule, due)
+    today = db.today()
+    nxt = recurrence.next_date(rule, due)
+    guard = 0
+    while nxt <= today and guard < 200:   # 予定日が過去だったときに、次も過去にしない
+        nxt = recurrence.next_date(rule, nxt)
+        guard += 1
+    db.execute("UPDATE todo_recurrences SET next_on=%s, last_created_on=%s, updated_at=%s "
+               "WHERE id=%s", (nxt, today, db.now(), rule["id"]))
+    return json_response({"recurrence": todo_rule_row(rule["id"]), "created_for": due})
+
+
+@route("POST", r"/api/todo-recurrences/(\d+)/skip")
+def skip_todo_recurrence(ctx, rule_id):
+    """今回は出さずに次回へ送る。"""
+    user = me(ctx)
+    rule = todo_rule_or_404(user, rule_id)
+    skipped = rule["next_on"]
+    nxt = recurrence.next_date(rule, skipped)
+    today = db.today()
+    guard = 0
+    while nxt <= today and guard < 200:
+        nxt = recurrence.next_date(rule, nxt)
+        guard += 1
+    db.execute("UPDATE todo_recurrences SET next_on=%s, updated_at=%s WHERE id=%s",
+               (nxt, db.now(), rule["id"]))
+    return json_response({"recurrence": todo_rule_row(rule["id"]),
+                          "skipped": skipped, "next_on": nxt})
+
+
+# --------------------------------------------------------------------------
 # daily check-in
 # --------------------------------------------------------------------------
 
 @route("GET", r"/api/daily")
 def daily(ctx):
     user = me(ctx)
+    recurrence.run_todos(user["id"])
     buckets = notify.daily_summary_for(user["id"])
     today = db.today()
     # 参加していないプロジェクトのタスクは、担当でも出さない
