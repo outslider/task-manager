@@ -121,10 +121,62 @@ function assigneeName(task) {
   return task.assignee_id ? (store.usersById.get(Number(task.assignee_id))?.name || '') : '';
 }
 
+/* 全体ガントで、はじめに出すプロジェクトの数。
+   参加案件が増えても 1 枚に全部並べても読めないので、既定では動いているものに絞る。 */
+const OVERVIEW_DEFAULT_MAX = 8;
+const PICK_KEY = 'tm.gantt.projects';
+
+/** 前回の選択。無ければ null（＝既定の絞り込みを使う）。 */
+function loadPicked() {
+  try {
+    const raw = localStorage.getItem(PICK_KEY);
+    if (!raw) return null;
+    if (raw === 'all') return 'all';
+    const ids = raw.split(',').map(Number).filter(Boolean);
+    return ids.length ? new Set(ids) : null;
+  } catch { return null; }
+}
+
+function savePicked(picked) {
+  try {
+    if (picked === 'all') localStorage.setItem(PICK_KEY, 'all');
+    else if (picked) localStorage.setItem(PICK_KEY, [...picked].join(','));
+    else localStorage.removeItem(PICK_KEY);
+  } catch { /* プライベートウィンドウでは覚えなくてよい */ }
+}
+
+/**
+ * 初めて開いたときに出すプロジェクト。
+ * 未完了の仕事が残っているものを、遅れの多い順に。多すぎるときは頭だけ。
+ */
+function defaultPicked(projects) {
+  const live = projects.filter((p) => !p.archived);
+  if (live.length <= OVERVIEW_DEFAULT_MAX) return null;   // 少なければ全部でよい
+  const moving = live.filter((p) => (p.stats?.total || 0) > (p.stats?.done || 0));
+  const ordered = (moving.length ? moving : live).sort((a, b) =>
+    (b.stats?.overdue || 0) - (a.stats?.overdue || 0)
+    || ((b.stats?.total || 0) - (b.stats?.done || 0))
+       - ((a.stats?.total || 0) - (a.stats?.done || 0)));
+  return new Set(ordered.slice(0, OVERVIEW_DEFAULT_MAX).map((p) => p.id));
+}
+
 export async function render(container, route) {
   const projectId = route.projectId || null;
   const overview = !projectId;               // プロジェクトを横断して見るモード
-  let data = overview ? await api.get('/api/gantt') : await api.projectTasks(projectId);
+  const allProjects = overview ? store.projects.filter((p) => !p.archived) : [];
+  let picked = overview ? (loadPicked() ?? defaultPicked(allProjects)) : null;
+  // 空の集合は「全部」と区別できず、問い合わせ側では全件扱いになってしまう。
+  // 1 件も選ばれていないときは、絞り込み無しとして扱う。
+  const pickedIds = () => {
+    if (!picked || picked === 'all' || !picked.size) return null;
+    return [...picked];
+  };
+  const fetchData = async () => {
+    if (!overview) return api.projectTasks(projectId);
+    const ids = pickedIds();
+    return api.get(`/api/gantt${ids ? `?project_ids=${ids.join(',')}` : ''}`);
+  };
+  let data = await fetchData();
   const project = overview
     ? { id: null, name: '全プロジェクト' }
     : data.project;
@@ -251,7 +303,96 @@ export async function render(container, route) {
     onChange: (event) => { state.toISO = event.target.value || null; draw(); },
   });
 
+  /** どのプロジェクトを並べるかを選ぶ。全体ガントだけに出す。 */
+  const pickerButton = overview ? el('button', { class: 'btn btn-sm' }) : null;
+  const syncPickerLabel = () => {
+    if (!pickerButton) return;
+    const shown = pickedIds() ? pickedIds().length : allProjects.length;
+    fill(pickerButton, ...iconLabel('folder',
+      `プロジェクト ${shown}/${allProjects.length}`));
+    pickerButton.title = pickedIds()
+      ? '表示するプロジェクトを選びます（いまは絞り込み中）'
+      : '表示するプロジェクトを選びます';
+  };
+  if (pickerButton) {
+    pickerButton.addEventListener('click', () => openProjectPicker());
+    syncPickerLabel();
+  }
+
+  async function openProjectPicker() {
+    const { openModal } = await import('../util.js');
+    const current = pickedIds() ? new Set(pickedIds()) : new Set(allProjects.map((p) => p.id));
+    const boxes = new Map();
+    const chosen = await openModal({
+      title: '並べるプロジェクト',
+      wide: true,
+      build: () => el('div', {},
+        el('p', { class: 'page-sub',
+          text: '1 枚に並べるプロジェクトを選べます（次回も覚えています）。'
+            + `いまは ${allProjects.length} 件のうち `
+            + `${pickedIds() ? pickedIds().length : allProjects.length} 件を並べています。`
+            + (allProjects.length > OVERVIEW_DEFAULT_MAX
+              ? '数が多いので、初めは動いているものだけに絞っています。' : '') }),
+        el('div', { class: 'toolbar', style: { marginBottom: '8px' } },
+          el('button', {
+            class: 'btn btn-sm',
+            onClick: () => boxes.forEach((b) => { b.checked = true; }),
+          }, 'すべて選ぶ'),
+          el('button', {
+            class: 'btn btn-sm',
+            onClick: () => boxes.forEach((b) => { b.checked = false; }),
+          }, 'すべて外す')),
+        el('div', { class: 'pick-grid' }, ...allProjects.map((p) => {
+          const box = el('input', { type: 'checkbox', checked: current.has(p.id) ? true : null });
+          boxes.set(p.id, box);
+          const open = (p.stats?.total || 0) - (p.stats?.done || 0);
+          return el('label', { class: 'check pick-row' }, box,
+            el('span', { class: 'nav-dot', style: { background: p.color } }),
+            el('span', { class: 'pick-name', text: p.name }),
+            el('span', { class: 'hint', text: open ? `未完了 ${open}` : '完了' }));
+        }))),
+      footer: (close) => [
+        el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
+        el('button', {
+          class: 'btn btn-primary',
+          onClick: () => {
+            const ids = [...boxes].filter(([, b]) => b.checked).map(([id]) => id);
+            if (!ids.length) {
+              toast('1 つ以上選んでください', 'error');
+              return;
+            }
+            close(ids);
+          },
+        }, 'この並びで見る'),
+      ],
+    });
+    if (!chosen) return;
+    picked = chosen.length >= allProjects.length ? 'all' : new Set(chosen);
+    savePicked(picked);
+    syncPickerLabel();
+    await refresh();
+  }
+
+  const pickNotice = el('div', { class: 'warn-box soft', hidden: true });
+  const syncPickNotice = () => {
+    const ids = pickedIds();
+    pickNotice.hidden = !ids || !overview;
+    if (pickNotice.hidden) return;
+    fill(pickNotice,
+      el('span', { text: `${allProjects.length} 件のうち ${ids.length} 件だけを並べています。` }),
+      el('button', {
+        class: 'btn btn-sm', style: { marginLeft: '10px' },
+        onClick: async () => {
+          picked = 'all';
+          savePicked(picked);
+          syncPickerLabel();
+          await refresh();
+        },
+      }, 'すべて並べる'));
+  };
+
   const toolbar = el('div', { class: 'toolbar' },
+    pickerButton,
     el('span', { class: 'label', style: { margin: 0 }, text: '表示' }), modeSeg,
     el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '表示単位' }), scaleSeg,
     el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '色分け' }), colorSelect,
@@ -347,7 +488,7 @@ export async function render(container, route) {
   fill(container,
     el('div', { class: 'gantt-wrap' },
       overview ? overviewHead() : projectTabs(projectId, 'gantt'),
-      toolbar, rowNotice, scroll, legend));
+      toolbar, pickNotice, rowNotice, scroll, legend));
 
   /** 俯瞰のときの見出し。どのプロジェクトが対象かを示す。 */
   function overviewHead() {
@@ -371,6 +512,10 @@ export async function render(container, route) {
     const tasks = filteredTasks();
     const { children } = buildTree(tasks);
     if (state.mode === 'roadmap') {
+      // 複数プロジェクトを 1 枚にすると、節目を上に 1 本にまとめても
+      // どれがどの案件のものか分からない。案件ごとに区切って、
+      // その見出しの行に自分の節目を並べる。
+      if (overview) return roadmapByProject(tasks);
       // フェーズ＝トップレベルのタスク。節目は上のレーンにまとめるので行にはしない
       return (children.get(null) || [])
         .filter((task) => !task.is_milestone)
@@ -405,6 +550,45 @@ export async function render(container, route) {
   }
 
   /** 担当者・カテゴリ・プロジェクトごとに区切り行を挟んで並べる。 */
+  /**
+   * 全体ガントのロードマップ。案件ごとに見出しを置き、その行に節目を並べ、
+   * 下にフェーズを続ける。節目はその案件のものだけ（階層のどこにあっても拾う）。
+   */
+  function roadmapByProject(tasks) {
+    const projects = new Map((data.projects || []).map((p) => [p.id, p]));
+    const buckets = new Map();
+    for (const task of tasks) {
+      if (!buckets.has(task.project_id)) buckets.set(task.project_id, []);
+      buckets.get(task.project_id).push(task);
+    }
+    const order = [...buckets.keys()].sort((a, b) =>
+      String(projects.get(a)?.name || '').localeCompare(String(projects.get(b)?.name || ''), 'ja'));
+    const rows = [];
+    for (const pid of order) {
+      const items = buckets.get(pid);
+      const { children } = buildTree(items);
+      const phases = (children.get(null) || [])
+        .filter((task) => !task.is_milestone)
+        .sort((a, b) => (a.sort_order - b.sort_order) || (a.id - b.id));
+      const marks = items.filter((task) => task.is_milestone && task.due_date);
+      const groupId = `roadmap:${pid}`;
+      const folded = collapsedGroups.has(groupId);
+      rows.push({
+        group: true, groupId, label: projects.get(pid)?.name || '（不明なプロジェクト）',
+        color: projects.get(pid)?.color || '#98a2b3',
+        count: phases.length, collapsed: folded, separator: rows.length > 0,
+        milestones: marks,
+      });
+      if (folded) continue;
+      for (const task of phases) {
+        rows.push({
+          task, depth: 0, hasChildren: (children.get(task.id) || []).length > 0, inGroup: true,
+        });
+      }
+    }
+    return rows;
+  }
+
   function groupedRows(tasks) {
     const mode = state.group;
     const keyOf = (task) => {
@@ -511,8 +695,15 @@ export async function render(container, route) {
     return out.sort((a, b) => a.due.localeCompare(b.due)).slice(0, 60);
   }
 
-  /** ロードマップの上部レーンに並べる節目。階層のどこにあっても拾う。 */
+  /** ロードマップの上部レーンに並べる節目。階層のどこにあっても拾う。
+   *  全体ガントでは案件ごとの見出し行に並べるので、上のレーンは使わない。 */
   function milestoneRows() {
+    if (state.mode !== 'roadmap' || overview) return [];
+    return filteredTasks().filter((task) => task.is_milestone && task.due_date);
+  }
+
+  /** 期間の計算には、どこに並べる節目でも含める。 */
+  function allMilestones() {
     if (state.mode !== 'roadmap') return [];
     return filteredTasks().filter((task) => task.is_milestone && task.due_date);
   }
@@ -602,7 +793,7 @@ export async function render(container, route) {
   /** サーバーから読み直して引き直す。横位置は draw() が持ち越す。 */
   async function refresh() {
     try {
-      data = overview ? await api.get('/api/gantt') : await api.projectTasks(projectId);
+      data = await fetchData();
     } catch (error) {
       toast(error.message, 'error');
       return;
@@ -616,11 +807,13 @@ export async function render(container, route) {
   }
 
   function draw() {
+    syncPickNotice();
     const all = visibleRows();
     const rows = all.length > MAX_ROWS ? all.slice(0, MAX_ROWS) : all;
     drawRowNotice(all.length);
     const milestones = milestoneRows();
-    const range = dateRange(rows, milestones);
+    // 期間は、案件ごとの行に並べる節目も含めて決める
+    const range = dateRange(rows, allMilestones());
     ensureHolidays(range).then((changed) => { if (changed) draw(); });
     const roadmap = state.mode === 'roadmap';
     syncRangeInputs(range);
@@ -670,7 +863,7 @@ export async function render(container, route) {
   async function exportDialog() {
     const rows = visibleRows();
     const milestones = milestoneRows();
-    const range = dateRange(rows, milestones);
+    const range = dateRange(rows, allMilestones());
     const preset = { value: 'ppt169' };
     const includeTitle = { value: true };
     const format = { value: 'png' };
@@ -1046,6 +1239,48 @@ export function buildGanttSvg({
     }));
   });
 
+  /**
+   * 節目の菱形を 1 行のなかに並べる。案件ごとのロードマップで使う。
+   * 上部の一本レーンと違い、行の高さに収めるため札は 1 段だけ。
+   */
+  function milestoneMarks(items, rowTop, height) {
+    const g = svgEl('g');
+    const sorted = [...items]
+      .filter((m) => parseDate(m.due_date))
+      .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
+    const cy = rowTop + Math.min(15, height / 2 - 4);
+    let lastX = -Infinity;
+    for (const task of sorted) {
+      const due = parseDate(task.due_date);
+      const cx = x(due) + dayWidth / 2;
+      const done = task.status === 'done';
+      const pin = svgEl('path', {
+        d: markerPath(task.marker, cx, cy, 6),
+        fill: done ? STATUS_COLOR.done : '#e8912b',
+        stroke: forExport ? '#ffffff' : 'none', 'stroke-width': 1,
+      });
+      pin.appendChild(svgEl('title', {
+        text: `${task.title} — ${toISO(due)}${done ? '（完了）' : ''}`,
+      }));
+      const node = svgEl('g', {}, pin);
+      // 隣と近すぎるときは札を出さない。菱形は残るので、詳しくは吹き出しで見る
+      if (cx - lastX >= 74) {
+        node.appendChild(svgEl('text', {
+          x: cx, y: rowTop + height - 7, 'font-size': 9.5, 'text-anchor': 'middle',
+          fill: done ? colors.muted : colors.text, 'font-weight': done ? 400 : 600,
+          text: truncate(task.title, 12),
+        }));
+        lastX = cx;
+      }
+      if (interactive) {
+        node.style.cursor = 'pointer';
+        node.addEventListener('click', () => openTask(task.id));
+      }
+      g.appendChild(node);
+    }
+    return g;
+  }
+
   rows.forEach((row, index) => {
     const y = originY + index * rowH;
 
@@ -1069,7 +1304,9 @@ export function buildGanttSvg({
       heading.appendChild(svgEl('title', { text: row.label }));
       const count = svgEl('text', {
         x: PAD + nameWidth - 8, y: y + rowH / 2 + 4, 'font-size': 10,
-        'text-anchor': 'end', fill: colors.muted, text: `${row.count}件`,
+        'text-anchor': 'end', fill: colors.muted,
+        text: row.milestones?.length
+          ? `${row.count}件 ◆${row.milestones.length}` : `${row.count}件`,
       });
       const hit = svgEl('rect', {
         x: PAD, y, width: nameWidth, height: rowH, fill: 'transparent',
@@ -1084,6 +1321,10 @@ export function buildGanttSvg({
         x1: originX, y1: y + rowH, x2: PAD + nameWidth + chartW, y2: y + rowH,
         stroke: colors.grid, 'stroke-width': 1,
       }));
+      // 案件ごとのロードマップでは、その案件の節目をこの見出しの行に並べる
+      if (row.milestones?.length && !row.collapsed) {
+        rowsG.appendChild(milestoneMarks(row.milestones, y, rowH));
+      }
       return;
     }
 

@@ -935,6 +935,22 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* 空の状態に置く線画。文字より一段淡くする。 */
 .empty-ico { color: var(--text-faint); display: grid; place-items: center; margin-bottom: 6px; }
 
+/* 全体ガントで並べるプロジェクトを選ぶ一覧 */
+.pick-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 2px;
+  max-height: 46vh; overflow: auto;
+}
+.pick-row { padding: 6px 8px; border-radius: var(--radius-sm); }
+.pick-row:hover { background: var(--surface-2); }
+.pick-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.warn-box.soft {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--text-muted); font-size: 13px; padding: 8px 12px;
+  border-radius: var(--radius-sm); margin-bottom: 10px;
+}
+
 /* ---------- 会議室モード ----------
    そのまま会議室のモニタに映すための表示。枠を消し、文字を大きくし、
    薄い色をやめる。資料にするなら PowerPoint 出力のほうを使う。 */
