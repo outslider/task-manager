@@ -5,6 +5,7 @@
 import { api } from '../api.js';
 import { refreshRoute } from '../app.js';
 import { closeAllOverlays, debounce, dueClass, el, fill, formatDate } from '../util.js';
+import { markerChar } from '../store.js';
 
 const KIND_ROUTE = {
   project: (item) => `#/p/${item.id}/tasks`,
@@ -154,7 +155,8 @@ function hit(kind, item, input) {
   }
   fill(node,
     el('span', { class: 'search-title',
-      text: (item.is_milestone ? '◆ ' : '') + (item.seq ? `#${item.seq} ` : '') + item.title }),
+      text: (item.is_milestone ? `${markerChar(item)} ` : '')
+        + (item.seq ? `#${item.seq} ` : '') + item.title }),
     el('span', { class: 'search-sub' },
       el('span', { class: 'dot', style: { background: item.project_color || '#98a2b3' } }),
       el('span', { text: item.project_name || '' }),

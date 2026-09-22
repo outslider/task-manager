@@ -180,3 +180,13 @@ export function issueCategory(value) {
 export function category(value) {
   return CATEGORIES.find((c) => c.value === value) || UNCATEGORIZED;
 }
+
+/**
+ * マイルストーンの記号。ガントは輪郭を描くが、一覧や検索では文字で出す。
+ * 同じタスクがどこでも同じ形に見えるよう、出どころをここに 1 つだけ持つ。
+ */
+export function markerChar(task) {
+  const markers = store.meta?.markers || [];
+  const found = markers.find((m) => m.value === (task?.marker || ''));
+  return found?.char || '◆';
+}

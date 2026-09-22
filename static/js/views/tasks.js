@@ -2,7 +2,9 @@
  * 階層の組み替えは、行のドラッグ（PC）と行メニュー（スマホを含む）の両方からできる。 */
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
-import { store, STATUS_LABEL, IMPORTANCE_LABEL, CATEGORIES, category } from '../store.js';
+import {
+  store, STATUS_LABEL, IMPORTANCE_LABEL, CATEGORIES, category, markerChar,
+} from '../store.js';
 import {
   avatar, clear, confirmDialog, debounce, dueClass, dueLabel, el, fill, formatDate, toast,
 } from '../util.js';
@@ -382,7 +384,9 @@ export async function render(container, route) {
       }, '⠿') : null,
       twisty,
       importanceMark(task.priority),
-      task.is_milestone ? el('span', { class: 'milestone-mark', title: 'マイルストーン' }, '◆') : null,
+      task.is_milestone
+        ? el('span', { class: 'milestone-mark', title: 'マイルストーン' }, markerChar(task))
+        : null,
       el('span', { class: 'task-title', text: task.title, title: task.title }),
       ...dependencyBadges(task),
       el('span', { class: 'task-meta-icons' },

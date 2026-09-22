@@ -1,7 +1,7 @@
 /* Cross-project task list with filters. */
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
-import { store, STATUS_LABEL, CATEGORIES } from '../store.js';
+import { store, STATUS_LABEL, CATEGORIES, markerChar } from '../store.js';
 import {
   addDays, avatar, clear, debounce, dueClass, dueLabel, el, fill, formatDate, parseDate,
   skeleton, today, toISO,
@@ -241,7 +241,7 @@ export async function render(container) {
         style: { background: task.project_color, width: '8px', height: '8px' },
         title: task.project_name,
       }),
-      task.is_milestone ? el('span', { class: 'milestone-mark' }, '◆') : null,
+      task.is_milestone ? el('span', { class: 'milestone-mark' }, markerChar(task)) : null,
       el('span', { class: 'task-title', text: task.title, title: task.title }),
       task.blocks_direct
         ? el('span', { class: 'badge blocking', style: { flex: 'none' },

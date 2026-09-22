@@ -23,13 +23,15 @@ OPEN_STATUSES = notify.OPEN_STATUSES
 MAX_TASK_DEPTH = 8
 
 # ガント上の記号。空文字は既定（◆）。
+# マイルストーンの記号。value, 文字, 選ぶときの表示名。
+# 文字のほうは、ガント以外（一覧・詳細・検索）でそのまま出すために持つ。
 MARKERS = [
-    ("", "◆ ひし形（既定）"),
-    ("circle", "● 丸"),
-    ("square", "■ 四角"),
-    ("triangle", "▲ 三角"),
-    ("down", "▼ 逆三角"),
-    ("star", "★ 星"),
+    ("", "◆", "◆ ひし形（既定）"),
+    ("circle", "●", "● 丸"),
+    ("square", "■", "■ 四角"),
+    ("triangle", "▲", "▲ 三角"),
+    ("down", "▼", "▼ 逆三角"),
+    ("star", "★", "★ 星"),
 ]
 MARKER_VALUES = {m[0] for m in MARKERS}
 
@@ -1743,7 +1745,7 @@ def search(ctx):
     scope = tuple(project_ids) or (0,)
 
     tasks = db.query(
-        "SELECT t.id, t.title, t.status, t.due_date, t.is_milestone, "
+        "SELECT t.id, t.title, t.status, t.due_date, t.is_milestone, t.marker, "
         "       p.name AS project_name, p.color AS project_color, u.name AS assignee_name "
         "  FROM tasks t JOIN projects p ON p.id = t.project_id "
         "  LEFT JOIN users u ON u.id = t.assignee_id "
@@ -3213,7 +3215,7 @@ def meta(ctx):
         "slack_events": [{"value": k, "label": label, "help": help_text}
                          for k, label, help_text in prefs.SLACK_EVENTS],
         "slack_enabled": db.get_setting("slack_enabled", "0") == "1",
-        "markers": [{"value": v, "label": label} for v, label in MARKERS],
+        "markers": [{"value": v, "char": ch, "label": label} for v, ch, label in MARKERS],
         "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
         "max_depth": MAX_TASK_DEPTH,
     })

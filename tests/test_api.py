@@ -14,6 +14,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.parse
+from urllib.parse import quote
 import urllib.request
 import uuid
 from datetime import timedelta
@@ -3473,6 +3474,24 @@ class TestGanttMarkers(ApiTestCase):
         self.assertIn("", values)
         for expected in ("circle", "square", "triangle", "down", "star"):
             self.assertIn(expected, values)
+
+    def test_every_marker_carries_the_character_to_draw(self):
+        """ガント以外（一覧・詳細・検索）は記号を文字で出すので、文字が要る。"""
+        markers = self.admin.get("/api/meta")[1]["markers"]
+        chars = {m["value"]: m.get("char") for m in markers}
+        self.assertEqual(chars[""], "◆")
+        self.assertEqual(chars["star"], "★")
+        for value, char in chars.items():
+            self.assertTrue(char, "記号の文字が無い: {}".format(value))
+
+    def test_search_tells_which_marker_a_milestone_uses(self):
+        project = self.make_project()
+        task = self.make_task(project["id"], "節目マーカー検索", is_milestone=True,
+                              marker="star")
+        hits = self.admin.get("/api/search?q=" + quote("節目マーカー検索"))[1]
+        tasks = next((g["items"] for g in hits["groups"] if g["kind"] == "task"), [])
+        found = next(t for t in tasks if t["id"] == task["id"])
+        self.assertEqual(found["marker"], "star")
 
     def test_default_is_empty(self):
         project = self.make_project()

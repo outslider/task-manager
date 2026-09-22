@@ -1,8 +1,10 @@
 /* Issue detail drawer: status, linked tasks, history and attachments. */
 import { api, url } from '../api.js';
 import {
-  store, ISSUE_STATUS_LABEL, SEVERITY_LABEL, STATUS_LABEL, issueCategory, } from
-  '../store.js'; import {   avatar, confirmDialog, dueClass, dueDelta, el, fill,
+  store, ISSUE_STATUS_LABEL, SEVERITY_LABEL, STATUS_LABEL, issueCategory,
+} from '../store.js';
+import {
+  avatar, confirmDialog, dueClass, dueDelta, el, fill,
   formatBytes, formatDate, formatDateTime, openDrawer, openModal, skeleton, toast,
   undoToast,
 } from '../util.js';

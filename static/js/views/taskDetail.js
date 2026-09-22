@@ -1,8 +1,10 @@
 /* Task detail drawer: inline editing, subtasks, links/files, comments. */
 import { api, url } from '../api.js';
 import {
-  store, STATUS_LABEL, IMPORTANCE_LABEL, ISSUE_STATUS_LABEL, SEVERITY_LABEL, } from
-  '../store.js'; import {   avatar, confirmDialog, dueClass, dueLabel, el, fill,
+  store, STATUS_LABEL, IMPORTANCE_LABEL, ISSUE_STATUS_LABEL, SEVERITY_LABEL, markerChar,
+} from '../store.js';
+import {
+  avatar, confirmDialog, dueClass, dueLabel, el, fill,
   formatBytes, formatDate, formatDateTime, openDrawer, openModal, skeleton, toast,
   undoToast,
 } from '../util.js';
@@ -161,7 +163,9 @@ async function renderDetail(instance, taskId, onChange) {
       el('span', { class: 'label', text: '進捗', style: { margin: 0 } }), progressValue,
       el('span', { class: `badge ${task.status}`, text: STATUS_LABEL[task.status] }),
       el('span', { class: `prio prio-${task.priority}`, text: `重要度: ${IMPORTANCE_LABEL[task.priority]}` }),
-      task.is_milestone ? el('span', { class: 'badge', text: '◆ マイルストーン' }) : null,
+      task.is_milestone
+        ? el('span', { class: 'badge', text: `${markerChar(task)} マイルストーン` })
+        : null,
       overdueLabel
         ? el('span', { class: `badge ${dueClass(task.due_date, task.status) || 'soon'}`, text: overdueLabel })
         : null),

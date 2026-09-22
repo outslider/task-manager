@@ -2,8 +2,10 @@
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import {
-  store, ISSUE_CATEGORIES, ISSUE_STATUS_LABEL, SEVERITY_LABEL, issueCategory, } from
-  '../store.js'; import {   avatar, debounce, downloadBlob, dueClass, dueLabel, el, fill,
+  store, ISSUE_CATEGORIES, ISSUE_STATUS_LABEL, SEVERITY_LABEL, issueCategory,
+} from '../store.js';
+import {
+  avatar, debounce, downloadBlob, dueClass, dueLabel, el, fill,
   formatDate, skeleton, today, toISO,
 } from '../util.js';
 import { iconLabel } from '../icons.js';
