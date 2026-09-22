@@ -4,7 +4,11 @@
  * 決めれば、そのぶんずれた日付が入る。毎回日付を直す手間が消える。 */
 import { api } from '../api.js';
 import { store } from '../store.js';
-import { confirmDialog, el, fill, formatDate, openModal, toISO, today, toast } from '../util.js';
+import {
+  confirmDialog, el, fill, formatDate, openModal,
+  skeleton, toast, today, toISO,
+} from '../util.js';
+import { icon } from '../icons.js';
 import { option } from './pickers.js';
 
 const SCOPE_ICON = { project: '📁', tasks: '🧩' };
@@ -18,13 +22,13 @@ export async function openTemplates({ scope = '', project = null, onApplied } = 
   let applied = false;
 
   const load = async () => {
-    fill(listHost, el('div', { class: 'empty', text: '読み込み中…' }));
+    fill(listHost, skeleton('rows', 3));
     try {
       const data = await api.get(`/api/templates${scope ? `?scope=${scope}` : ''}`);
       fill(listHost, ...(data.templates.length
         ? data.templates.map(row)
         : [el('div', { class: 'empty' },
-          el('div', { class: 'big', text: '🧩' }),
+          icon('blocks', { size: 30 }),
           '雛形はまだありません',
           el('div', { class: 'hint', style: { marginTop: '8px' },
             text: 'タスクの ⋯ メニューの「雛形として保存」、または'

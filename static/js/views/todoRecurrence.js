@@ -4,7 +4,10 @@
  * 規則も、そこから出てくる ToDo も本人にしか見えない。
  * 日付の進め方はプロジェクトの定例タスクと同じ仕組みを使っている。 */
 import { api } from '../api.js';
-import { confirmDialog, el, fill, formatDate, openModal, toISO, today, toast } from '../util.js';
+import {
+  confirmDialog, el, fill, formatDate, openModal,
+  skeleton, toast, today, toISO,
+} from '../util.js';
 import { option } from './pickers.js';
 
 const WEEKDAYS = ['月', '火', '水', '木', '金', '土', '日'];
@@ -25,7 +28,7 @@ export async function openTodoRecurrences({ onChange } = {}) {
   let changed = false;
 
   const load = async () => {
-    fill(listHost, el('div', { class: 'empty', text: '読み込み中…' }));
+    fill(listHost, skeleton('rows', 3));
     try {
       const data = await api.get('/api/todo-recurrences');
       fill(listHost, ...(data.recurrences.length

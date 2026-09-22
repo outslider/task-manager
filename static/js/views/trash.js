@@ -4,9 +4,13 @@
  * 戻すと元の番号のまま返ってくるので、依存線や課題との紐づけもそのまま復活する。 */
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
-import { confirmDialog, el, fill, formatDate, formatDateTime, toast } from '../util.js';
+import {
+  confirmDialog, el, fill, formatDate, formatDateTime, skeleton, toast,
+} from '../util.js';
+import { icon, iconLabel } from '../icons.js';
 
-const ICONS = { task: '✓', issue: '📌', ticket: '🎫' };
+// 一覧に並ぶ種別。左メニューで使っている絵と揃える。
+const ICONS = { task: 'check', issue: 'pin', ticket: 'ticket' };
 
 export async function render(container) {
   setHeader('ゴミ箱');
@@ -19,7 +23,7 @@ export async function render(container) {
   fill(container,
     el('div', { class: 'card' },
       el('div', { class: 'card-head' },
-        el('h2', {}, '🗑 ゴミ箱'),
+        el('h2', {}, icon('trash', { size: 18 }), el('span', { text: 'ゴミ箱' })),
         filterHost),
       el('div', { class: 'card-body' },
         el('p', { class: 'page-sub', id: 'trash-lead' }),
@@ -35,11 +39,11 @@ export async function render(container) {
       ...state.kinds.map((k) => el('button', {
         type: 'button', class: state.kind === k.value ? 'active' : '',
         onClick: () => { state.kind = k.value; load(); },
-      }, `${ICONS[k.value] || ''} ${k.label}`)));
+      }, ...iconLabel(ICONS[k.value] || 'list', k.label))));
   }
 
   async function load() {
-    fill(listHost, el('div', { class: 'empty', text: '読み込み中…' }));
+    fill(listHost, skeleton('rows', 3));
     try {
       const data = await api.get(`/api/trash${state.kind ? `?kind=${state.kind}` : ''}`);
       state.items = data.items;
@@ -62,7 +66,7 @@ export async function render(container) {
   function draw() {
     if (!state.items.length) {
       fill(listHost, el('div', { class: 'empty' },
-        el('div', { style: { fontSize: '28px' } }, '🗑'),
+        el('div', { class: 'empty-ico' }, icon('trash', { size: 30 })),
         el('div', { text: 'ゴミ箱は空です' })));
       summary.textContent = '';
       return;
@@ -85,7 +89,8 @@ export async function render(container) {
       el('div', { style: { minWidth: 0 } },
         el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center',
           flexWrap: 'wrap' } },
-        el('span', { class: 'badge', text: `${ICONS[item.kind] || ''} ${item.label}` }),
+        el('span', { class: 'badge trash-kind' },
+          icon(ICONS[item.kind] || 'list', { size: 13 }), el('span', { text: item.label })),
         el('strong', { text: item.title }),
         item.project_name ? el('span', { class: 'hint', text: item.project_name }) : null),
         el('div', { class: 'hint' },
@@ -112,7 +117,7 @@ export async function render(container) {
               button.disabled = false;
             }
           },
-        }, '↩︎ 元に戻す'),
+        }, ...iconLabel('repeat', '元に戻す')),
         el('button', {
           class: 'btn btn-sm', title: '待たずに完全に消す',
           onClick: async () => {

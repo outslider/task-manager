@@ -2,11 +2,11 @@
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import {
-  store, ISSUE_CATEGORIES, ISSUE_STATUS_LABEL, SEVERITY_LABEL, issueCategory,
-} from '../store.js';
-import {
-  avatar, debounce, downloadBlob, dueClass, dueLabel, el, fill, formatDate, toISO, today,
+  store, ISSUE_CATEGORIES, ISSUE_STATUS_LABEL, SEVERITY_LABEL, issueCategory, } from
+  '../store.js'; import {   avatar, debounce, downloadBlob, dueClass, dueLabel, el, fill,
+  formatDate, skeleton, today, toISO,
 } from '../util.js';
+import { iconLabel } from '../icons.js';
 import { issueCategoryChip, option } from './pickers.js';
 import { projectTabs } from './projectNav.js';
 import { openIssueForm } from './issueForm.js';
@@ -23,10 +23,10 @@ export async function render(container, route) {
 
   setHeader(project ? `${project.name} — 課題管理表` : '課題管理表',
     [
-      el('button', { class: 'btn', onClick: exportCsv }, '⬇ CSV'),
+      el('button', { class: 'btn', onClick: exportCsv }, ...iconLabel('download', 'CSV')),
       // 全体一覧にはプロジェクトが無いので、どこかで編集できるなら出す
       (canEdit || store.projects.some((p) => !p.archived && store.canEdit(p)))
-        ? el('button', { class: 'btn btn-primary', onClick: () => createIssue() }, '＋ 課題を起票')
+        ? el('button', { class: 'btn btn-primary', onClick: () => createIssue() }, ...iconLabel('plus', '課題を起票'))
         : null,
     ]);
 
@@ -79,7 +79,7 @@ export async function render(container, route) {
   async function load({ append = false } = {}) {
     if (!append) {
       loaded = [];
-      fill(rowsHost, el('div', { class: 'empty', text: '読み込み中…' }));
+      fill(rowsHost, skeleton('rows', 6));
     }
     const query = {
       status: state.status, category: state.category, owner_id: state.owner_id,

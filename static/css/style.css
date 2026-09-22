@@ -147,7 +147,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
   content: ""; position: absolute; left: -6px; top: 50%; transform: translateY(-50%);
   width: 3px; height: 18px; border-radius: 3px; background: var(--accent);
 }
-.nav-item .ico { width: 18px; text-align: center; flex: none; font-size: 15px; }
+.nav-item .ico {
+  width: 18px; height: 18px; flex: none; display: grid; place-items: center; font-size: 15px;
+}
 .nav-item .count {
   margin-left: auto; font-size: 11px; font-weight: 650; color: var(--text-faint);
   background: var(--surface-3); border-radius: 20px; padding: 1px 7px;
@@ -183,6 +185,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .icon-btn:hover { background: var(--surface-3); color: var(--text); }
 .icon-btn svg { width: 18px; height: 18px; stroke: currentColor; fill: none;
   stroke-width: 2; stroke-linecap: round; }
+/* icons.js の線画は自分で太さを持っているので、上の一括指定から外す */
+.icon-btn svg.ico-svg, .nav-item svg.ico-svg { stroke-width: 1.75; }
+.ico-svg { display: block; flex: none; }
 .badge-dot {
   position: absolute; top: 3px; right: 3px; min-width: 16px; height: 16px;
   border-radius: 9px; background: var(--danger); color: #fff;
@@ -296,6 +301,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: 13px 16px; border-bottom: 1px solid var(--border);
 }
 .card-head h2, .card-head h3 { margin-right: auto; }
+/* 見出しに線画を添えたとき、記号と文字が段違いにならないようにする */
+.card-head h2, .card-head h3 { display: inline-flex; align-items: center; gap: 7px; }
 .card-body { padding: 15px; }
 .card-body.tight { padding: 0; }
 
@@ -558,6 +565,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
   max-width: 100%; overflow: hidden; text-overflow: ellipsis;
 }
 .cat-dot { width: 8px; height: 8px; border-radius: 3px; flex: none; display: inline-block; }
+/* 分類は色の点＋文字。塗りつぶしは状態のバッジのためにとっておく。 */
+.cat-tag {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%;
+  color: var(--text-muted); font-weight: 500; white-space: nowrap; line-height: 1.6;
+}
+.cat-tag > span { overflow: hidden; text-overflow: ellipsis; }
+.cat-tag.sm { font-size: 11.5px; }
+.cat-tag.sm .cat-dot { width: 7px; height: 7px; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 7px; }
 .chip {
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
@@ -634,6 +649,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
   width: 24px; height: 24px; border-radius: 50%; flex: none;
   display: grid; place-items: center; color: #fff;
   font-size: 11px; font-weight: 700; letter-spacing: 0;
+  /* 白い背景に白抜きの頭文字が乗るので、ごく薄い縁で輪郭を残す */
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, .18);
 }
 .avatar.sm { width: 20px; height: 20px; font-size: 10px; }
 .avatar.lg { width: 34px; height: 34px; font-size: 14px; }
@@ -654,7 +672,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   overflow: hidden; }
 .seg button { border: none; background: var(--surface); padding: 6px 11px; cursor: pointer;
-  color: var(--text-muted); font-weight: 550; font-size: 13px; }
+  color: var(--text-muted); font-weight: 550; font-size: 13px;
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .seg button + button { border-left: 1px solid var(--border); }
 .seg button.active { background: var(--accent); color: var(--accent-contrast, #fff); }
 
@@ -912,6 +931,85 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .toast-undo:hover { background: rgba(255,255,255,.14); }
 .toast-undo:disabled { opacity: .5; cursor: default; }
 
+.trash-kind { display: inline-flex; align-items: center; gap: 5px; }
+/* 空の状態に置く線画。文字より一段淡くする。 */
+.empty-ico { color: var(--text-faint); display: grid; place-items: center; margin-bottom: 6px; }
+
+/* ---------- 会議室モード ----------
+   そのまま会議室のモニタに映すための表示。枠を消し、文字を大きくし、
+   薄い色をやめる。資料にするなら PowerPoint 出力のほうを使う。 */
+:root[data-present="1"] {
+  --text-muted: #3f4b60;
+  --text-faint: #64718a;
+  --border: #ccd2dd;
+  --border-strong: #9aa4b5;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-present="1"]:not([data-theme="light"]) {
+    --text-muted: #c4ccda; --text-faint: #9aa6b8;
+    --border: #3d4657; --border-strong: #5a667c;
+  }
+}
+:root[data-theme="dark"][data-present="1"] {
+  --text-muted: #c4ccda; --text-faint: #9aa6b8;
+  --border: #3d4657; --border-strong: #5a667c;
+}
+[data-present="1"] body { font-size: 16.5px; }
+[data-present="1"] .sidebar,
+[data-present="1"] .topbar,
+[data-present="1"] .mobile-nav,
+[data-present="1"] .sidebar-backdrop { display: none !important; }
+[data-present="1"] .app-shell { grid-template-columns: 1fr; }
+[data-present="1"] .content { padding: 22px 30px 64px; }
+[data-present="1"] .card-head h2 { font-size: 20px; }
+[data-present="1"] .table th, [data-present="1"] .table td { padding-top: 11px;
+  padding-bottom: 11px; }
+[data-present="1"] .task-row { padding-top: 11px; padding-bottom: 11px; }
+[data-present="1"] .badge, [data-present="1"] .cat-tag.sm { font-size: 13px; }
+[data-present="1"] .hint, [data-present="1"] .page-sub { font-size: 13.5px; }
+/* 会議中に出口を見失わないよう、常に同じところに置く */
+.present-exit {
+  position: fixed; right: 16px; bottom: 16px; z-index: 260;
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 9px 15px; border-radius: 999px; border: 1px solid var(--border-strong);
+  background: var(--surface); color: var(--text-muted); font-weight: 600;
+  box-shadow: var(--shadow); cursor: pointer;
+}
+.present-exit:hover { background: var(--surface-3); color: var(--text); }
+@media (max-width: 900px) { .present-btn { display: none; } }
+
+/* ---------- 読み込み中のプレースホルダ ---------- */
+.skeleton { display: flex; flex-direction: column; gap: 10px; padding: 4px 0; }
+.sk-row { display: flex; align-items: center; gap: 11px; padding: 7px 2px; }
+.sk-grow { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.sk-card { display: flex; flex-direction: column; gap: 8px; padding: 14px;
+  border: 1px solid var(--border); border-radius: var(--radius); }
+.sk-text { display: flex; flex-direction: column; gap: 8px; }
+.sk-line, .sk-dot {
+  display: block; height: 10px; border-radius: 5px; background: var(--surface-3);
+  position: relative; overflow: hidden;
+}
+.sk-dot { width: 26px; height: 26px; border-radius: 50%; flex: none; }
+/* 光が左から右へ流れる。動きを減らす設定の人には出さない。 */
+.sk-line::after, .sk-dot::after {
+  content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .55), transparent);
+  animation: sk-sweep 1.3s ease-in-out infinite;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .sk-line::after,
+  :root:not([data-theme="light"]) .sk-dot::after {
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .08), transparent);
+  }
+}
+:root[data-theme="dark"] .sk-line::after, :root[data-theme="dark"] .sk-dot::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .08), transparent);
+}
+@keyframes sk-sweep { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .sk-line::after, .sk-dot::after { animation: none; }
+}
+
 /* ---------- notifications ---------- */
 .notif-item { display: flex; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--border);
   cursor: pointer; }
@@ -960,7 +1058,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .mobile-nav button span {
     max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .mobile-nav button .ico { font-size: 18px; }
+  .mobile-nav button .ico { font-size: 18px; display: grid; place-items: center; }
+  .mobile-nav button .ico svg { width: 20px; height: 20px; }
   .mobile-nav button.active { color: var(--accent); }
   .tree-head { display: none; }
   .task-row {

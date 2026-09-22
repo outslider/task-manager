@@ -4,7 +4,7 @@
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store } from '../store.js';
-import { avatar, dueClass, el, fill, formatDate } from '../util.js';
+import { avatar, dueClass, el, fill, formatDate, skeleton } from '../util.js';
 import { openTicketDetail } from './ticketDetail.js';
 import { openTicketForm } from './ticketForm.js';
 
@@ -158,7 +158,7 @@ export async function render(container, route) {
     saveFilter(state);
     if (!append) {
       state.loaded = [];
-      fill(listHost, el('div', { class: 'empty', text: '読み込み中…' }));
+      fill(listHost, skeleton('rows', 6));
     }
     const params = new URLSearchParams();
     for (const key of ['queue_id', 'status', 'kind', 'scope', 'q', 'category_id']) {
@@ -253,10 +253,9 @@ export async function render(container, route) {
           ? el('span', { class: 'badge', title: '関連課題', text: `📌 ${ticket.issue_count}` })
           : null,
         ticket.category_label
-          ? el('span', { class: 'cat-chip sm', style: {
-            background: `${ticket.category_color}1f`, color: ticket.category_color,
-            borderColor: `${ticket.category_color}55`,
-          } }, ticket.category_label)
+          ? el('span', { class: 'cat-tag sm', title: ticket.category_label },
+            el('i', { class: 'cat-dot', style: { background: ticket.category_color } }),
+            el('span', { text: ticket.category_label }))
           : null,
         ticket.comment_count
           ? el('span', { class: 'ticket-meta-icon', text: `💬${ticket.comment_count}` })

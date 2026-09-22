@@ -35,25 +35,28 @@ export function issueCategorySelect(value, { id } = {}) {
     ...ISSUE_CATEGORIES.map((c) => option(c.value, c.label, (value || 'other') === c.value)));
 }
 
-function chip(label, color, small) {
-  return el('span', {
-    class: 'cat-chip',
-    style: {
-      background: `${color}1f`, color, borderColor: `${color}55`,
-      fontSize: small ? '10.5px' : '11.5px',
-    },
-    title: label,
-  }, label);
+/**
+ * 一覧に出す分類の札。
+ *
+ * 以前は色で塗ったピルだったが、1 行に担当・状態・期限と色物が並ぶと
+ * どれも同じ強さに見えて、いちばん見たい「状態」が埋もれていた。
+ * 分類は色の点＋文字にとどめ、塗りは状態のバッジだけに残している。
+ * 記号（絵文字）は選ぶときには出るので、一覧では省いて幅を稼ぐ。
+ */
+function tag(label, color, small) {
+  return el('span', { class: `cat-tag${small ? ' sm' : ''}`, title: label },
+    el('i', { class: 'cat-dot', style: { background: color } }),
+    el('span', { text: label }));
 }
 
 export function categoryChip(value, { small = false } = {}) {
   const info = category(value);
-  return chip(`${info.icon} ${info.label}`, info.color, small);
+  return tag(info.label, info.color, small);
 }
 
 export function issueCategoryChip(value, { small = false } = {}) {
   const info = issueCategory(value);
-  return chip(info.label, info.color, small);
+  return tag(info.label, info.color, small);
 }
 
 /**

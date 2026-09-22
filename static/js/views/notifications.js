@@ -3,7 +3,7 @@ import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store } from '../store.js';
 import { linkify } from './mention.js';
-import { clear, el, fill, formatDateTime, toast } from '../util.js';
+import { clear, el, fill, formatDateTime, skeleton, toast } from '../util.js';
 import { openTaskDetail } from './taskDetail.js';
 
 const TYPE_ICON = {
@@ -37,7 +37,7 @@ export async function render(container) {
       el('div', { class: 'card-body tight' }, listHost)));
 
   async function load() {
-    fill(listHost, el('div', { class: 'empty', text: '読み込み中…' }));
+    fill(listHost, skeleton('rows', 6));
     const data = await api.notifications({ unread: state.unreadOnly ? 1 : '', limit: 200 });
     clear(listHost);
     if (data.notifications.length === 0) {

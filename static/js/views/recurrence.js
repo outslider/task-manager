@@ -1,7 +1,10 @@
 /* 繰り返し（定例タスク）の設定。プロジェクト単位で規則を管理する。 */
 import { api } from '../api.js';
 import { store } from '../store.js';
-import { confirmDialog, el, fill, formatDate, openModal, toISO, today, toast } from '../util.js';
+import {
+  confirmDialog, el, fill, formatDate, openModal,
+  skeleton, toast, today, toISO,
+} from '../util.js';
 import { categorySelect, option, userSelect } from './pickers.js';
 
 const WEEKDAYS = ['月', '火', '水', '木', '金', '土', '日'];
@@ -15,7 +18,7 @@ export async function openRecurrenceManager(project, { onChange } = {}) {
   let changed = false;
 
   const load = async () => {
-    fill(listHost, el('div', { class: 'empty', text: '読み込み中…' }));
+    fill(listHost, skeleton('rows', 3));
     try {
       const data = await api.get(`/api/projects/${project.id}/recurrences`);
       fill(listHost, ...(data.recurrences.length

@@ -1,12 +1,12 @@
 /* Issue detail drawer: status, linked tasks, history and attachments. */
 import { api, url } from '../api.js';
 import {
-  store, ISSUE_STATUS_LABEL, SEVERITY_LABEL, STATUS_LABEL, issueCategory,
-} from '../store.js';
-import {
-  avatar, confirmDialog, dueClass, dueDelta, el, fill, formatBytes, formatDate,
-  formatDateTime, openDrawer, openModal, toast, undoToast,
+  store, ISSUE_STATUS_LABEL, SEVERITY_LABEL, STATUS_LABEL, issueCategory, } from
+  '../store.js'; import {   avatar, confirmDialog, dueClass, dueDelta, el, fill,
+  formatBytes, formatDate, formatDateTime, openDrawer, openModal, skeleton, toast,
+  undoToast,
 } from '../util.js';
+import { icon } from '../icons.js';
 import { issueCategorySelect, userSelect } from './pickers.js';
 import { openIssueForm, taskPicker } from './issueForm.js';
 import { memoEditor, openTaskDetail } from './taskDetail.js';
@@ -18,7 +18,7 @@ export async function openIssueDetail(issueId, { onChange } = {}) {
   if (openInstance) openInstance.close();
   const instance = openDrawer({
     build: (drawer) => {
-      drawer.appendChild(el('div', { class: 'empty', text: '読み込み中…' }));
+      drawer.appendChild(skeleton('text', 3));
     },
     onClose: () => { openInstance = null; if (onChange) onChange(); },
   });
@@ -82,9 +82,10 @@ async function renderDetail(instance, issueId, onChange) {
           undoToast(`課題「${issue.title}」を削除しました`, () =>
             api.post(`/api/trash/${result.trash_id}/restore`, {}));
         },
-      }, '🗑')
+      }, icon('trash'))
       : null,
-    el('button', { class: 'icon-btn', title: '閉じる', onClick: () => instance.close() }, '×'));
+    el('button', { class: 'icon-btn', title: '閉じる', onClick: () => instance.close() },
+      icon('close')));
 
   const body = el('div', { class: 'drawer-body' });
 

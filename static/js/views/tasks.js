@@ -6,6 +6,7 @@ import { store, STATUS_LABEL, IMPORTANCE_LABEL, CATEGORIES, category } from '../
 import {
   avatar, clear, confirmDialog, debounce, dueClass, dueLabel, el, fill, formatDate, toast,
 } from '../util.js';
+import { iconLabel } from '../icons.js';
 import { openTaskForm } from './taskForm.js';
 import { categoryChip } from './pickers.js';
 import { openTaskDetail } from './taskDetail.js';
@@ -99,7 +100,7 @@ export async function render(container, route) {
           const { openImportDialog } = await import('./importTasks.js');
           if (await openImportDialog(project)) reload();
         },
-      }, '⬆ 取り込み')
+      }, ...iconLabel('upload', '取り込み'))
       : null,
     canEdit
       ? el('button', {
@@ -108,7 +109,7 @@ export async function render(container, route) {
           const { openMemoDialog } = await import('./memoTasks.js');
           if (await openMemoDialog(project)) reload();
         },
-      }, '📝 メモから')
+      }, ...iconLabel('note', 'メモから'))
       : null,
     canEdit
       ? el('button', {
@@ -117,10 +118,10 @@ export async function render(container, route) {
           const { openTemplates } = await import('./templates.js');
           await openTemplates({ project, onApplied: reload });
         },
-      }, '🧩 雛形')
+      }, ...iconLabel('blocks', '雛形'))
       : null,
     canEdit
-      ? el('button', { class: 'btn btn-primary', onClick: () => addTask(null) }, '＋ タスク')
+      ? el('button', { class: 'btn btn-primary', onClick: () => addTask(null) }, ...iconLabel('plus', 'タスク'))
       : null,
   ]);
 
@@ -174,7 +175,7 @@ export async function render(container, route) {
           const { openRecurrenceManager } = await import('./recurrence.js');
           if (await openRecurrenceManager(project)) reload();
         },
-      }, '🔁 定例')
+      }, ...iconLabel('repeat', '定例'))
       : null,
     el('button', {
       class: 'btn btn-sm', title: 'すべて展開',

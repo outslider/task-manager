@@ -7,6 +7,7 @@ import {
   addDays, daysBetween, downloadBlob, el, fill, isWeekend, openModal, parseDate, svgEl,
   toISO, toast, today, weekday,
 } from '../util.js';
+import { iconLabel } from '../icons.js';
 import { buildTree, loadCollapsed, saveCollapsed } from './tasks.js';
 import { openTaskDetail } from './taskDetail.js';
 import { projectTabs } from './projectNav.js';
@@ -153,9 +154,9 @@ export async function render(container, route) {
     `${project.name}${overview ? '' : ' —'} ${state.mode === 'roadmap' ? 'ロードマップ' : 'ガント'}`,
     [
       canEdit && !overview
-        ? el('button', { class: 'btn', onClick: () => addTask() }, '＋ タスク')
+        ? el('button', { class: 'btn', onClick: () => addTask() }, ...iconLabel('plus', 'タスク'))
         : null,
-      el('button', { class: 'btn btn-primary', onClick: () => exportDialog() }, '⬇ エクスポート'),
+      el('button', { class: 'btn btn-primary', onClick: () => exportDialog() }, ...iconLabel('download', 'エクスポート')),
     ]);
   syncHeader();
 

@@ -1,12 +1,12 @@
 /* Task detail drawer: inline editing, subtasks, links/files, comments. */
 import { api, url } from '../api.js';
 import {
-  store, STATUS_LABEL, IMPORTANCE_LABEL, ISSUE_STATUS_LABEL, SEVERITY_LABEL,
-} from '../store.js';
-import {
-  avatar, confirmDialog, dueClass, dueLabel, el, fill, formatBytes, formatDate,
-  formatDateTime, openDrawer, openModal, toast, undoToast,
+  store, STATUS_LABEL, IMPORTANCE_LABEL, ISSUE_STATUS_LABEL, SEVERITY_LABEL, } from
+  '../store.js'; import {   avatar, confirmDialog, dueClass, dueLabel, el, fill,
+  formatBytes, formatDate, formatDateTime, openDrawer, openModal, skeleton, toast,
+  undoToast,
 } from '../util.js';
+import { icon } from '../icons.js';
 import { openTaskForm } from './taskForm.js';
 import { categorySelect, userSelect } from './pickers.js';
 import { openParentPicker, setParent } from './hierarchy.js';
@@ -18,7 +18,7 @@ export async function openTaskDetail(taskId, { onChange } = {}) {
   if (openInstance) openInstance.close();
   const instance = openDrawer({
     build: (drawer) => {
-      drawer.appendChild(el('div', { class: 'empty', text: '読み込み中…' }));
+      drawer.appendChild(skeleton('text', 3));
     },
     onClose: () => { openInstance = null; if (onChange) onChange(); },
   });
@@ -84,9 +84,10 @@ async function renderDetail(instance, taskId, onChange) {
           undoToast(`「${task.title}」を削除しました`, () =>
             api.post(`/api/trash/${result.trash_id}/restore`, {}));
         },
-      }, '🗑')
+      }, icon('trash'))
       : null,
-    el('button', { class: 'icon-btn', title: '閉じる', onClick: () => instance.close() }, '×'));
+    el('button', { class: 'icon-btn', title: '閉じる', onClick: () => instance.close() },
+      icon('close')));
 
   const body = el('div', { class: 'drawer-body' });
 

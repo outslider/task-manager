@@ -2,7 +2,8 @@
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store } from '../store.js';
-import { confirmDialog, el, fill, openModal, toast } from '../util.js';
+import { confirmDialog, el, fill, openModal, skeleton, toast } from '../util.js';
+import { iconLabel } from '../icons.js';
 
 export async function render(container) {
   setHeader('リンク集');
@@ -18,7 +19,7 @@ export async function render(container) {
   const addButton = el('button', {
     class: 'btn btn-primary',
     onClick: () => edit(null),
-  }, '＋ リンクを追加');
+  }, ...iconLabel('plus', 'リンクを追加'));
 
   fill(container,
     el('div', { class: 'card' },
@@ -31,7 +32,7 @@ export async function render(container) {
       el('div', { class: 'card-body' }, listHost)));
 
   async function load() {
-    fill(listHost, el('div', { class: 'empty', text: '読み込み中…' }));
+    fill(listHost, skeleton('rows', 4));
     try {
       state.data = await api.get('/api/links');
       draw();
@@ -56,7 +57,7 @@ export async function render(container) {
           : el('button', {
             class: 'btn btn-primary', style: { marginTop: '12px' },
             onClick: () => edit(null),
-          }, '＋ 最初のリンクを追加')));
+          }, ...iconLabel('plus', '最初のリンクを追加'))));
       return;
     }
     // 全体 → プロジェクトごと に分け、その中をさらに分類でまとめる

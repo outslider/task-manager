@@ -154,11 +154,46 @@ export function initials(name) {
   return trimmed.slice(0, 1);
 }
 
+/** #rrggbb を HSL に。読めない値のときは null。 */
+function toHsl(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  const r = ((n >> 16) & 255) / 255;
+  const g = ((n >> 8) & 255) / 255;
+  const b = (n & 255) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (!d) return { h: 0, s: 0, l };
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return { h: h * 360, s, l };
+}
+
+/**
+ * 頭文字だけの丸。同じ色の単色だと誰が誰だか掴みにくいので、
+ * 登録された色を軸に、少し色相をずらした斜めのグラデーションにする。
+ * 色は本人が選んだものから決まるので、毎回同じ見た目になる。
+ */
 export function avatar(user, size = '') {
   const name = user?.name || user?.assignee_name || '';
+  const base = user?.avatar_color || user?.assignee_color || '#98a2b3';
+  const hsl = toHsl(base);
+  const fill2 = hsl
+    ? `linear-gradient(140deg,`
+      + ` hsl(${(hsl.h + 14) % 360} ${Math.round(hsl.s * 100)}% ${
+        Math.min(78, Math.round(hsl.l * 100) + 11)}%),`
+      + ` hsl(${(hsl.h + 360 - 10) % 360} ${Math.round(hsl.s * 100)}% ${
+        Math.max(26, Math.round(hsl.l * 100) - 9)}%))`
+    : base;
   return el('span', {
     class: `avatar ${size}`.trim(),
-    style: { background: user?.avatar_color || user?.assignee_color || '#98a2b3' },
+    style: { background: fill2 },
     title: name || '未割当',
   }, name ? initials(name) : '–');
 }
@@ -176,6 +211,29 @@ export function debounce(fn, wait = 250) {
     clearTimeout(timer);
     timer = setTimeout(() => fn(...args), wait);
   };
+}
+
+/* ---------------- 読み込み中の見た目 ---------------- */
+
+/**
+ * 中身の形をした灰色の箱。「読み込み中…」の文字より、
+ * 何が出てくるかが分かるぶん待ち時間が短く感じられる。
+ *
+ * @param {string} kind rows（一覧）/ cards（カード）/ text（文章）
+ * @param {number} count いくつ並べるか
+ */
+export function skeleton(kind = 'rows', count = 4) {
+  const line = (w) => el('span', { class: 'sk-line', style: { width: w } });
+  const make = {
+    rows: () => el('div', { class: 'sk-row' },
+      el('span', { class: 'sk-dot' }),
+      el('div', { class: 'sk-grow' }, line('62%'), line('34%'))),
+    cards: () => el('div', { class: 'sk-card' }, line('48%'), line('88%'), line('70%')),
+    text: () => el('div', { class: 'sk-text' }, line('100%'), line('92%'), line('58%')),
+  }[kind] || (() => el('div', { class: 'sk-row' }, line('70%')));
+  return el('div', {
+    class: `skeleton sk-${kind}s`, 'aria-busy': 'true', 'aria-label': '読み込み中',
+  }, ...Array.from({ length: count }, make));
 }
 
 /* ---------------- toasts, dialogs ---------------- */

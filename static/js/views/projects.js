@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store } from '../store.js';
 import { avatar, clear, confirmDialog, el, fill, openModal, toast } from '../util.js';
+import { iconLabel } from '../icons.js';
 
 export async function render(container) {
   let projects = await store.refreshProjects();
@@ -15,8 +16,8 @@ export async function render(container) {
         const { openTemplates } = await import('./templates.js');
         await openTemplates({ onApplied: reload });
       },
-    }, '🧩 雛形'),
-    el('button', { class: 'btn btn-primary', onClick: () => editProject(null) }, '＋ 新規プロジェクト'),
+    }, ...iconLabel('blocks', '雛形')),
+    el('button', { class: 'btn btn-primary', onClick: () => editProject(null) }, ...iconLabel('plus', '新規プロジェクト')),
   ]);
 
   const grid = el('div', { class: 'grid cols-3' });

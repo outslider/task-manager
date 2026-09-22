@@ -6,8 +6,9 @@ import { api, url } from '../api.js';
 import { STATUS_LABEL, store } from '../store.js';
 import {
   avatar, confirmDialog, dueClass, dueDelta, el, fill, formatBytes, formatDate,
-  formatDateTime, openDrawer, openModal, toast, undoToast,
+  formatDateTime, openDrawer, openModal, skeleton, toast, undoToast,
 } from '../util.js';
+import { icon } from '../icons.js';
 import { categorySelect, chipPicker, option, userSelect } from './pickers.js';
 import { memoEditor, openTaskDetail } from './taskDetail.js';
 import { openIssueDetail } from './issueDetail.js';
@@ -24,7 +25,7 @@ export async function openTicketDetail(ticketId, { onChange } = {}) {
   if (openInstance) openInstance.close();
   const instance = openDrawer({
     build: (drawer) => {
-      drawer.appendChild(el('div', { class: 'empty', text: '読み込み中…' }));
+      drawer.appendChild(skeleton('text', 3));
     },
     onClose: () => { openInstance = null; if (onChange) onChange(); },
   });
@@ -82,9 +83,10 @@ async function renderDetail(instance, ticketId, onChange) {
           undoToast(`チケット「${ticket.title}」を削除しました`, () =>
             api.post(`/api/trash/${result.trash_id}/restore`, {}));
         },
-      }, '🗑')
+      }, icon('trash'))
       : null,
-    el('button', { class: 'icon-btn', title: '閉じる', onClick: () => instance.close() }, '×'));
+    el('button', { class: 'icon-btn', title: '閉じる', onClick: () => instance.close() },
+      icon('close')));
 
   const body = el('div', { class: 'drawer-body' });
 

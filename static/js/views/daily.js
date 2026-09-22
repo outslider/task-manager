@@ -132,10 +132,9 @@ export async function render(container) {
           + (ticket.on_behalf_of ? ` ・ 依頼元 ${ticket.on_behalf_of}` : ''))),
       el('div', { class: 'daily-controls' },
         ticket.category_label
-          ? el('span', { class: 'cat-chip sm', style: {
-            background: `${ticket.category_color}1f`, color: ticket.category_color,
-            borderColor: `${ticket.category_color}55`,
-          } }, ticket.category_label)
+          ? el('span', { class: 'cat-tag sm', title: ticket.category_label },
+            el('i', { class: 'cat-dot', style: { background: ticket.category_color } }),
+            el('span', { text: ticket.category_label }))
           : null,
         el('span', { class: `badge ticket-${ticket.status}`,
           text: statusOf(ticket.status).label })));

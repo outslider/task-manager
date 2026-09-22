@@ -1,31 +1,33 @@
 /* Application shell: sidebar, top bar, hash router. */
 import { api } from './api.js';
 import { store } from './store.js';
-import { clear, closeAllOverlays, el, fill, toast } from './util.js';
+import { icon } from './icons.js';
+import { initPresenting, togglePresenting } from './present.js';
+import { clear, closeAllOverlays, el, fill, skeleton, toast } from './util.js';
 import { initTheme } from './theme.js';
 import { brandLockup } from './brand.js';
 
 const root = document.getElementById('app');
 
 const NAV = [
-  { id: 'daily', icon: '☀️', label: '今日の確認', hash: '#/daily' },
-  { id: 'mytasks', icon: '✓', label: 'マイタスク', hash: '#/mytasks' },
-  { id: 'todos', icon: '📝', label: 'マイ ToDo', hash: '#/todos' },
-  { id: 'projects', icon: '📁', label: 'プロジェクト', hash: '#/projects' },
-  { id: 'gantt', icon: '📊', label: '全体ガント', hash: '#/gantt' },
-  { id: 'links', icon: '🔗', label: 'リンク集', hash: '#/links' },
-  { id: 'issues', icon: '📌', label: '課題', hash: '#/issues' },
-  { id: 'tickets', icon: '🎫', label: 'チケット', hash: '#/tickets' },
-  { id: 'notifications', icon: '🔔', label: '通知', hash: '#/notifications', badge: true },
-  { id: 'trash', icon: '🗑', label: 'ゴミ箱', hash: '#/trash' },
+  { id: 'daily', icon: 'sun', label: '今日の確認', hash: '#/daily' },
+  { id: 'mytasks', icon: 'check', label: 'マイタスク', hash: '#/mytasks' },
+  { id: 'todos', icon: 'note', label: 'マイ ToDo', hash: '#/todos' },
+  { id: 'projects', icon: 'folder', label: 'プロジェクト', hash: '#/projects' },
+  { id: 'gantt', icon: 'chart', label: '全体ガント', hash: '#/gantt' },
+  { id: 'links', icon: 'link', label: 'リンク集', hash: '#/links' },
+  { id: 'issues', icon: 'pin', label: '課題', hash: '#/issues' },
+  { id: 'tickets', icon: 'ticket', label: 'チケット', hash: '#/tickets' },
+  { id: 'notifications', icon: 'bell', label: '通知', hash: '#/notifications', badge: true },
+  { id: 'trash', icon: 'trash', label: 'ゴミ箱', hash: '#/trash' },
 ];
 
 const ADMIN_NAV = [
-  { id: 'users', icon: '👥', label: 'ユーザー', hash: '#/admin/users' },
-  { id: 'groups', icon: '🏷️', label: 'グループ', hash: '#/admin/groups' },
-  { id: 'taxonomy', icon: '🎨', label: '状態とカテゴリ', hash: '#/admin/taxonomy' },
-  { id: 'queues', icon: '📮', label: 'チケット窓口', hash: '#/admin/queues' },
-  { id: 'settings', icon: '⚙️', label: 'システム設定', hash: '#/admin/settings' },
+  { id: 'users', icon: 'users', label: 'ユーザー', hash: '#/admin/users' },
+  { id: 'groups', icon: 'tag', label: 'グループ', hash: '#/admin/groups' },
+  { id: 'taxonomy', icon: 'palette', label: '状態とカテゴリ', hash: '#/admin/taxonomy' },
+  { id: 'queues', icon: 'inbox', label: 'チケット窓口', hash: '#/admin/queues' },
+  { id: 'settings', icon: 'gear', label: 'システム設定', hash: '#/admin/settings' },
 ];
 
 let shell = null;
@@ -44,10 +46,14 @@ function buildShell() {
   const quickAdd = el('button', {
     class: 'btn btn-primary qa-button', title: 'クイック追加（n キー）',
     onClick: () => openQuickAddDialog(),
-  }, el('span', { text: '⚡' }), el('span', { class: 'qa-label', text: 'クイック追加' }));
+  }, icon('bolt', { size: 16 }), el('span', { class: 'qa-label', text: 'クイック追加' }));
+  const present = el('button', {
+    class: 'icon-btn present-btn', title: '会議室モード（大きく・枠なしで映す）',
+    onClick: () => togglePresenting(),
+  }, icon('screen'));
   const bell = el('button', {
     class: 'icon-btn', title: '通知', onClick: () => { location.hash = '#/notifications'; },
-  }, '🔔');
+  }, icon('bell'));
   const bellBadge = el('span', { class: 'badge-dot', hidden: true });
   bell.appendChild(bellBadge);
 
@@ -55,8 +61,7 @@ function buildShell() {
     class: 'icon-btn', id: 'menu-btn', title: 'メニュー',
     onClick: () => toggleSidebar(),
   });
-  menuButton.innerHTML =
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>';
+  menuButton.appendChild(icon('menu', { size: 20 }));
 
   const searchInput = el('input', {
     class: 'input topbar-search', type: 'search',
@@ -67,7 +72,7 @@ function buildShell() {
     menuButton,
     title,
     el('div', { class: 'topbar-spacer' }),
-    searchInput, topActions, quickAdd, bell);
+    searchInput, topActions, quickAdd, present, bell);
 
   const progress = el('div', { class: 'route-progress', hidden: true });
   const content = el('main', { class: 'content', id: 'content' });
@@ -96,7 +101,8 @@ function navItem(item, active) {
     class: `nav-item${active ? ' active' : ''}`,
     href: item.hash,
     onClick: () => toggleSidebar(false),
-  }, el('span', { class: 'ico', text: item.icon }), el('span', { text: item.label }));
+  }, el('span', { class: 'ico' }, item.icon ? icon(item.icon) : null),
+  el('span', { text: item.label }));
   if (item.badge && store.unread > 0) {
     node.appendChild(el('span', { class: 'count', text: String(store.unread) }));
   }
@@ -152,7 +158,7 @@ function renderSidebar() {
           text: 'プロジェクトがありません' })
         : null,
       el('a', { class: 'nav-item', href: '#/projects', onClick: () => toggleSidebar(false) },
-        el('span', { class: 'ico', text: '＋' }), 'すべて表示')),
+        el('span', { class: 'ico' }, icon('plus')), 'すべて表示')),
     store.isAdmin()
       ? el('div', { class: 'sidebar-section' },
         el('div', { class: 'sidebar-title', text: '管理' }),
@@ -170,7 +176,7 @@ function renderSidebar() {
           style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
         })),
       el('button', { class: 'nav-item', onClick: doLogout },
-        el('span', { class: 'ico', text: '⏻' }), 'ログアウト')),
+        el('span', { class: 'ico' }, icon('power')), 'ログアウト')),
   );
 }
 
@@ -184,9 +190,9 @@ function renderMobileNav() {
     const button = el('button', {
       class: active.startsWith(item.hash) ? 'active' : '',
       onClick: () => { location.hash = item.hash; },
-    }, el('span', { class: 'ico', text: item.icon }), el('span', { text: item.label }));
+    }, el('span', { class: 'ico' }, item.icon ? icon(item.icon) : null),
+    el('span', { text: item.label }));
     if (item.badge && store.unread > 0) {
-      button.querySelector('.ico').textContent = '🔔';
       button.appendChild(el('span', {
         class: 'badge-dot', style: { position: 'static', marginTop: '-2px' },
         text: String(store.unread),
@@ -370,6 +376,9 @@ async function renderRoute() {
   // 移動していたら、その箱ごと捨てる。古い描画が新しい画面を上書きしない。
   const view = el('div', { class: 'content' });
   setLoading(true);
+  // 完成した画面と差し替わるまでのあいだ、中身の形をした箱を出しておく。
+  // ビュー自身は切り離した箱に描くので、ここで出さないと真っ白なまま待たせてしまう。
+  fill(shell.content, routeSkeleton(route.view));
   try {
     const module = await loader();
     if (token !== renderToken) return;
@@ -386,6 +395,18 @@ async function renderRoute() {
   if (token !== renderToken) return;
   shell.content.className = view.className;
   fill(shell.content, ...[...view.childNodes]);
+}
+
+// 画面ごとの、待っているあいだの見た目。中身の形に近いものを選ぶ。
+const SKELETON_SHAPE = {
+  projects: ['cards', 3], daily: ['cards', 3], notifications: ['rows', 7],
+  admin: ['rows', 5], profile: ['cards', 2], trash: ['rows', 3],
+};
+
+function routeSkeleton(view) {
+  const [kind, count] = SKELETON_SHAPE[view] || ['rows', 6];
+  return el('div', { class: 'card' }, el('div', { class: 'card-body' },
+    skeleton(kind, count)));
 }
 
 /** 画面の切り替え中であることを細いバーで示す。 */
@@ -418,6 +439,7 @@ async function boot() {
   buildShell();
   await store.loadBase();
   updateBell();
+  initPresenting();
   window.addEventListener('hashchange', renderRoute);
   document.addEventListener('keydown', (event) => {
     if (!['n', '/'].includes(event.key) || event.metaKey || event.ctrlKey || event.altKey) return;

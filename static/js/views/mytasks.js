@@ -3,8 +3,8 @@ import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store, STATUS_LABEL, CATEGORIES } from '../store.js';
 import {
-  addDays, avatar, clear, debounce, dueClass, dueLabel, el, fill, formatDate,
-  parseDate, toISO, today,
+  addDays, avatar, clear, debounce, dueClass, dueLabel, el, fill, formatDate, parseDate,
+  skeleton, today, toISO,
 } from '../util.js';
 import { openTaskDetail } from './taskDetail.js';
 import { categoryChip } from './pickers.js';
@@ -91,7 +91,7 @@ export async function render(container) {
       el('div', { class: 'card-body tight' }, listHost)));
 
   async function load() {
-    fill(listHost, el('div', { class: 'empty', text: '読み込み中…' }));
+    fill(listHost, skeleton('rows', 6));
     const data = await api.tasks({
       scope: state.scope, status: state.status, q: state.q,
       project_id: state.project_id,
