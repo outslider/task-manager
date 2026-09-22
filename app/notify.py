@@ -306,9 +306,10 @@ def run_daily_digest(force=False):
 
 def _run_daily_digest():
     today = db.today().isoformat()
-    from . import recurrence          # 循環 import を避けるため遅延読み込み
+    from . import recurrence, trash   # 循環 import を避けるため遅延読み込み
     recurring = recurrence.run()
     recurring_todos = recurrence.run_todos()
+    purged = trash.purge_expired()   # 30 日を過ぎたゴミ箱の中身を本当に消す
     scanned = scan_due_tasks()
     slack_posts = slack_daily_summary()
     sent = 0
@@ -324,7 +325,7 @@ def _run_daily_digest():
             sent += 1
     return {"sent": sent, "due_notifications": scanned,
             "recurring_tasks": recurring, "recurring_todos": recurring_todos,
-            "slack_posts": slack_posts}
+            "purged_trash": purged, "slack_posts": slack_posts}
 
 
 def slack_daily_summary():

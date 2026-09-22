@@ -9,6 +9,13 @@ export async function render(container) {
   const state = { showArchived: false };
 
   setHeader('プロジェクト', [
+    el('button', {
+      class: 'btn', title: '取っておいた一式から、プロジェクトごと起こします',
+      onClick: async () => {
+        const { openTemplates } = await import('./templates.js');
+        await openTemplates({ onApplied: reload });
+      },
+    }, '🧩 雛形'),
     el('button', { class: 'btn btn-primary', onClick: () => editProject(null) }, '＋ 新規プロジェクト'),
   ]);
 

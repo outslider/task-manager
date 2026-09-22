@@ -6,7 +6,7 @@ import { api, url } from '../api.js';
 import { STATUS_LABEL, store } from '../store.js';
 import {
   avatar, confirmDialog, dueClass, dueDelta, el, fill, formatBytes, formatDate,
-  formatDateTime, openDrawer, openModal, toast,
+  formatDateTime, openDrawer, openModal, toast, undoToast,
 } from '../util.js';
 import { categorySelect, chipPicker, option, userSelect } from './pickers.js';
 import { memoEditor, openTaskDetail } from './taskDetail.js';
@@ -74,11 +74,13 @@ async function renderDetail(instance, ticketId, onChange) {
         onClick: async () => {
           if (!await confirmDialog(
             `チケット #${ticket.id}「${ticket.title}」を削除しますか？\n`
-            + 'やりとりの記録も消えます。紐づけたタスクや課題は残ります。',
+            + 'やりとりの記録も一緒に消えます（紐づけたタスクや課題は残ります）。\n'
+            + '間違えたら、ゴミ箱から 30 日以内に戻せます。',
             { danger: true, okLabel: '削除する' })) return;
-          await api.del(`/api/tickets/${ticket.id}`);
-          toast('削除しました', 'ok');
+          const result = await api.del(`/api/tickets/${ticket.id}`);
           instance.close();
+          undoToast(`チケット「${ticket.title}」を削除しました`, () =>
+            api.post(`/api/trash/${result.trash_id}/restore`, {}));
         },
       }, '🗑')
       : null,

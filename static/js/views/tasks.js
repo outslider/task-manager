@@ -111,6 +111,15 @@ export async function render(container, route) {
       }, '📝 メモから')
       : null,
     canEdit
+      ? el('button', {
+        class: 'btn', title: '取っておいた一式から、まとめて起こします',
+        onClick: async () => {
+          const { openTemplates } = await import('./templates.js');
+          await openTemplates({ project, onApplied: reload });
+        },
+      }, '🧩 雛形')
+      : null,
+    canEdit
       ? el('button', { class: 'btn btn-primary', onClick: () => addTask(null) }, '＋ タスク')
       : null,
   ]);
@@ -574,6 +583,16 @@ export async function render(container, route) {
         project, task, tasks: data.tasks, deps: data.deps, members: data.members });
       if (saved) reload();
     }),
+    menuItem('📄 複製', async () => {
+      const result = await api.post(`/api/tasks/${task.id}/duplicate`, {});
+      toast(result.created > 1
+        ? `${result.created} 件を複製しました` : '複製しました', 'ok');
+      reload();
+    }),
+    menuItem('🧩 雛形として保存', async () => {
+      const { openSaveTemplate } = await import('./templates.js');
+      await openSaveTemplate({ task });
+    }),
     menuItem('🔁 定例にする', async () => {
       const { openRecurrenceForm } = await import('./recurrence.js');
       if (await openRecurrenceForm(project, null, task)) {
@@ -585,11 +604,17 @@ export async function render(container, route) {
       reload();
     }),
     menuItem('🗑 削除', async () => {
-      const { confirmDialog } = await import('../util.js');
-      if (!await confirmDialog(`「${task.title}」を削除しますか？（子タスクも削除されます）`,
+      const { confirmDialog, undoToast } = await import('../util.js');
+      if (!await confirmDialog(
+        `「${task.title}」を削除しますか？（子タスクも削除されます）\n`
+        + '間違えたら、ゴミ箱から 30 日以内に戻せます。',
         { danger: true, okLabel: '削除する' })) return;
-      await api.del(`/api/tasks/${task.id}`);
+      const result = await api.del(`/api/tasks/${task.id}`);
       reload();
+      undoToast(`「${task.title}」を削除しました`, async () => {
+        await api.post(`/api/trash/${result.trash_id}/restore`, {});
+        reload();
+      });
     }, true));
 
     const rect = anchor.getBoundingClientRect();

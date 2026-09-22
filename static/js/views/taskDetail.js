@@ -5,7 +5,7 @@ import {
 } from '../store.js';
 import {
   avatar, confirmDialog, dueClass, dueLabel, el, fill, formatBytes, formatDate,
-  formatDateTime, openDrawer, openModal, toast,
+  formatDateTime, openDrawer, openModal, toast, undoToast,
 } from '../util.js';
 import { openTaskForm } from './taskForm.js';
 import { categorySelect, userSelect } from './pickers.js';
@@ -77,10 +77,12 @@ async function renderDetail(instance, taskId, onChange) {
           const message = children.length
             ? `「${task.title}」と配下の子タスクをすべて削除します。よろしいですか？`
             : `「${task.title}」を削除します。よろしいですか？`;
-          if (!await confirmDialog(message, { danger: true, okLabel: '削除する' })) return;
-          await api.del(`/api/tasks/${task.id}`);
-          toast('削除しました', 'ok');
+          if (!await confirmDialog(`${message}\n間違えたら、ゴミ箱から 30 日以内に戻せます。`,
+            { danger: true, okLabel: '削除する' })) return;
+          const result = await api.del(`/api/tasks/${task.id}`);
           instance.close();
+          undoToast(`「${task.title}」を削除しました`, () =>
+            api.post(`/api/trash/${result.trash_id}/restore`, {}));
         },
       }, '🗑')
       : null,

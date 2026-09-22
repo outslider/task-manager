@@ -2293,6 +2293,383 @@ class TestTodoRecurrences(ApiTestCase):
         self.assertEqual(Client(self.base).get("/api/todo-recurrences")[0], 401)
 
 
+class TestDuplicateAndTemplates(ApiTestCase):
+    """タスクのコピーと、繰り返し使う雛形。"""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project()
+
+    def titles(self, project_id=None):
+        data = self.admin.get("/api/projects/{}/tasks".format(
+            project_id or self.project["id"]))[1]
+        return [t["title"] for t in data["tasks"]]
+
+    def task(self, task_id):
+        return self.admin.get("/api/tasks/{}".format(task_id))[1]
+
+    # --- コピー --------------------------------------------------------
+
+    def test_copying_a_task_keeps_its_contents(self):
+        original = self.make_task(self.project["id"], title="移行手順を書く",
+                                  description="下書きから", priority=3,
+                                  estimate_hours=4, category="docs",
+                                  start_date="2026-10-01", due_date="2026-10-03")
+        status, data = self.admin.post(
+            "/api/tasks/{}/duplicate".format(original["id"]), {})
+        self.assertEqual(status, 201, data)
+        copy = data["task"]
+        self.assertEqual(copy["title"], "移行手順を書く のコピー")
+        self.assertNotEqual(copy["id"], original["id"])
+        self.assertEqual(copy["priority"], 3)
+        self.assertEqual(copy["category"], "docs")
+        self.assertEqual(float(copy["estimate_hours"]), 4.0)
+        # 日付はそのまま
+        self.assertEqual(copy["start_date"], "2026-10-01")
+        self.assertEqual(copy["due_date"], "2026-10-03")
+        # 状態と進捗はやり直し
+        self.assertEqual(copy["status"], "todo")
+        self.assertEqual(copy["progress"], 0)
+
+    def test_copying_keeps_the_assignee_but_a_template_does_not(self):
+        user, _ = self.make_user("担当の人")
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "editor"}]})
+        task = self.make_task(self.project["id"], title="担当つき",
+                              assignee_id=user["id"])
+        copy = self.admin.post("/api/tasks/{}/duplicate".format(task["id"]), {})[1]["task"]
+        self.assertEqual(copy["assignee_id"], user["id"])
+        # 雛形は使い回すものなので、担当は持たない
+        tpl = self.save_tasks_template(task["id"], name="担当を持たない雛形")
+        data = self.admin.post("/api/templates/{}/apply".format(tpl["id"]),
+                               {"project_id": self.project["id"]})[1]
+        self.assertIsNone(self.task(data["task_ids"][0])["task"]["assignee_id"])
+
+    def test_copying_takes_the_children_along(self):
+        parent = self.make_task(self.project["id"], title="移行")
+        self.make_task(self.project["id"], title="事前バックアップ", parent_id=parent["id"])
+        self.make_task(self.project["id"], title="切替", parent_id=parent["id"])
+        status, data = self.admin.post(
+            "/api/tasks/{}/duplicate".format(parent["id"]), {})
+        self.assertEqual(data["created"], 3, data)
+        children = self.task(data["task"]["id"])["children"]
+        self.assertEqual([c["title"] for c in children], ["事前バックアップ", "切替"])
+
+    def test_copying_without_the_children(self):
+        parent = self.make_task(self.project["id"], title="移行")
+        self.make_task(self.project["id"], title="子", parent_id=parent["id"])
+        data = self.admin.post("/api/tasks/{}/duplicate".format(parent["id"]),
+                               {"with_children": False})[1]
+        self.assertEqual(data["created"], 1)
+        self.assertEqual(self.task(data["task"]["id"])["children"], [])
+
+    def test_a_task_with_only_a_due_date_keeps_its_start_empty(self):
+        original = self.make_task(self.project["id"], title="期限だけ",
+                                  due_date="2026-10-20")
+        data = self.admin.post("/api/tasks/{}/duplicate".format(original["id"]), {})[1]
+        self.assertIsNone(data["task"]["start_date"])
+        self.assertEqual(data["task"]["due_date"], "2026-10-20")
+
+    def test_a_task_with_no_dates_at_all_stays_empty(self):
+        original = self.make_task(self.project["id"], title="日付なし")
+        data = self.admin.post("/api/tasks/{}/duplicate".format(original["id"]), {})[1]
+        self.assertIsNone(data["task"]["start_date"])
+        self.assertIsNone(data["task"]["due_date"])
+
+    def test_copying_can_shift_the_dates(self):
+        original = self.make_task(self.project["id"], title="定例",
+                                  start_date="2026-10-01", due_date="2026-10-02")
+        data = self.admin.post("/api/tasks/{}/duplicate".format(original["id"]),
+                               {"shift_days": 7})[1]
+        self.assertEqual(data["task"]["start_date"], "2026-10-08")
+        self.assertEqual(data["task"]["due_date"], "2026-10-09")
+
+    def test_dependencies_inside_the_copy_are_kept(self):
+        parent = self.make_task(self.project["id"], title="一式")
+        first = self.make_task(self.project["id"], title="先", parent_id=parent["id"])
+        second = self.make_task(self.project["id"], title="後", parent_id=parent["id"])
+        self.admin.post("/api/tasks/{}/deps".format(second["id"]),
+                        {"depends_on_id": first["id"]})
+        data = self.admin.post("/api/tasks/{}/duplicate".format(parent["id"]), {})[1]
+        children = self.task(data["task"]["id"])["children"]
+        copied_second = next(c for c in children if c["title"] == "後")
+        copied_first = next(c for c in children if c["title"] == "先")
+        deps = self.task(copied_second["id"])["deps"]
+        # 元ではなくコピーどうしで結ばれていること
+        self.assertEqual([d["id"] for d in deps], [copied_first["id"]])
+
+    def test_copying_needs_edit_rights(self):
+        user, email = self.make_user("閲覧だけ")
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "viewer"}]})
+        task = self.make_task(self.project["id"])
+        self.assertEqual(self.client_for(email).post(
+            "/api/tasks/{}/duplicate".format(task["id"]), {})[0], 403)
+
+    # --- 雛形 ----------------------------------------------------------
+
+    def save_tasks_template(self, task_id, name="サーバー移設一式"):
+        status, data = self.admin.post("/api/templates", {
+            "name": name, "scope": "tasks", "task_id": task_id})
+        self.assertEqual(status, 201, data)
+        return data["template"]
+
+    def test_saving_a_subtree_as_a_template(self):
+        parent = self.make_task(self.project["id"], title="移設",
+                                start_date="2026-10-01", due_date="2026-10-10")
+        self.make_task(self.project["id"], title="バックアップ", parent_id=parent["id"],
+                       start_date="2026-10-01", due_date="2026-10-02")
+        self.make_task(self.project["id"], title="切替", parent_id=parent["id"],
+                       start_date="2026-10-05", due_date="2026-10-06")
+        tpl = self.save_tasks_template(parent["id"])
+        self.assertEqual(tpl["task_count"], 3)
+        self.assertEqual(tpl["scope"], "tasks")
+        self.assertIn(tpl["id"], [t["id"] for t in
+                                  self.admin.get("/api/templates")[1]["templates"]])
+
+    def test_applying_a_template_counts_dates_from_the_day_you_pick(self):
+        parent = self.make_task(self.project["id"], title="移設",
+                                start_date="2026-10-01", due_date="2026-10-10")
+        self.make_task(self.project["id"], title="切替", parent_id=parent["id"],
+                       start_date="2026-10-05", due_date="2026-10-06")
+        tpl = self.save_tasks_template(parent["id"])
+        other = self.make_project("差し込み先")
+        status, data = self.admin.post("/api/templates/{}/apply".format(tpl["id"]), {
+            "project_id": other["id"], "start_date": "2026-12-01"})
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["created"], 2)
+        root = self.task(data["task_ids"][0])["task"]
+        self.assertEqual(root["title"], "移設")
+        self.assertEqual(root["start_date"], "2026-12-01")   # 起点そのもの
+        self.assertEqual(root["due_date"], "2026-12-10")     # 9 日ぶんの幅を保つ
+        child = self.task(data["task_ids"][1])["task"]
+        self.assertEqual(child["start_date"], "2026-12-05")  # 4 日後のまま
+
+    def test_a_template_can_be_dropped_under_an_existing_task(self):
+        source = self.make_task(self.project["id"], title="定型作業")
+        tpl = self.save_tasks_template(source["id"], name="定型")
+        host = self.make_task(self.project["id"], title="受け皿")
+        data = self.admin.post("/api/templates/{}/apply".format(tpl["id"]), {
+            "project_id": self.project["id"], "parent_id": host["id"]})[1]
+        self.assertEqual([c["title"] for c in self.task(host["id"])["children"]],
+                         ["定型作業"])
+        self.assertEqual(data["created"], 1)
+
+    def test_a_whole_project_can_become_a_template(self):
+        self.make_task(self.project["id"], title="計画")
+        self.make_task(self.project["id"], title="実行")
+        status, data = self.admin.post("/api/templates", {
+            "name": "標準プロジェクト", "scope": "project",
+            "project_id": self.project["id"]})
+        self.assertEqual(status, 201, data)
+        tpl = data["template"]
+        self.assertEqual(tpl["task_count"], 2)
+
+        status, made = self.admin.post("/api/templates/{}/apply".format(tpl["id"]), {
+            "name": "新しい案件", "start_date": "2026-11-02"})
+        self.assertEqual(status, 201, made)
+        self.assertEqual(made["project"]["name"], "新しい案件")
+        self.assertEqual(sorted(self.titles(made["project"]["id"])), ["実行", "計画"])
+
+    def test_an_empty_project_cannot_become_a_template(self):
+        empty = self.make_project("からっぽ")
+        status, data = self.admin.post("/api/templates", {
+            "name": "だめ", "scope": "project", "project_id": empty["id"]})
+        self.assertEqual(status, 400, data)
+
+    def test_applying_into_a_project_i_cannot_edit_is_refused(self):
+        source = self.make_task(self.project["id"])
+        tpl = self.save_tasks_template(source["id"], name="入れない")
+        user, email = self.make_user("閲覧だけ")
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "viewer"}]})
+        self.assertEqual(self.client_for(email).post(
+            "/api/templates/{}/apply".format(tpl["id"]),
+            {"project_id": self.project["id"]})[0], 403)
+
+    def test_only_the_author_or_an_admin_can_change_a_template(self):
+        source = self.make_task(self.project["id"])
+        tpl = self.save_tasks_template(source["id"], name="私の雛形")
+        _, email = self.make_user("よその人")
+        other = self.client_for(email)
+        # 見るのと使うのは誰でもできる
+        self.assertEqual(other.get("/api/templates/{}".format(tpl["id"]))[0], 200)
+        self.assertEqual(other.patch("/api/templates/{}".format(tpl["id"]),
+                                     {"name": "乗っ取り"})[0], 403)
+        self.assertEqual(other.delete("/api/templates/{}".format(tpl["id"]))[0], 403)
+        self.assertEqual(self.admin.patch("/api/templates/{}".format(tpl["id"]),
+                                          {"name": "改名"})[1]["template"]["name"], "改名")
+        self.assertEqual(self.admin.delete("/api/templates/{}".format(tpl["id"]))[0], 200)
+
+    def test_templates_need_a_login(self):
+        self.assertEqual(Client(self.base).get("/api/templates")[0], 401)
+
+
+class TestTrash(ApiTestCase):
+    """ゴミ箱。消したものが 30 日戻せること、戻せない事情が伝わること。"""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project()
+
+    def trash_items(self, client=None):
+        return (client or self.admin).get("/api/trash")[1]["items"]
+
+    def find(self, kind, item_id, client=None):
+        return next((t for t in self.trash_items(client)
+                     if t["kind"] == kind and t["item_id"] == item_id), None)
+
+    # --- タスク --------------------------------------------------------
+
+    def test_a_deleted_task_lands_in_the_trash(self):
+        task = self.make_task(self.project["id"], title="消すタスク")
+        self.assertEqual(self.admin.delete("/api/tasks/{}".format(task["id"]))[0], 200)
+        entry = self.find("task", task["id"])
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["title"], "消すタスク")
+        self.assertEqual(entry["project_id"], self.project["id"])
+        self.assertEqual(self.admin.get("/api/tasks/{}".format(task["id"]))[0], 404)
+
+    def test_restoring_brings_the_task_back_with_the_same_number(self):
+        task = self.make_task(self.project["id"], title="戻すタスク")
+        self.admin.delete("/api/tasks/{}".format(task["id"]))
+        entry = self.find("task", task["id"])
+        status, data = self.admin.post("/api/trash/{}/restore".format(entry["id"]), {})
+        self.assertEqual(status, 200, data)
+        status, back = self.admin.get("/api/tasks/{}".format(task["id"]))
+        self.assertEqual(status, 200, back)
+        self.assertEqual(back["task"]["title"], "戻すタスク")
+        self.assertEqual(back["task"]["id"], task["id"])
+        # 戻したらゴミ箱からは消える
+        self.assertIsNone(self.find("task", task["id"]))
+
+    def test_children_comments_and_dependencies_come_back_too(self):
+        parent = self.make_task(self.project["id"], title="親")
+        child = self.make_task(self.project["id"], title="子", parent_id=parent["id"])
+        other = self.make_task(self.project["id"], title="先行")
+        self.admin.post("/api/tasks/{}/comments".format(child["id"]), {"body": "覚え書き"})
+        self.admin.post("/api/tasks/{}/deps".format(child["id"]),
+                        {"depends_on_id": other["id"]})
+
+        self.admin.delete("/api/tasks/{}".format(parent["id"]))
+        self.assertEqual(self.admin.get("/api/tasks/{}".format(child["id"]))[0], 404)
+
+        entry = self.find("task", parent["id"])
+        self.assertIn("子タスク 1 件", entry["summary"])
+        self.admin.post("/api/trash/{}/restore".format(entry["id"]), {})
+
+        status, back = self.admin.get("/api/tasks/{}".format(child["id"]))
+        self.assertEqual(status, 200, back)
+        self.assertEqual(back["task"]["parent_id"], parent["id"])
+        self.assertIn("覚え書き", [c["body"] for c in back["comments"]])
+        self.assertIn(other["id"], [d["id"] for d in back["deps"]])
+
+    def test_a_dependency_on_something_since_deleted_is_left_out(self):
+        task = self.make_task(self.project["id"], title="残る")
+        gone = self.make_task(self.project["id"], title="あとで消える")
+        self.admin.post("/api/tasks/{}/deps".format(task["id"]),
+                        {"depends_on_id": gone["id"]})
+        self.admin.delete("/api/tasks/{}".format(task["id"]))
+        # 依存先も消してしまってから戻す
+        self.admin.delete("/api/tasks/{}".format(gone["id"]))
+        entry = self.find("task", task["id"])
+        status, data = self.admin.post("/api/trash/{}/restore".format(entry["id"]), {})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["skipped"], 1)      # 依存の行だけ諦める
+        back = self.admin.get("/api/tasks/{}".format(task["id"]))[1]
+        self.assertEqual(back["task"]["title"], "残る")
+        self.assertEqual(back["deps"], [])
+
+    # --- 課題・チケット ------------------------------------------------
+
+    def test_issues_go_through_the_trash_too(self):
+        status, data = self.admin.post("/api/issues", {
+            "project_id": self.project["id"], "title": "消す課題"})
+        issue = data["issue"]
+        self.assertEqual(self.admin.delete("/api/issues/{}".format(issue["id"]))[0], 200)
+        entry = self.find("issue", issue["id"])
+        self.assertIsNotNone(entry)
+        self.admin.post("/api/trash/{}/restore".format(entry["id"]), {})
+        self.assertEqual(self.admin.get("/api/issues/{}".format(issue["id"]))[0], 200)
+
+    def test_tickets_go_through_the_trash_too(self):
+        status, data = self.admin.post("/api/ticket-queues",
+                                       {"name": "ゴミ箱窓口 {}".format(uuid.uuid4().hex[:6])})
+        queue = data["queue"]
+        status, data = self.admin.post("/api/tickets",
+                                       {"queue_id": queue["id"], "title": "消すチケット"})
+        self.assertEqual(status, 201, data)
+        ticket = data["ticket"]
+        self.assertEqual(self.admin.delete("/api/tickets/{}".format(ticket["id"]))[0], 200)
+        entry = self.find("ticket", ticket["id"])
+        self.assertIsNotNone(entry)
+        self.assertIsNone(entry["project_id"])
+        self.admin.post("/api/trash/{}/restore".format(entry["id"]), {})
+        status, back = self.admin.get("/api/tickets/{}".format(ticket["id"]))
+        self.assertEqual(status, 200, back)
+        self.assertEqual(back["ticket"]["title"], "消すチケット")
+
+    def test_the_delete_reply_says_where_it_went(self):
+        task = self.make_task(self.project["id"], title="取り消せる")
+        status, data = self.admin.delete("/api/tasks/{}".format(task["id"]))
+        self.assertEqual(status, 200, data)
+        # 画面の「元に戻す」がこの番号を使う
+        self.assertTrue(data["trash_id"])
+        self.assertEqual(
+            self.admin.post("/api/trash/{}/restore".format(data["trash_id"]), {})[0], 200)
+        self.assertEqual(self.admin.get("/api/tasks/{}".format(task["id"]))[0], 200)
+
+    # --- 見える範囲 ----------------------------------------------------
+
+    def test_other_people_do_not_see_what_i_deleted(self):
+        task = self.make_task(self.project["id"], title="見えないはず")
+        self.admin.delete("/api/tasks/{}".format(task["id"]))
+        _, email = self.make_user("よその人")
+        other = self.client_for(email)
+        self.assertIsNone(self.find("task", task["id"], other))
+        entry = self.find("task", task["id"])
+        self.assertEqual(other.post("/api/trash/{}/restore".format(entry["id"]), {})[0], 404)
+        self.assertEqual(other.delete("/api/trash/{}".format(entry["id"]))[0], 404)
+
+    def test_a_project_editor_can_restore_what_someone_else_deleted(self):
+        user, email = self.make_user("同僚")
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "editor"}]})
+        task = self.make_task(self.project["id"], title="同僚が戻す")
+        self.admin.delete("/api/tasks/{}".format(task["id"]))
+        client = self.client_for(email)
+        entry = self.find("task", task["id"], client)
+        self.assertIsNotNone(entry)
+        self.assertEqual(client.post("/api/trash/{}/restore".format(entry["id"]), {})[0], 200)
+
+    # --- 本当に消す ----------------------------------------------------
+
+    def test_purging_makes_it_unrecoverable(self):
+        task = self.make_task(self.project["id"], title="完全に消す")
+        self.admin.delete("/api/tasks/{}".format(task["id"]))
+        entry = self.find("task", task["id"])
+        self.assertEqual(self.admin.delete("/api/trash/{}".format(entry["id"]))[0], 200)
+        self.assertIsNone(self.find("task", task["id"]))
+        self.assertEqual(self.admin.get("/api/tasks/{}".format(task["id"]))[0], 404)
+
+    def test_the_batch_clears_out_what_is_past_its_date(self):
+        from app import trash as trash_mod
+        task = self.make_task(self.project["id"], title="期限切れ")
+        self.admin.delete("/api/tasks/{}".format(task["id"]))
+        entry = self.find("task", task["id"])
+        db.execute("UPDATE trash SET purge_after=%s WHERE id=%s",
+                   (db.today() - timedelta(days=1), entry["id"]))
+        self.assertGreaterEqual(trash_mod.purge_expired(), 1)
+        self.assertIsNone(self.find("task", task["id"]))
+
+    def test_it_needs_a_login(self):
+        self.assertEqual(Client(self.base).get("/api/trash")[0], 401)
+
+
 class TestTaskImport(ApiTestCase):
     """表計算ソフトからの一括取り込み。"""
 

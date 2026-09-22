@@ -366,6 +366,44 @@ DDL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
+    CREATE TABLE IF NOT EXISTS task_templates (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        name        VARCHAR(200)  NOT NULL,
+        description VARCHAR(1000) NOT NULL DEFAULT '',
+        scope       VARCHAR(10)   NOT NULL,           -- project | tasks
+        color       VARCHAR(20)   NOT NULL DEFAULT '',-- project のとき、作る先の色
+        task_count  INT           NOT NULL DEFAULT 0, -- 一覧に出す件数（body と同じ中身）
+        body        LONGTEXT      NOT NULL,           -- タスクの木（JSON。日付は起点からの日数）
+        created_by  INT NULL,
+        created_at  DATETIME      NOT NULL,
+        updated_at  DATETIME      NOT NULL,
+        KEY idx_template_scope (scope, name),
+        CONSTRAINT fk_template_user FOREIGN KEY (created_by) REFERENCES users(id)
+            ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS trash (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        kind        VARCHAR(20)  NOT NULL,            -- task | issue | ticket
+        item_id     INT          NOT NULL,            -- 消したものの元の id
+        -- 見せる相手を決めるために控えるだけ。プロジェクトが消えても
+        -- ゴミ箱の行まで道連れにしたくないので、外部キーにはしない。
+        project_id  INT NULL,
+        title       VARCHAR(300) NOT NULL,
+        summary     VARCHAR(300) NOT NULL DEFAULT '', -- 「子タスク3件・コメント5件」
+        payload     LONGTEXT     NOT NULL,            -- 戻すための写し（JSON）
+        deleted_by  INT NULL,
+        deleted_at  DATETIME     NOT NULL,
+        purge_after DATE         NOT NULL,            -- この日を過ぎたら本当に消す
+        KEY idx_trash_at (deleted_at),
+        KEY idx_trash_purge (purge_after),
+        KEY idx_trash_project (kind, project_id),
+        CONSTRAINT fk_trash_user FOREIGN KEY (deleted_by) REFERENCES users(id)
+            ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
     CREATE TABLE IF NOT EXISTS todo_recurrences (
         id          INT AUTO_INCREMENT PRIMARY KEY,
         user_id     INT NOT NULL,

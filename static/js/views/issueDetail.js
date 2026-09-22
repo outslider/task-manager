@@ -5,7 +5,7 @@ import {
 } from '../store.js';
 import {
   avatar, confirmDialog, dueClass, dueDelta, el, fill, formatBytes, formatDate,
-  formatDateTime, openDrawer, openModal, toast,
+  formatDateTime, openDrawer, openModal, toast, undoToast,
 } from '../util.js';
 import { issueCategorySelect, userSelect } from './pickers.js';
 import { openIssueForm, taskPicker } from './issueForm.js';
@@ -73,11 +73,14 @@ async function renderDetail(instance, issueId, onChange) {
       ? el('button', {
         class: 'icon-btn', title: '削除',
         onClick: async () => {
-          if (!await confirmDialog(`課題 #${issue.seq}「${issue.title}」を削除しますか？`,
+          if (!await confirmDialog(
+            `課題 #${issue.seq}「${issue.title}」を削除しますか？\n`
+            + '間違えたら、ゴミ箱から 30 日以内に戻せます。',
             { danger: true, okLabel: '削除する' })) return;
-          await api.del(`/api/issues/${issue.id}`);
-          toast('削除しました', 'ok');
+          const result = await api.del(`/api/issues/${issue.id}`);
           instance.close();
+          undoToast(`課題「${issue.title}」を削除しました`, () =>
+            api.post(`/api/trash/${result.trash_id}/restore`, {}));
         },
       }, '🗑')
       : null,

@@ -196,6 +196,44 @@ export function toast(message, kind = '') {
   }, kind === 'error' ? 4200 : 2400);
 }
 
+/**
+ * 消したあとに出す「元に戻す」つきの通知。
+ *
+ * ゴミ箱を開きに行かなくても、間違えた直後ならその場で戻せるようにする。
+ * 押さずに消えても中身は 30 日残るので、これは近道であって最後の砦ではない。
+ */
+export function undoToast(message, onUndo, seconds = 8) {
+  if (!toastHost) {
+    toastHost = el('div', { class: 'toast-host' });
+    document.body.appendChild(toastHost);
+  }
+  let timer = null;
+  const close = () => {
+    clearTimeout(timer);
+    node.style.transition = 'opacity .25s';
+    node.style.opacity = '0';
+    setTimeout(() => node.remove(), 250);
+  };
+  const button = el('button', {
+    class: 'toast-undo',
+    onClick: async () => {
+      button.disabled = true;
+      try {
+        await onUndo();
+        close();
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message, 'error');
+      }
+    },
+  }, '元に戻す');
+  const node = el('div', { class: 'toast with-undo' },
+    el('span', { text: message }), button);
+  toastHost.appendChild(node);
+  timer = setTimeout(close, seconds * 1000);
+  return close;
+}
+
 /* Every open overlay registers its close function so the router can dismiss them. */
 const openOverlays = new Set();
 

@@ -300,6 +300,25 @@ CREATE TABLE `task_statuses` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `task_templates` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `name` varchar(200) NOT NULL,
+  `description` varchar(1000) NOT NULL DEFAULT '',
+  `scope` varchar(10) NOT NULL,
+  `color` varchar(20) NOT NULL DEFAULT '',
+  `task_count` int(11) NOT NULL DEFAULT 0,
+  `body` longtext NOT NULL,
+  `created_by` int(11) DEFAULT NULL,
+  `created_at` datetime NOT NULL,
+  `updated_at` datetime NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_template_scope` (`scope`,`name`),
+  KEY `fk_template_user` (`created_by`),
+  CONSTRAINT `fk_template_user` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
 CREATE TABLE `tasks` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `project_id` int(11) NOT NULL,
@@ -466,6 +485,27 @@ CREATE TABLE `todos` (
   KEY `idx_todos_recurrence` (`recurrence_id`),
   CONSTRAINT `fk_todo_recurrence` FOREIGN KEY (`recurrence_id`) REFERENCES `todo_recurrences` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_todo_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `trash` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `kind` varchar(20) NOT NULL,
+  `item_id` int(11) NOT NULL,
+  `project_id` int(11) DEFAULT NULL,
+  `title` varchar(300) NOT NULL,
+  `summary` varchar(300) NOT NULL DEFAULT '',
+  `payload` longtext NOT NULL,
+  `deleted_by` int(11) DEFAULT NULL,
+  `deleted_at` datetime NOT NULL,
+  `purge_after` date NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_trash_at` (`deleted_at`),
+  KEY `idx_trash_purge` (`purge_after`),
+  KEY `idx_trash_project` (`kind`,`project_id`),
+  KEY `fk_trash_user` (`deleted_by`),
+  CONSTRAINT `fk_trash_user` FOREIGN KEY (`deleted_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;

@@ -17,6 +17,7 @@ const NAV = [
   { id: 'issues', icon: '📌', label: '課題', hash: '#/issues' },
   { id: 'tickets', icon: '🎫', label: 'チケット', hash: '#/tickets' },
   { id: 'notifications', icon: '🔔', label: '通知', hash: '#/notifications', badge: true },
+  { id: 'trash', icon: '🗑', label: 'ゴミ箱', hash: '#/trash' },
 ];
 
 const ADMIN_NAV = [
@@ -277,6 +278,7 @@ const ROUTES = [
   })],
   [/^#\/ticket\/(\d+)$/, (m) => ({ view: 'ticket', ticketId: Number(m[1]) })],
   [/^#\/notifications$/, () => ({ view: 'notifications' })],
+  [/^#\/trash$/, () => ({ view: 'trash' })],
   [/^#\/profile$/, () => ({ view: 'profile' })],
   [/^#\/admin\/users$/, () => ({ view: 'admin', tab: 'users' })],
   [/^#\/admin\/groups$/, () => ({ view: 'admin', tab: 'groups' })],
@@ -307,6 +309,7 @@ const LOADERS = {
   links: () => import('./views/links.js'),
   tickets: () => import('./views/tickets.js'),
   notifications: () => import('./views/notifications.js'),
+  trash: () => import('./views/trash.js'),
   profile: () => import('./views/profile.js'),
   admin: () => import('./views/admin.js'),
 };

@@ -9,7 +9,7 @@ from urllib.parse import quote
 import pymysql
 
 from . import (auth, db, graph, holidays, llm, mentions, nlp, notify, prefs,
-               recurrence, slack, taxonomy, tickets, workload)
+               recurrence, slack, taxonomy, templates, tickets, trash, workload)
 from .config import MAX_UPLOAD_BYTES, UPLOAD_DIR
 from .http_util import (HttpError, as_bool, as_date, as_datetime, as_int, bad_request,
                         forbidden,
@@ -1403,17 +1403,16 @@ def reorder_tasks(ctx):
 @route("DELETE", r"/api/tasks/(\d+)")
 def delete_task(ctx, task_id):
     user = me(ctx)
-    task_or_404(user, task_id, "editor")
+    task = task_or_404(user, task_id, "editor")
     ids = [task_id] + descendant_ids(task_id)
-    stored = db.query(
-        "SELECT stored_name FROM attachments WHERE task_id IN %s AND kind='file'",
-        (tuple(ids),))
+    # 消す前に中身を写す。添付の実体はゴミ箱から消える日まで置いておく。
+    payload = trash.snapshot_task(task_id, ids)
     with db.transaction():
+        bin_id = trash.keep("task", task_id, payload, task["title"],
+                            task["project_id"], user["id"])
         for tid in reversed(ids):
             db.execute("DELETE FROM tasks WHERE id=%s", (tid,))
-    for row in stored:
-        _remove_stored_file(row["stored_name"])
-    return json_response({"ok": True, "deleted": len(ids)})
+    return json_response({"ok": True, "deleted": len(ids), "trash_id": bin_id})
 
 
 @route("POST", r"/api/tasks/(\d+)/deps")
@@ -1551,14 +1550,8 @@ def _safe_filename(name):
 
 
 def _remove_stored_file(stored_name):
-    if not stored_name:
-        return
-    path = os.path.join(UPLOAD_DIR, os.path.basename(stored_name))
-    try:
-        if os.path.isfile(path):
-            os.remove(path)
-    except OSError:
-        pass
+    # 実体は trash.py にある（ゴミ箱の掃除からも同じ処理を使うため）
+    trash.remove_stored_file(stored_name)
 
 
 @route("POST", r"/api/tasks/(\d+)/attachments")
@@ -2668,6 +2661,330 @@ def skip_todo_recurrence(ctx, rule_id):
 
 
 # --------------------------------------------------------------------------
+# 雛形とコピー
+#
+# 「サーバー移設一式」のような、毎回ほぼ同じ作業のかたまりを取っておく。
+# 中身の持ち方（日付を起点からの日数にする）は app/templates.py にある。
+# --------------------------------------------------------------------------
+
+TEMPLATE_SELECT = ("SELECT t.id, t.name, t.description, t.scope, t.color, t.task_count, "
+                   "t.created_at, t.updated_at, u.name AS created_by_name, t.created_by "
+                   "FROM task_templates t LEFT JOIN users u ON u.id = t.created_by")
+
+
+def project_deps_pairs(project_id):
+    return [(r["task_id"], r["depends_on_id"]) for r in db.query(
+        "SELECT d.task_id, d.depends_on_id FROM task_deps d "
+        "JOIN tasks t ON t.id = d.task_id WHERE t.project_id=%s", (project_id,))]
+
+
+def place_template(project_id, parent_id, body, start, user_id, rename_root=None):
+    """雛形を実タスクとして入れる。作った id を、雛形の通し番号順に返す。
+
+    並びは templates.build と同じ深さ優先。依存関係はその番号で結び直す。
+    """
+    now = db.now()
+    created = []
+
+    def shift(days):
+        return (start + timedelta(days=days)) if (start and days is not None) else None
+
+    def place(items, parent, first_order):
+        order = first_order
+        for item in items:
+            begin = shift(item.get("day"))
+            due = shift(item.get("due_day"))
+            # コピーのときだけ、いちばん最初の1件の名前を差し替える
+            title = (rename_root if rename_root and not created
+                     else item.get("title") or "（名前なし）")
+            task_id = db.insert(
+                "INSERT INTO tasks(project_id, parent_id, title, description, category, "
+                "status, priority, assignee_id, start_date, due_date, progress, "
+                "estimate_hours, is_milestone, marker, sort_order, created_by, "
+                "created_at, updated_at) "
+                "VALUES(%s,%s,%s,%s,%s,'todo',%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s,%s)",
+                (project_id, parent, title[:300], item.get("description") or "",
+                 normalize_category(item.get("category"), ""),
+                 as_int(item.get("priority"), 1, 0, 3),
+                 # 担当は複製のときだけ引き継ぐ（雛形には入っていない）
+                 item.get("assignee_id"), begin, due,
+                 as_hours(item.get("estimate_hours")),
+                 1 if item.get("is_milestone") else 0, (item.get("marker") or "")[:10],
+                 order, user_id, now, now))
+            created.append(task_id)
+            # 番号の並びを templates.build と揃えるため、兄弟より先に子へ降りる
+            place(item.get("children") or [], task_id, 10)
+            order += 10
+
+    place(body.get("roots") or [], parent_id, next_sort_order(project_id, parent_id))
+    pairs = [(created[a], created[b]) for a, b in (body.get("deps") or [])
+             if a < len(created) and b < len(created)]
+    if pairs:
+        db.executemany("INSERT IGNORE INTO task_deps(task_id, depends_on_id) VALUES(%s,%s)",
+                       pairs)
+    return created
+
+
+@route("POST", r"/api/tasks/(\d+)/duplicate")
+def duplicate_task(ctx, task_id):
+    """似たタスクをもう1件作る。コメントや添付は引き継がない。"""
+    user = me(ctx)
+    task = task_or_404(user, task_id, "editor")
+    with_children = as_bool(ctx.body.get("with_children", True), True)
+    shift_days = as_int(ctx.body.get("shift_days"), 0, -3650, 3650)
+
+    ids = [task_id] + (descendant_ids(task_id) if with_children else [])
+    rows = db.query("SELECT * FROM tasks WHERE id IN %s", (tuple(ids),))
+    if not with_children:
+        rows = [dict(r, parent_id=None) for r in rows]
+    deps = [(a, b) for a, b in project_deps_pairs(task["project_id"])
+            if a in set(ids) and b in set(ids)]
+    body = templates.build(rows, deps, [task_id], keep_people=True)
+    if task_depth(task["parent_id"]) + templates.height(body) > MAX_TASK_DEPTH:
+        raise bad_request("階層が深すぎます（最大 {} 階層）".format(MAX_TASK_DEPTH))
+
+    # 元の日付をそのまま再現したいので、雛形の起点＝元のいちばん早い日にする
+    dates = [d for r in rows for d in (r["start_date"], r["due_date"]) if d]
+    start = (min(dates) + timedelta(days=shift_days)) if dates else None
+    title = "{} のコピー".format(task["title"])[:300]
+    with db.transaction():
+        created = place_template(task["project_id"], task["parent_id"], body, start,
+                                 user["id"], rename_root=title)
+    return json_response({
+        "task": db.query_one(TASK_SELECT + " WHERE t.id=%s", (created[0],)),
+        "created": len(created),
+    }, 201)
+
+
+@route("GET", r"/api/templates")
+def list_templates(ctx):
+    me(ctx)
+    scope = ctx.query.get("scope")
+    clause, params = "", ()
+    if scope in templates.SCOPES:
+        clause, params = " WHERE t.scope=%s", (scope,)
+    rows = db.query(TEMPLATE_SELECT + clause + " ORDER BY t.scope, t.name", params)
+    return json_response({
+        "templates": rows,
+        "scopes": [{"value": k, "label": v} for k, v in templates.SCOPES.items()],
+    })
+
+
+@route("GET", r"/api/templates/(\d+)")
+def get_template(ctx, template_id):
+    me(ctx)
+    row = db.query_one(TEMPLATE_SELECT + " WHERE t.id=%s", (template_id,))
+    if not row:
+        raise not_found("雛形が見つかりません")
+    row["body"] = templates.load(db.query_one(
+        "SELECT body FROM task_templates WHERE id=%s", (template_id,)))
+    return json_response({"template": row})
+
+
+@route("POST", r"/api/templates")
+def create_template(ctx):
+    """今あるプロジェクト、またはタスクのかたまりを雛形として取っておく。"""
+    user = me(ctx)
+    name = require(ctx.body, "name", "雛形の名前")
+    scope = ctx.body.get("scope", "tasks")
+    if scope not in templates.SCOPES:
+        raise bad_request("雛形の種類が不正です")
+
+    if scope == "project":
+        project_id = as_int(ctx.body.get("project_id"))
+        project = project_or_404(user, project_id)
+        rows = db.query("SELECT * FROM tasks WHERE project_id=%s", (project_id,))
+        roots = [r["id"] for r in sorted(rows, key=lambda r: (r["sort_order"], r["id"]))
+                 if r["parent_id"] is None]
+        color = project["color"]
+    else:
+        task = task_or_404(user, as_int(ctx.body.get("task_id")))
+        ids = [task["id"]] + descendant_ids(task["id"])
+        rows = db.query("SELECT * FROM tasks WHERE id IN %s", (tuple(ids),))
+        roots = [task["id"]]
+        project_id, color = task["project_id"], ""
+
+    scoped = {r["id"] for r in rows}
+    deps = [(a, b) for a, b in project_deps_pairs(project_id)
+            if a in scoped and b in scoped]
+    body = templates.build(rows, deps, roots)
+    if not body["roots"]:
+        raise bad_request("雛形にできるタスクがありません")
+    now = db.now()
+    template_id = db.insert(
+        "INSERT INTO task_templates(name, description, scope, color, task_count, body, "
+        "created_by, created_at, updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        (name[:200], (ctx.body.get("description") or "")[:1000], scope, color,
+         templates.count(body), templates.dump(body), user["id"], now, now))
+    return json_response(
+        {"template": db.query_one(TEMPLATE_SELECT + " WHERE t.id=%s", (template_id,))}, 201)
+
+
+def template_or_404(user, template_id, for_write=False):
+    row = db.query_one("SELECT * FROM task_templates WHERE id=%s", (template_id,))
+    if not row:
+        raise not_found("雛形が見つかりません")
+    if for_write and not auth.is_admin(user) and row["created_by"] != user["id"]:
+        raise forbidden("作った本人か管理者だけが変更できます")
+    return row
+
+
+@route("PATCH", r"/api/templates/(\d+)")
+def update_template(ctx, template_id):
+    user = me(ctx)
+    current = template_or_404(user, template_id, for_write=True)
+    db.execute(
+        "UPDATE task_templates SET name=%s, description=%s, updated_at=%s WHERE id=%s",
+        ((ctx.body.get("name") or current["name"])[:200],
+         (ctx.body.get("description", current["description"]) or "")[:1000],
+         db.now(), template_id))
+    return json_response(
+        {"template": db.query_one(TEMPLATE_SELECT + " WHERE t.id=%s", (template_id,))})
+
+
+@route("DELETE", r"/api/templates/(\d+)")
+def delete_template(ctx, template_id):
+    user = me(ctx)
+    template_or_404(user, template_id, for_write=True)
+    db.execute("DELETE FROM task_templates WHERE id=%s", (template_id,))
+    return json_response({"ok": True})
+
+
+@route("POST", r"/api/templates/(\d+)/apply")
+def apply_template(ctx, template_id):
+    """雛形からタスクを起こす。プロジェクト一式ならプロジェクトごと作る。"""
+    user = me(ctx)
+    row = template_or_404(user, template_id)
+    body = templates.load(row)
+    start = as_date(ctx.body.get("start_date")) or db.today().isoformat()
+    start = date.fromisoformat(str(start)[:10])
+
+    if row["scope"] == "project":
+        name = require(ctx.body, "name", "プロジェクト名")
+        with db.transaction():
+            project_id = db.insert(
+                "INSERT INTO projects(name, description, color, owner_id, created_at) "
+                "VALUES(%s,%s,%s,%s,%s)",
+                (name, row["description"], row["color"] or "#4f8cff", user["id"], db.now()))
+            db.execute(
+                "INSERT INTO project_members(project_id, principal_type, principal_id, role) "
+                "VALUES(%s,'user',%s,'owner')", (project_id, user["id"]))
+            created = place_template(project_id, None, body, start, user["id"])
+        project = db.query_one("SELECT * FROM projects WHERE id=%s", (project_id,))
+        project["my_role"] = "owner"
+        return json_response({"project": project, "created": len(created)}, 201)
+
+    project_id = as_int(ctx.body.get("project_id"))
+    project_or_404(user, project_id, "editor")
+    parent_id = as_int(ctx.body.get("parent_id"))
+    if parent_id:
+        parent = task_or_404(user, parent_id, "editor")
+        if parent["project_id"] != project_id:
+            raise bad_request("差し込み先が違うプロジェクトです")
+    if task_depth(parent_id) + templates.height(body) > MAX_TASK_DEPTH:
+        raise bad_request("階層が深すぎます（最大 {} 階層）".format(MAX_TASK_DEPTH))
+    with db.transaction():
+        created = place_template(project_id, parent_id, body, start, user["id"])
+    return json_response({"created": len(created), "task_ids": created,
+                          "project_id": project_id}, 201)
+
+
+# --------------------------------------------------------------------------
+# ゴミ箱
+#
+# 消したものを 30 日だけ取っておく。中身の写し取りと入れ直しは app/trash.py、
+# ここは「誰が見て良いか」と「いつ本当に消すか」だけを持つ。
+# --------------------------------------------------------------------------
+
+TRASH_SELECT = ("SELECT t.id, t.kind, t.item_id, t.project_id, t.title, t.summary, "
+                "t.deleted_at, t.purge_after, u.name AS deleted_by_name, "
+                "p.name AS project_name FROM trash t "
+                "LEFT JOIN users u ON u.id = t.deleted_by "
+                "LEFT JOIN projects p ON p.id = t.project_id")
+
+
+def editable_project_ids(user):
+    """編集して良いプロジェクトの id。ゴミ箱を見せる範囲の判定に使う。"""
+    visible = auth.visible_project_ids(user)
+    roles = auth.project_roles(user, visible)
+    return [pid for pid, role in roles.items()
+            if auth.ROLE_ORDER.get(role, 0) >= auth.ROLE_ORDER["editor"]]
+
+
+def can_touch_trash(user, entry):
+    """戻す・本当に消すができる人かどうか。"""
+    if auth.is_admin(user) or entry["deleted_by"] == user["id"]:
+        return True
+    # プロジェクトのものは、そのプロジェクトを編集できる人なら戻せる
+    if entry["kind"] in ("task", "issue") and entry["project_id"]:
+        return auth.has_project_access(user, entry["project_id"], "editor")
+    return False
+
+
+def trash_or_404(user, entry_id):
+    entry = db.query_one("SELECT * FROM trash WHERE id=%s", (entry_id,))
+    if not entry or not can_touch_trash(user, entry):
+        raise not_found("ゴミ箱に見つかりません")
+    return entry
+
+
+@route("GET", r"/api/trash")
+def list_trash(ctx):
+    user = me(ctx)
+    where, params = [], []
+    if not auth.is_admin(user):
+        # 自分が消したもの、または自分が編集できるプロジェクトのもの
+        reach = ["t.deleted_by=%s"]
+        params.append(user["id"])
+        editable = editable_project_ids(user)
+        if editable:
+            reach.append("(t.kind IN ('task','issue') AND t.project_id IN %s)")
+            params.append(tuple(editable))
+        where.append("({})".format(" OR ".join(reach)))
+    kind = ctx.query.get("kind")
+    if kind in trash.LABELS:
+        where.append("t.kind=%s")
+        params.append(kind)
+    clause = " WHERE {}".format(" AND ".join(where)) if where else ""
+    rows = db.query(TRASH_SELECT + clause + " ORDER BY t.deleted_at DESC LIMIT 200",
+                    tuple(params))
+    for row in rows:
+        row["label"] = trash.LABELS.get(row["kind"], row["kind"])
+    return json_response({
+        "items": rows,
+        "keep_days": trash.KEEP_DAYS,
+        "kinds": [{"value": k, "label": v} for k, v in trash.LABELS.items()],
+    })
+
+
+@route("POST", r"/api/trash/(\d+)/restore")
+def restore_from_trash(ctx, entry_id):
+    user = me(ctx)
+    entry = trash_or_404(user, entry_id)
+    reason = trash.blocked_reason(entry)
+    if reason:
+        raise bad_request(reason)
+    restored, skipped = trash.restore(entry)
+    return json_response({"ok": True, "kind": entry["kind"], "item_id": entry["item_id"],
+                          "restored": restored, "skipped": skipped})
+
+
+@route("DELETE", r"/api/trash/(\d+)")
+def purge_from_trash(ctx, entry_id):
+    """待たずに本当に消す。ここから先は戻せない。"""
+    user = me(ctx)
+    entry = trash_or_404(user, entry_id)
+    trash.purge(entry)
+    return json_response({"ok": True})
+
+
+@route("POST", r"/api/admin/purge-trash")
+def purge_trash_now(ctx):
+    admin_only(ctx)
+    return json_response({"purged": trash.purge_expired()})
+
+
+# --------------------------------------------------------------------------
 # daily check-in
 # --------------------------------------------------------------------------
 
@@ -3242,13 +3559,13 @@ def update_issue(ctx, issue_id):
 @route("DELETE", r"/api/issues/(\d+)")
 def delete_issue(ctx, issue_id):
     user = me(ctx)
-    issue_or_404(user, issue_id, "editor")
-    stored = db.query(
-        "SELECT stored_name FROM attachments WHERE issue_id=%s AND kind='file'", (issue_id,))
-    db.execute("DELETE FROM issues WHERE id=%s", (issue_id,))
-    for row in stored:
-        _remove_stored_file(row["stored_name"])
-    return json_response({"ok": True})
+    issue = issue_or_404(user, issue_id, "editor")
+    payload = trash.snapshot_issue(issue_id)
+    with db.transaction():
+        bin_id = trash.keep("issue", issue_id, payload, issue["title"],
+                            issue["project_id"], user["id"])
+        db.execute("DELETE FROM issues WHERE id=%s", (issue_id,))
+    return json_response({"ok": True, "trash_id": bin_id})
 
 
 @route("PUT", r"/api/issues/(\d+)/tasks")
@@ -4180,12 +4497,11 @@ def delete_ticket(ctx, ticket_id):
     ticket = ticket_or_404(ticket_id)
     if not can_drop_ticket(user, ticket):
         raise forbidden("削除できるのは起票した本人か管理者だけです")
-    stored = db.query(
-        "SELECT stored_name FROM attachments WHERE ticket_id=%s AND kind='file'", (ticket_id,))
-    db.execute("DELETE FROM tickets WHERE id=%s", (ticket_id,))
-    for row in stored:
-        _remove_stored_file(row["stored_name"])
-    return json_response({"ok": True})
+    payload = trash.snapshot_ticket(ticket_id)
+    with db.transaction():
+        bin_id = trash.keep("ticket", ticket_id, payload, ticket["title"], None, user["id"])
+        db.execute("DELETE FROM tickets WHERE id=%s", (ticket_id,))
+    return json_response({"ok": True, "trash_id": bin_id})
 
 
 def ticket_note(ticket_id, user_id, text):
