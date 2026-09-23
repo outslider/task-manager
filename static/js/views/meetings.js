@@ -46,12 +46,15 @@ export async function openMeetingForm({ project, meeting = null, tasks = [] }) {
     weekdays: new Set(meeting?.weekdays?.length ? meeting.weekdays : [mondayIndex(now)]),
     monthMode: meeting?.month_mode || 'day',
     interval: Number(meeting?.interval_n || 1),
+    dates: new Set(meeting?.dates || []),
     // 休日の扱いを自分で選んだら、繰り返しの種類を変えても上書きしない
     holidayTouched: Boolean(meeting),
   };
   const f = {};
   const freqHost = el('div', {});
   const preview = el('div', { class: 'hint meeting-preview' });
+  // 「日付を指定」では使わない欄。選んだ日は休日でもずらさず、開始・終了も要らない
+  const ruleOnly = [];
   let previewTimer = null;
   let previewSeq = 0;
 
@@ -65,6 +68,7 @@ export async function openMeetingForm({ project, meeting = null, tasks = [] }) {
     month_day: f.monthDay ? Number(f.monthDay.value) || null : null,
     nth: f.nth ? Number(f.nth.value) : null,
     nth_weekday: f.nthWeekday ? Number(f.nthWeekday.value) : null,
+    dates: [...state.dates].sort(),
     time_text: f.time.value.trim(),
     holiday_rule: f.holiday.value,
     start_on: f.start.value || null,
@@ -74,16 +78,25 @@ export async function openMeetingForm({ project, meeting = null, tasks = [] }) {
   /** 入力に合わせて「次は 9/29(火)・10/6(火)…」を出す。 */
   const drawPreview = () => {
     clearTimeout(previewTimer);
+    if (state.freq === 'dates' && !state.dates.size) {
+      // まだ 1 日も選んでいないうちは、叱らずに空けておく
+      previewSeq += 1;
+      preview.textContent = '';
+      return;
+    }
     previewTimer = setTimeout(async () => {
       const seq = ++previewSeq;
       try {
         const data = await api.post('/api/meetings/preview', payload());
         if (seq !== previewSeq) return;             // 古い応答は捨てる
         preview.classList.remove('error');
+        const none = state.freq === 'dates'
+          ? '選んだ日はすべて過ぎています'
+          : 'この決まりでは、この先 1 年ほど開催日がありません';
         preview.textContent = data.next.length
           ? `次の開催: ${data.next.map((n) => dayLabel(n.date)
             + (n.shifted_from ? `（${formatDate(n.shifted_from)}が休日のため）` : '')).join('、')}`
-          : 'この決まりでは、この先 1 年ほど開催日がありません';
+          : none;
       } catch (error) {
         if (seq !== previewSeq) return;
         preview.classList.add('error');
@@ -92,10 +105,44 @@ export async function openMeetingForm({ project, meeting = null, tasks = [] }) {
     }, 250);
   };
 
+  /** 選んだ日の一覧。押すと外せる。 */
+  const drawDates = (host) => {
+    const sorted = [...state.dates].sort();
+    fill(host, ...(sorted.length
+      ? sorted.map((iso) => el('button', {
+        type: 'button', class: 'date-chip', title: 'この日を外す',
+        onClick: () => { state.dates.delete(iso); drawDates(host); drawPreview(); },
+      }, el('span', { text: dayLabel(iso) }), el('span', { class: 'x', text: '×' })))
+      : [el('span', { class: 'hint', text: 'まだ日付がありません' })]));
+  };
+
   const drawFreq = () => {
     f.monthDay = null;
     f.nth = null;
     f.nthWeekday = null;
+    for (const node of ruleOnly) node.hidden = state.freq === 'dates';
+    if (state.freq === 'dates') {
+      const chips = el('div', { class: 'date-chips' });
+      const picker = el('input', { class: 'input', type: 'date', style: { maxWidth: '170px' } });
+      const add = () => {
+        if (!picker.value) { toast('日付を選んでください', 'error'); return; }
+        state.dates.add(picker.value);
+        picker.value = '';
+        drawDates(chips);
+        drawPreview();
+      };
+      // 日付を選んだらすぐ足す。何日も続けて選べるように、欄は空に戻す
+      picker.addEventListener('change', () => { if (picker.value) add(); });
+      drawDates(chips);
+      fill(freqHost, el('div', { class: 'field' },
+        el('label', { text: '開催日（何日でも）' }),
+        el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
+          picker, el('span', { class: 'hint', text: '選ぶとその場で足されます' })),
+        chips,
+        el('div', { class: 'hint',
+          text: '1 回だけの会議も、不定期に何回かある会議も、1 行にまとめて並べられます。' })));
+      return;
+    }
     const intervals = state.freq === 'weekly' ? WEEK_INTERVALS : MONTH_INTERVALS;
     const current = state.interval;
     f.interval = el('select', {
@@ -176,14 +223,17 @@ export async function openMeetingForm({ project, meeting = null, tasks = [] }) {
         const current = tasks.find((t) => t.id === meeting.parent_id);
         f.parent.appendChild(option(meeting.parent_id, current?.title || `#${meeting.parent_id}`, true));
       }
-      f.freq = el('div', { class: 'seg' }, ...[['weekly', '毎週・隔週'], ['monthly', '毎月']]
+      f.freq = el('div', { class: 'seg' }, ...[['weekly', '毎週・隔週'], ['monthly', '毎月'],
+        ['dates', '日付を指定']]
         .map(([value, label]) => el('button', {
           type: 'button', class: state.freq === value ? 'active' : '',
           onClick: (event) => {
             if (state.freq !== value) state.interval = 1;
             state.freq = value;
             [...f.freq.children].forEach((b) => b.classList.toggle('active', b === event.currentTarget));
-            if (!state.holidayTouched) f.holiday.value = DEFAULT_HOLIDAY[value];
+            if (!state.holidayTouched && DEFAULT_HOLIDAY[value]) {
+              f.holiday.value = DEFAULT_HOLIDAY[value];
+            }
             drawFreq();
             drawPreview();
           },
@@ -194,14 +244,22 @@ export async function openMeetingForm({ project, meeting = null, tasks = [] }) {
       });
       f.holiday = el('select', { class: 'select' },
         ...HOLIDAY_RULES.map(([value, label]) => option(value, label,
-          value === (meeting?.holiday_rule || DEFAULT_HOLIDAY[state.freq]))));
+          value === (meeting?.freq !== 'dates' && meeting?.holiday_rule
+            ? meeting.holiday_rule : (DEFAULT_HOLIDAY[state.freq] || 'skip')))));
       f.holiday.addEventListener('change', () => { state.holidayTouched = true; drawPreview(); });
       f.start = el('input', {
-        class: 'input', type: 'date', value: meeting?.start_on || toISO(now),
+        class: 'input', type: 'date',
+        value: (meeting?.freq !== 'dates' && meeting?.start_on) || toISO(now),
       });
       f.end = el('input', { class: 'input', type: 'date', value: meeting?.end_on || '' });
       for (const input of [f.start, f.end]) input.addEventListener('change', drawPreview);
       f.time.addEventListener('input', drawPreview);
+      const holidayField = el('div', { class: 'field' },
+        el('label', { text: '休日に当たったら' }), f.holiday);
+      const periodRow = el('div', { class: 'row' },
+        el('div', { class: 'field' }, el('label', { text: '開始日' }), f.start),
+        el('div', { class: 'field' }, el('label', { text: '終了日（空なら続ける）' }), f.end));
+      ruleOnly.push(holidayField, periodRow);
       drawFreq();
       drawPreview();
 
@@ -215,11 +273,8 @@ export async function openMeetingForm({ project, meeting = null, tasks = [] }) {
         el('div', { class: 'row' },
           el('div', { class: 'field', style: { flex: '0 0 150px' } },
             el('label', { text: '時刻' }), f.time),
-          el('div', { class: 'field' },
-            el('label', { text: '休日に当たったら' }), f.holiday)),
-        el('div', { class: 'row' },
-          el('div', { class: 'field' }, el('label', { text: '開始日' }), f.start),
-          el('div', { class: 'field' }, el('label', { text: '終了日（空なら続ける）' }), f.end)),
+          holidayField),
+        periodRow,
         preview,
         el('div', { class: 'hint', style: { marginTop: '8px' },
           text: '1 回ごとの中止や日にちの変更は、ガントの点を押して行えます。' }));
@@ -246,6 +301,10 @@ export async function openMeetingForm({ project, meeting = null, tasks = [] }) {
           if (!body.title) { toast('会議の名前を入れてください', 'error'); return; }
           if (body.freq === 'weekly' && !body.weekdays.length) {
             toast('曜日を 1 つ以上選んでください', 'error');
+            return;
+          }
+          if (body.freq === 'dates' && !body.dates.length) {
+            toast('日付を 1 つ以上選んでください', 'error');
             return;
           }
           const button = event.currentTarget;

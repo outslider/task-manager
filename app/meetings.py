@@ -12,7 +12,7 @@ from datetime import date, timedelta
 
 from . import db, holidays
 
-FREQ_LABEL = {"weekly": "毎週", "monthly": "毎月"}
+FREQ_LABEL = {"weekly": "毎週", "monthly": "毎月", "dates": "日付を指定"}
 WEEKDAY_LABEL = "月火水木金土日"
 HOLIDAY_RULES = {
     "skip": "その回は休み",
@@ -24,6 +24,8 @@ HOLIDAY_RULES = {
 SHIFT_LIMIT = 14
 # 一度に数える期間の上限。全体ガントで数年分を並べても重くならない程度
 MAX_SPAN_DAYS = 1500
+# 「日付を指定」で持てる日数。不定期の会議を 1 行に集める用途なので、これだけあれば足りる
+MAX_DATES = 100
 
 
 def parse_weekdays(value):
@@ -32,6 +34,18 @@ def parse_weekdays(value):
         part = part.strip()
         if part.isdigit() and 0 <= int(part) <= 6:
             out.add(int(part))
+    return sorted(out)
+
+
+def parse_dates(value):
+    """'2026-10-05,2026-10-20' → [date, ...]（重複なし・日付順）。読めないものは捨てる。"""
+    out = set()
+    for part in str(value or "").split(","):
+        part = part.strip()
+        try:
+            out.add(date.fromisoformat(part))
+        except ValueError:
+            continue
     return sorted(out)
 
 
@@ -56,6 +70,9 @@ def _nth_weekday(year, month, nth, weekday):
 
 def raw_dates(m, lo, hi):
     """休日を考えない、決まりどおりの開催日。lo〜hi と開始日〜終了日の両方に入るもの。"""
+    if m["freq"] == "dates":
+        # 日付を自分で選んだものは、その日だけ。開始日・終了日は見ない
+        return [d for d in parse_dates(m.get("dates")) if lo <= d <= hi]
     start = m["start_on"]
     lo = max(lo, start)
     if m.get("end_on"):
@@ -115,8 +132,10 @@ def scheduled(m, lo, hi, is_off):
     """
     pad = timedelta(days=SHIFT_LIMIT + 1)
     seen = {}
+    # 日付を自分で選んだものは、休日でも選んだ日のまま（あえてその日にしたはずなので）
+    rule = "keep" if m["freq"] == "dates" else (m.get("holiday_rule") or "next")
     for planned in raw_dates(m, lo - pad, hi + pad):
-        day = _shift(planned, m.get("holiday_rule") or "next", is_off)
+        day = _shift(planned, rule, is_off)
         if day and lo <= day <= hi and day not in seen:
             seen[day] = planned
     return sorted(((planned, day) for day, planned in seen.items()), key=lambda p: p[1])
@@ -181,7 +200,19 @@ def load_exceptions(meeting_ids):
 def describe(m):
     """「隔週 火・木 10:00」のような短い説明。"""
     interval = max(1, int(m.get("interval_n") or 1))
-    if m["freq"] == "weekly":
+    if m["freq"] == "dates":
+        found = parse_dates(m.get("dates"))
+        this_year = db.today().year
+
+        def short(day):
+            head = "" if day.year == this_year else "{}/".format(day.year)
+            return "{}{}/{}".format(head, day.month, day.day)
+
+        if len(found) <= 3:
+            text = "・".join(short(d) for d in found)
+        else:
+            text = "{}回 {}〜{}".format(len(found), short(found[0]), short(found[-1]))
+    elif m["freq"] == "weekly":
         head = "毎週" if interval == 1 else ("隔週" if interval == 2 else
                                             "{}週ごと".format(interval))
         days = "・".join(WEEKDAY_LABEL[d] for d in parse_weekdays(m.get("weekdays")))

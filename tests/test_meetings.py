@@ -171,6 +171,32 @@ class TestDescribe(unittest.TestCase):
             "3か月ごと 最終金曜")
 
 
+class TestChosenDates(unittest.TestCase):
+    def test_only_the_chosen_days_in_range(self):
+        m = rule(freq="dates", dates="2026-10-20,2026-10-05,2026-11-12,2026-10-05")
+        self.assertEqual(days(m, date(2026, 10, 1), date(2026, 10, 31)),
+                         [date(2026, 10, 5), date(2026, 10, 20)])
+
+    def test_holidays_do_not_move_chosen_days(self):
+        # 選んだ日が祝日でも、ずらす設定になっていても、その日のまま
+        m = rule(freq="dates", dates="2026-09-21", holiday_rule="next")
+        self.assertEqual(days(m, SEP1, SEP30, off), [date(2026, 9, 21)])
+
+    def test_start_on_is_ignored(self):
+        m = rule(freq="dates", dates="2026-08-01", start_on=date(2026, 9, 1))
+        self.assertEqual(days(m, date(2026, 7, 1), SEP30), [date(2026, 8, 1)])
+
+    def test_describe(self):
+        year = date.today().year
+        one = rule(freq="dates", dates="{}-10-05".format(year), time_text="14:00")
+        self.assertEqual(meetings.describe(one), "10/5 14:00")
+        three = rule(freq="dates", dates="{0}-10-05,{0}-10-20,{0}-11-12".format(year))
+        self.assertEqual(meetings.describe(three), "10/5・10/20・11/12")
+        many = rule(freq="dates", dates="{0}-10-05,{0}-10-20,{0}-11-12,{1}-01-08".format(
+            year, year + 1))
+        self.assertEqual(meetings.describe(many), "4回 10/5〜{}/1/8".format(year + 1))
+
+
 class TestMeetingApi(ApiTestCase):
     def setUp(self):
         super().setUp()
@@ -396,6 +422,44 @@ class TestMeetingApi(ApiTestCase):
         self.assertEqual(self.admin.get("/api/tasks/{}".format(phase["id"]))[0], 200)
         # 定例の控えは件数に入れない（戻せなかった扱いにもしない）
         self.assertEqual(data.get("skipped", 0), 0, data)
+
+    def test_chosen_dates(self):
+        made = self.create(freq="dates", dates=["2026-09-24", "2026-09-10", "2026-09-10"],
+                           weekdays=[], holiday_rule="next")
+        self.assertEqual(made["dates"], ["2026-09-10", "2026-09-24"])
+        self.assertEqual((made["start_on"], made["end_on"], made["holiday_rule"]),
+                         ("2026-09-10", None, "keep"))
+        occ = self.listing()[0]["occurrences"]
+        self.assertEqual([o["date"] for o in occ], ["2026-09-10", "2026-09-24"])
+        # 1 回ごとの中止・日にち変更も同じように効く
+        base = "/api/meetings/{}/exceptions/".format(made["id"])
+        self.assertEqual(self.admin.put(base + "2026-09-10", {"action": "cancel"})[0], 200)
+        self.assertEqual(self.admin.put(base + "2026-09-11", {"action": "cancel"})[0], 400)
+        self.assertEqual(self.listing()[0]["occurrences"][0]["status"], "cancelled")
+
+    def test_chosen_dates_validation(self):
+        for dates in ([], ["2026-02-30"], ["abc"],
+                      ["2026-01-01"] + ["2027-{:02d}-{:02d}".format(m, d)
+                                        for m in range(1, 13) for d in range(1, 10)]):
+            status, data = self.admin.post(self.url, {"title": "x", "freq": "dates",
+                                                      "dates": dates})
+            self.assertEqual(status, 400, (dates[:3], data))
+
+    def test_switching_away_from_dates_clears_them(self):
+        made = self.create(freq="dates", dates=["2026-09-10"])
+        status, data = self.admin.patch("/api/meetings/{}".format(made["id"]),
+                                        {"freq": "weekly", "weekdays": [1],
+                                         "start_on": "2026-09-01"})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["meeting"]["dates"], [])
+        self.assertEqual(data["meeting"]["summary"], "毎週 火")
+
+    def test_preview_for_chosen_dates(self):
+        status, data = self.admin.post("/api/meetings/preview", {
+            "freq": "dates", "dates": ["2030-03-01", "2030-01-10", "2020-01-01"]})
+        self.assertEqual(status, 200, data)
+        # 過去の日は出さない
+        self.assertEqual([n["date"] for n in data["next"]], ["2030-01-10", "2030-03-01"])
 
     def test_delete_meeting(self):
         made = self.create()

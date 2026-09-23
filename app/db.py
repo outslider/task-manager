@@ -453,13 +453,14 @@ DDL = [
         project_id   INT NOT NULL,
         parent_id    INT NULL,                         -- この子として並べるタスク（空なら先頭の「定例」）
         title        VARCHAR(200) NOT NULL,
-        freq         VARCHAR(10)  NOT NULL,            -- weekly | monthly
+        freq         VARCHAR(10)  NOT NULL,            -- weekly | monthly | dates（日付を指定）
         interval_n   INT          NOT NULL DEFAULT 1,  -- 2 なら隔週・2か月ごと
         weekdays     VARCHAR(20)  NOT NULL DEFAULT '', -- weekly のとき '1,3'（月=0）
         month_mode   VARCHAR(5)   NOT NULL DEFAULT 'day', -- day（毎月◯日）| nth（第◯◯曜）
         month_day    TINYINT      NULL,
         nth          TINYINT      NULL,                -- 1-4、-1 は最終
         nth_weekday  TINYINT      NULL,
+        dates        TEXT         NULL,                -- dates のとき '2026-10-05,2026-10-20'
         time_text    VARCHAR(20)  NOT NULL DEFAULT '', -- 「10:00」など。表示するだけ
         holiday_rule VARCHAR(5)   NOT NULL DEFAULT 'next', -- skip | next | prev | keep
         start_on     DATE         NOT NULL,
@@ -720,6 +721,8 @@ MIGRATIONS = [
      "ALTER TABLE todos ADD COLUMN recurrence_id INT NULL AFTER sort_order"),
     ("meetings", "parent_id",
      "ALTER TABLE meetings ADD COLUMN parent_id INT NULL AFTER project_id"),
+    ("meetings", "dates",
+     "ALTER TABLE meetings ADD COLUMN dates TEXT NULL AFTER nth_weekday"),
     ("ticket_queues", "visibility",
      "ALTER TABLE ticket_queues ADD COLUMN visibility VARCHAR(10) NOT NULL DEFAULT 'all' "
      "AFTER project_id"),

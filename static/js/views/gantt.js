@@ -1498,7 +1498,8 @@ export function buildGanttSvg({
     if (!shown.length) return;
     const g = svgEl('g', { class: 'gantt-meeting' });
     const live = shown.filter((o) => o.status !== 'cancelled');
-    if (live.length > 1) {
+    // 不定期（日付を指定）の回を線で結ぶと、その間ずっと続く期間に見えてしまうので結ばない
+    if (live.length > 1 && meeting.freq !== 'dates') {
       g.appendChild(svgEl('line', {
         x1: x(parseDate(live[0].date)) + dayWidth / 2, y1: cy,
         x2: x(parseDate(live[live.length - 1].date)) + dayWidth / 2, y2: cy,

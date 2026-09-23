@@ -1604,3 +1604,13 @@ input[type="color"].input {
 .meeting-preview { margin-top: 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); }
 .meeting-preview:empty { display: none; }
 .meeting-preview.error { color: var(--danger, #e14c4c); }
+/* 定例の「日付を指定」：選んだ日の札。押すと外れる */
+.date-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.date-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 6px 3px 10px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface-2);
+  color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.date-chip .x { color: var(--text-muted); font-size: 13px; line-height: 1; }
+.date-chip:hover { border-color: var(--danger); }
+.date-chip:hover .x { color: var(--danger); }

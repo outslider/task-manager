@@ -5489,7 +5489,7 @@ def skip_recurrence(ctx, rule_id):
 # --------------------------------------------------------------------------
 
 MEETING_COLUMNS = ("parent_id", "title", "freq", "interval_n", "weekdays", "month_mode", "month_day",
-                   "nth", "nth_weekday", "time_text", "holiday_rule", "start_on", "end_on")
+                   "nth", "nth_weekday", "dates", "time_text", "holiday_rule", "start_on", "end_on")
 
 
 def _real_date(value):
@@ -5545,7 +5545,20 @@ def _meeting_body(body, current=None):
         raise bad_request("休日の扱いが不正です")
     start_on = _real_date(pick("start_on")) or db.today().isoformat()
     end_on = _real_date(pick("end_on"))
-    if end_on and end_on < start_on:
+    dates = ""
+    if freq == "dates":
+        raw = pick("dates", "")
+        if isinstance(raw, str):
+            raw = raw.split(",")
+        chosen = sorted({_real_date(v) for v in (raw or []) if v})
+        if not chosen:
+            raise bad_request("日付を 1 つ以上選んでください")
+        if len(chosen) > meetings.MAX_DATES:
+            raise bad_request("日付は {} 個までです".format(meetings.MAX_DATES))
+        dates = ",".join(chosen)
+        # 開始日・終了日と休日の扱いは使わない。一覧で並べやすいよう最初の日だけ入れておく
+        start_on, end_on, holiday_rule = chosen[0], None, "keep"
+    elif end_on and end_on < start_on:
         raise bad_request("終了日が開始日より前になっています")
     return {
         "parent_id": as_int(pick("parent_id")),
@@ -5556,6 +5569,7 @@ def _meeting_body(body, current=None):
         "month_day": month_day if freq == "monthly" and month_mode == "day" else None,
         "nth": nth if freq == "monthly" and month_mode == "nth" else None,
         "nth_weekday": nth_weekday if freq == "monthly" and month_mode == "nth" else None,
+        "dates": dates or None,
         "time_text": str(pick("time_text", "") or "").strip()[:20],
         "holiday_rule": holiday_rule, "start_on": start_on, "end_on": end_on,
     }
@@ -5572,6 +5586,7 @@ def meeting_out(row, can_edit=False):
     for key in ("start_on", "end_on"):
         out[key] = out[key].isoformat() if out[key] else None
     out["weekdays"] = meetings.parse_weekdays(row["weekdays"])
+    out["dates"] = [d.isoformat() for d in meetings.parse_dates(row.get("dates"))]
     out["summary"] = meetings.describe(row)
     out["can_edit"] = can_edit
     return out
@@ -5617,7 +5632,14 @@ def preview_meeting(ctx):
     values["end_on"] = as_pydate(values["end_on"]) if values["end_on"] else None
     lo = max(db.today(), values["start_on"])
     hi = lo + timedelta(days=400)
-    found = meetings.scheduled(values, lo, hi, meetings.off_days(lo, hi))[:5]
+    if values["freq"] == "dates":
+        # 選んだ日が先のほうにしか無くても出せるよう、最後の日まで見る。
+        # 選んだ日は休日でもずらさないので、祝日の暦（遠い年ほど重い）は引かない
+        hi = max(hi, meetings.parse_dates(values["dates"])[-1])
+        is_off = lambda day: False  # noqa: E731
+    else:
+        is_off = meetings.off_days(lo, hi)
+    found = meetings.scheduled(values, lo, hi, is_off)[:5]
     return json_response({"next": [
         {"date": day.isoformat(),
          "shifted_from": planned.isoformat() if planned != day else None}
