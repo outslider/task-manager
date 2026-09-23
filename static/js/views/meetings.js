@@ -8,6 +8,7 @@ import {
   confirmDialog, el, fill, formatDate, openModal, parseDate, toast, today, toISO,
 } from '../util.js';
 import { option } from './pickers.js';
+import { parentCandidates } from './recurrence.js';
 
 const WEEKDAYS = ['月', '火', '水', '木', '金', '土', '日'];
 const WEEK_INTERVALS = [[1, '毎週'], [2, '隔週'], [3, '3週ごと'], [4, '4週ごと']];
@@ -36,8 +37,9 @@ function mondayIndex(date) {
  * 定例の登録・編集。保存したら true、消したら 'deleted' を返す。
  * @param {object} project 追加先（編集のときは meeting.project_id を使う）
  * @param {object|null} meeting 編集する定例
+ * @param {Array} tasks 置き場所の候補（そのプロジェクトのタスク）
  */
-export async function openMeetingForm({ project, meeting = null }) {
+export async function openMeetingForm({ project, meeting = null, tasks = [] }) {
   const now = today();
   const state = {
     freq: meeting?.freq || 'weekly',
@@ -54,6 +56,7 @@ export async function openMeetingForm({ project, meeting = null }) {
   let previewSeq = 0;
 
   const payload = () => ({
+    parent_id: f.parent.value ? Number(f.parent.value) : null,
     title: f.title.value.trim(),
     freq: state.freq,
     interval_n: Number(f.interval?.value || 1),
@@ -163,6 +166,16 @@ export async function openMeetingForm({ project, meeting = null }) {
         class: 'input', maxlength: 200, value: meeting?.title || '',
         placeholder: '例）週次定例、ステアリングコミッティ',
       });
+      // 置き場所。「開発フェーズの定例」のように、関係するタスクの下に並べられる
+      f.parent = el('select', { class: 'select' },
+        option('', '先頭の「定例」にまとめる', !meeting?.parent_id),
+        ...parentCandidates(tasks).map((t) => option(t.id, `${'　'.repeat(t.depth)}${t.title}`,
+          t.id === meeting?.parent_id)));
+      if (meeting?.parent_id && ![...f.parent.options].some((o) => Number(o.value) === meeting.parent_id)) {
+        // 候補から外れるタスク（マイルストーンなど）に置いてあっても、黙って外さない
+        const current = tasks.find((t) => t.id === meeting.parent_id);
+        f.parent.appendChild(option(meeting.parent_id, current?.title || `#${meeting.parent_id}`, true));
+      }
       f.freq = el('div', { class: 'seg' }, ...[['weekly', '毎週・隔週'], ['monthly', '毎月']]
         .map(([value, label]) => el('button', {
           type: 'button', class: state.freq === value ? 'active' : '',
@@ -194,6 +207,9 @@ export async function openMeetingForm({ project, meeting = null }) {
 
       return el('div', {},
         el('div', { class: 'field' }, el('label', { text: '会議の名前 *' }), f.title),
+        el('div', { class: 'field' }, el('label', { text: 'ガントで置く場所' }), f.parent,
+          el('div', { class: 'hint',
+            text: 'タスクを選ぶと、その子として並びます（そのタスクをたたむと一緒に隠れます）。' })),
         el('div', { class: 'field' }, el('label', { text: '繰り返し' }), f.freq),
         freqHost,
         el('div', { class: 'row' },

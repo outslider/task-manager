@@ -5488,7 +5488,7 @@ def skip_recurrence(ctx, rule_id):
 # 定例会議（ガントの 1 行に開催日を並べる）
 # --------------------------------------------------------------------------
 
-MEETING_COLUMNS = ("title", "freq", "interval_n", "weekdays", "month_mode", "month_day",
+MEETING_COLUMNS = ("parent_id", "title", "freq", "interval_n", "weekdays", "month_mode", "month_day",
                    "nth", "nth_weekday", "time_text", "holiday_rule", "start_on", "end_on")
 
 
@@ -5548,6 +5548,7 @@ def _meeting_body(body, current=None):
     if end_on and end_on < start_on:
         raise bad_request("終了日が開始日より前になっています")
     return {
+        "parent_id": as_int(pick("parent_id")),
         "title": title, "freq": freq,
         "interval_n": as_int(pick("interval_n"), 1, 1, 12),
         "weekdays": weekdays if freq == "weekly" else "",
@@ -5558,6 +5559,12 @@ def _meeting_body(body, current=None):
         "time_text": str(pick("time_text", "") or "").strip()[:20],
         "holiday_rule": holiday_rule, "start_on": start_on, "end_on": end_on,
     }
+
+
+def _check_meeting_parent(values, project_id):
+    """置き場所のタスクは同じプロジェクトのものに限る。"""
+    if values["parent_id"] and auth.task_project_id(values["parent_id"]) != project_id:
+        raise bad_request("置き場所のタスクが同じプロジェクトにありません")
 
 
 def meeting_out(row, can_edit=False):
@@ -5622,6 +5629,7 @@ def create_meeting(ctx, project_id):
     user = me(ctx)
     project_or_404(user, project_id, "editor")
     values = _meeting_body(ctx.body)
+    _check_meeting_parent(values, project_id)
     now = db.now()
     order = db.scalar("SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM meetings "
                       "WHERE project_id=%s", (project_id,), default=1)
@@ -5639,6 +5647,7 @@ def update_meeting(ctx, meeting_id):
     user = me(ctx)
     current = meeting_or_404(user, meeting_id, "editor")
     values = _meeting_body(ctx.body, current)
+    _check_meeting_parent(values, current["project_id"])
     db.execute(
         "UPDATE meetings SET {}, updated_at=%(now)s WHERE id=%(id)s".format(
             ", ".join("{0}=%({0})s".format(c) for c in MEETING_COLUMNS)),

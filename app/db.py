@@ -451,6 +451,7 @@ DDL = [
     CREATE TABLE IF NOT EXISTS meetings (
         id           INT AUTO_INCREMENT PRIMARY KEY,
         project_id   INT NOT NULL,
+        parent_id    INT NULL,                         -- この子として並べるタスク（空なら先頭の「定例」）
         title        VARCHAR(200) NOT NULL,
         freq         VARCHAR(10)  NOT NULL,            -- weekly | monthly
         interval_n   INT          NOT NULL DEFAULT 1,  -- 2 なら隔週・2か月ごと
@@ -468,8 +469,11 @@ DDL = [
         created_at   DATETIME     NOT NULL,
         updated_at   DATETIME     NOT NULL,
         KEY idx_meeting_project (project_id, sort_order),
+        KEY idx_meeting_parent (parent_id),
         CONSTRAINT fk_meeting_project FOREIGN KEY (project_id) REFERENCES projects(id)
             ON DELETE CASCADE,
+        CONSTRAINT fk_meeting_parent FOREIGN KEY (parent_id) REFERENCES tasks(id)
+            ON DELETE SET NULL,
         CONSTRAINT fk_meeting_creator FOREIGN KEY (created_by) REFERENCES users(id)
             ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -714,6 +718,8 @@ MIGRATIONS = [
      "ALTER TABLE users ADD COLUMN nav_order VARCHAR(300) NOT NULL DEFAULT ''"),
     ("todos", "recurrence_id",
      "ALTER TABLE todos ADD COLUMN recurrence_id INT NULL AFTER sort_order"),
+    ("meetings", "parent_id",
+     "ALTER TABLE meetings ADD COLUMN parent_id INT NULL AFTER project_id"),
     ("ticket_queues", "visibility",
      "ALTER TABLE ticket_queues ADD COLUMN visibility VARCHAR(10) NOT NULL DEFAULT 'all' "
      "AFTER project_id"),
@@ -784,6 +790,8 @@ MIGRATION_INDEXES = [
      "ALTER TABLE tickets ADD KEY idx_tickets_resolved (resolved_at)"),
     ("todos", "idx_todos_recurrence",
      "ALTER TABLE todos ADD KEY idx_todos_recurrence (recurrence_id)"),
+    ("meetings", "idx_meeting_parent",
+     "ALTER TABLE meetings ADD KEY idx_meeting_parent (parent_id)"),
 ]
 
 # Comments and attachments originally belonged to a task only; issues reuse them.
@@ -820,6 +828,9 @@ MIGRATION_FKS = [
     ("todos", "fk_todo_recurrence",
      "ALTER TABLE todos ADD CONSTRAINT fk_todo_recurrence "
      "FOREIGN KEY (recurrence_id) REFERENCES todo_recurrences(id) ON DELETE SET NULL"),
+    ("meetings", "fk_meeting_parent",
+     "ALTER TABLE meetings ADD CONSTRAINT fk_meeting_parent "
+     "FOREIGN KEY (parent_id) REFERENCES tasks(id) ON DELETE SET NULL"),
 ]
 
 

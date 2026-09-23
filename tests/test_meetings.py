@@ -340,6 +340,63 @@ class TestMeetingApi(ApiTestCase):
         status, _ = self.admin.post("/api/meetings/preview", {"freq": "weekly", "weekdays": []})
         self.assertEqual(status, 400)
 
+    def test_place_under_a_task(self):
+        phase = self.make_task(self.project["id"], title="開発フェーズ")
+        made = self.create(parent_id=phase["id"])
+        self.assertEqual(made["parent_id"], phase["id"])
+        self.assertEqual(self.listing()[0]["parent_id"], phase["id"])
+        # 別の項目だけ変えても、置き場所はそのまま
+        status, data = self.admin.patch("/api/meetings/{}".format(made["id"]), {"title": "新"})
+        self.assertEqual(data["meeting"]["parent_id"], phase["id"])
+        # null で先頭に戻せる
+        status, data = self.admin.patch("/api/meetings/{}".format(made["id"]), {"parent_id": None})
+        self.assertIsNone(data["meeting"]["parent_id"])
+
+    def test_parent_must_be_in_the_same_project(self):
+        other = self.make_project("別PJ")
+        stranger = self.make_task(other["id"], title="よそのタスク")
+        body = {"title": "定例", "weekdays": [1], "parent_id": stranger["id"]}
+        self.assertEqual(self.admin.post(self.url, body)[0], 400)
+        made = self.create()
+        self.assertEqual(self.admin.patch("/api/meetings/{}".format(made["id"]),
+                                          {"parent_id": stranger["id"]})[0], 400)
+        self.assertEqual(self.admin.patch("/api/meetings/{}".format(made["id"]),
+                                          {"parent_id": 99999999})[0], 400)
+
+    def test_deleting_the_parent_moves_it_to_the_top_and_restore_puts_it_back(self):
+        phase = self.make_task(self.project["id"], title="消えるフェーズ")
+        child = self.make_task(self.project["id"], title="孫", parent_id=phase["id"])
+        on_phase = self.create(title="フェーズ定例", parent_id=phase["id"])
+        on_child = self.create(title="孫の定例", parent_id=child["id"])
+        self.assertEqual(self.admin.delete("/api/tasks/{}".format(phase["id"]))[0], 200)
+        # 定例そのものは消えず、置き場所だけ外れる
+        parents = {m["title"]: m["parent_id"] for m in self.listing()}
+        self.assertEqual(parents, {"フェーズ定例": None, "孫の定例": None})
+        # 消したあとで置き直したものは、戻しても動かさない
+        self.admin.patch("/api/meetings/{}".format(on_child["id"]), {"parent_id": None})
+        keep = self.make_task(self.project["id"], title="置き直し先")
+        self.admin.patch("/api/meetings/{}".format(on_child["id"]), {"parent_id": keep["id"]})
+        entry = next(t for t in self.admin.get("/api/trash")[1]["items"]
+                     if t["kind"] == "task" and t["item_id"] == phase["id"])
+        status, data = self.admin.post("/api/trash/{}/restore".format(entry["id"]), {})
+        self.assertEqual(status, 200, data)
+        parents = {m["id"]: m["parent_id"] for m in self.listing()}
+        self.assertEqual(parents[on_phase["id"]], phase["id"])
+        self.assertEqual(parents[on_child["id"]], keep["id"])
+
+    def test_restore_when_the_meeting_was_deleted_meanwhile(self):
+        phase = self.make_task(self.project["id"], title="フェーズ")
+        made = self.create(parent_id=phase["id"])
+        self.admin.delete("/api/tasks/{}".format(phase["id"]))
+        self.admin.delete("/api/meetings/{}".format(made["id"]))
+        entry = next(t for t in self.admin.get("/api/trash")[1]["items"]
+                     if t["kind"] == "task" and t["item_id"] == phase["id"])
+        status, data = self.admin.post("/api/trash/{}/restore".format(entry["id"]), {})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(self.admin.get("/api/tasks/{}".format(phase["id"]))[0], 200)
+        # 定例の控えは件数に入れない（戻せなかった扱いにもしない）
+        self.assertEqual(data.get("skipped", 0), 0, data)
+
     def test_delete_meeting(self):
         made = self.create()
         self.assertEqual(self.admin.delete("/api/meetings/{}".format(made["id"]))[0], 200)

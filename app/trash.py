@@ -42,6 +42,9 @@ LINKS = {
     "issue_tasks": {"issue_id": ("issues", "drop"), "task_id": ("tasks", "drop")},
     "ticket_tasks": {"ticket_id": ("tickets", "drop"), "task_id": ("tasks", "drop")},
     "ticket_issues": {"ticket_id": ("tickets", "drop"), "issue_id": ("issues", "drop")},
+    # 表ではなく「どの定例がこのタスクの下にあったか」の控え。定例そのものは
+    # タスクを消しても残る（置き場所が外れて先頭に移るだけ）ので、戻すときに結び直す。
+    "meeting_parents": {"id": ("meetings", "drop"), "parent_id": ("tasks", "drop")},
 }
 
 
@@ -72,6 +75,8 @@ def snapshot_task(task_id, ids):
                             (group, group))),
         ("issue_tasks", _rows("issue_tasks", "task_id IN %s", (group,))),
         ("ticket_tasks", _rows("ticket_tasks", "task_id IN %s", (group,))),
+        ("meeting_parents", [dict(r) for r in db.query(
+            "SELECT id, parent_id FROM meetings WHERE parent_id IN %s", (group,))]),
     ]
 
 
@@ -190,6 +195,14 @@ def restore(entry):
                 continue
             for row in rows:
                 fixed = _fix(table, row, coming_back, alive)
+                if table == "meeting_parents":
+                    # 行を戻すのではなく結び直すだけなので、件数には数えない。
+                    # 消したあとで別の場所へ置き直していたら、そちらを尊重する
+                    if fixed:
+                        db.execute("UPDATE meetings SET parent_id=%s "
+                                   "WHERE id=%s AND parent_id IS NULL",
+                                   (fixed["parent_id"], fixed["id"]))
+                    continue
                 if fixed is None:
                     skipped += 1
                     continue

@@ -280,7 +280,7 @@ export async function render(container, route) {
   }
 
   async function editMeeting(meeting) {
-    const saved = await openMeetingForm({ project, meeting });
+    const saved = await openMeetingForm({ project, meeting, tasks: data.tasks });
     if (saved) await reloadMeetings();
   }
 
@@ -289,9 +289,50 @@ export async function render(container, route) {
     if (await openOccurrenceDialog(meeting, occurrence)) await reloadMeetings();
   }
 
+  /* 置き場所（親タスク）を決めた定例は、そのタスクの子として並べる。
+   * ただし親タスクが行として出ない表示（担当者別の区切り、ロードマップで
+   * フェーズより下のタスクなど）では置き場所が無いので、先頭の「定例」に回す。 */
+  let meetingsUnder = new Map();
+
+  /** いまの表示で、行として出うるタスク（たたまれて隠れているものも含む）。 */
+  function nestTargets(tasks) {
+    if (['assignee', 'category'].includes(state.group) && state.mode !== 'roadmap') {
+      return new Set();
+    }
+    if (state.mode === 'roadmap') {
+      // 行になるのはフェーズ（トップレベルのタスク）だけ
+      const ids = new Set(tasks.map((t) => t.id));
+      return new Set(tasks.filter((t) => !ids.has(t.parent_id) && !t.is_milestone)
+        .map((t) => t.id));
+    }
+    return new Set(tasks.map((t) => t.id));
+  }
+
+  /** 定例を「タスクの下に置くもの」と「先頭にまとめるもの」に分ける。 */
+  function placeMeetings(tasks) {
+    const targets = nestTargets(tasks);
+    meetingsUnder = new Map();
+    const top = [];
+    for (const meeting of meetingCache.list) {
+      if (meeting.parent_id && targets.has(meeting.parent_id)) {
+        if (!meetingsUnder.has(meeting.parent_id)) meetingsUnder.set(meeting.parent_id, []);
+        meetingsUnder.get(meeting.parent_id).push(meeting);
+      } else {
+        top.push(meeting);
+      }
+    }
+    return top;
+  }
+
+  /** タスクの直下に並べる定例の行。 */
+  function meetingRowsUnder(taskId, depth) {
+    return (meetingsUnder.get(taskId) || []).map((meeting) => ({
+      meeting, depth, inGroup: true, color: MEETING_COLOR, projectName: '',
+    }));
+  }
+
   /** ガントの先頭に置く「定例」のかたまり。1 つの会議が 1 行。 */
-  function meetingRows() {
-    const list = meetingCache.list;
+  function meetingRows(list) {
     if (!list.length) return [];
     const projects = new Map((data.projects || []).map((p) => [p.id, p]));
     const folded = collapsedGroups.has('meetings');
@@ -524,6 +565,9 @@ export async function render(container, route) {
         for (const task of data.tasks) {
           if (data.tasks.some((child) => child.parent_id === task.id)) collapsed.add(task.id);
         }
+        for (const meeting of meetingCache.list) {
+          if (meeting.parent_id) collapsed.add(meeting.parent_id);
+        }
         for (const row of visibleRows()) if (row.group) collapsedGroups.add(row.groupId);
         saveCollapsed(projectId, collapsed);
         saveMeetingFold();
@@ -601,7 +645,7 @@ export async function render(container, route) {
   }
 
   function visibleRows() {
-    const meetingsPart = meetingRows();
+    const meetingsPart = meetingRows(placeMeetings(filteredTasks()));
     const tasksPart = taskRows();
     if (meetingsPart.length && tasksPart.length) {
       tasksPart[0] = { ...tasksPart[0], separator: true };
@@ -620,9 +664,9 @@ export async function render(container, route) {
       // フェーズ＝トップレベルのタスク。節目は上のレーンにまとめるので行にはしない
       return (children.get(null) || [])
         .filter((task) => !task.is_milestone)
-        .map((task) => ({
+        .flatMap((task) => [{
           task, depth: 0, hasChildren: (children.get(task.id) || []).length > 0,
-        }));
+        }, ...meetingRowsUnder(task.id, 1)]);
     }
     if (['assignee', 'category', 'project'].includes(state.group)) {
       return groupedRows(tasks);
@@ -634,8 +678,9 @@ export async function render(container, route) {
       for (const task of children.get(parentId) || []) {
         const kids = children.get(task.id) || [];
         const folded = collapsed.has(task.id);
+        const under = meetingsUnder.get(task.id) || [];
         rows.push({
-          task, depth, hasChildren: kids.length > 0,
+          task, depth, hasChildren: kids.length > 0, hasMeetings: under.length > 0,
           collapsed: folded,
           // たたんだ親の行に、隠れている各回を記号で並べる（週次の打ち合わせなど）
           marks: folded && state.showMarks ? occurrenceDates(task.id) : null,
@@ -643,7 +688,10 @@ export async function render(container, route) {
           separator: state.group === 'phase' && depth === 0 && rows.length > 0,
           lead: state.group === 'phase' && depth === 0,
         });
-        if (!collapsed.has(task.id)) walk(task.id, depth + 1);
+        if (!folded) {
+          rows.push(...meetingRowsUnder(task.id, depth + 1));
+          walk(task.id, depth + 1);
+        }
       }
     };
     walk(null, 0);
@@ -684,7 +732,7 @@ export async function render(container, route) {
       for (const task of phases) {
         rows.push({
           task, depth: 0, hasChildren: (children.get(task.id) || []).length > 0, inGroup: true,
-        });
+        }, ...meetingRowsUnder(task.id, 1));
       }
     }
     return rows;
@@ -750,11 +798,16 @@ export async function render(container, route) {
       for (const task of children.get(parentId) || []) {
         const kids = children.get(task.id) || [];
         const folded = collapsed.has(task.id);
+        const under = meetingsUnder.get(task.id) || [];
         out.push({
-          task, depth, hasChildren: kids.length > 0, collapsed: folded, inGroup: true,
+          task, depth, hasChildren: kids.length > 0, hasMeetings: under.length > 0,
+          collapsed: folded, inGroup: true,
           marks: folded && state.showMarks ? occurrenceDates(task.id) : null,
         });
-        if (!folded) walk(task.id, depth + 1);
+        if (!folded) {
+          out.push(...meetingRowsUnder(task.id, depth + 1));
+          walk(task.id, depth + 1);
+        }
       }
     };
     walk(null, baseDepth - baseDepth);
@@ -1551,11 +1604,13 @@ export function buildGanttSvg({
     }
 
     const { task, depth, hasChildren } = row;
-    const indent = PAD + 8 + depth * 12 + (hasChildren ? 12 : 0);
+    // 子タスクが無くても、下に定例を置いていればたためる
+    const foldable = hasChildren || row.hasMeetings;
+    const indent = PAD + 8 + depth * 12 + (foldable ? 12 : 0);
     const label = truncate(task.title, Math.max(4, Math.floor((nameWidth - (indent - PAD) - 34) / 12)));
 
     // 子を持つ行には開閉の三角を出す
-    if (hasChildren && !roadmap) {
+    if (foldable && !roadmap) {
       const twisty = svgEl('text', {
         x: PAD + 8 + depth * 12, y: y + rowH / 2 + 4, 'font-size': 9,
         fill: colors.muted, text: row.collapsed ? '▶' : '▼',
