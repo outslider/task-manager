@@ -448,6 +448,49 @@ DDL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
+    CREATE TABLE IF NOT EXISTS meetings (
+        id           INT AUTO_INCREMENT PRIMARY KEY,
+        project_id   INT NOT NULL,
+        title        VARCHAR(200) NOT NULL,
+        freq         VARCHAR(10)  NOT NULL,            -- weekly | monthly
+        interval_n   INT          NOT NULL DEFAULT 1,  -- 2 なら隔週・2か月ごと
+        weekdays     VARCHAR(20)  NOT NULL DEFAULT '', -- weekly のとき '1,3'（月=0）
+        month_mode   VARCHAR(5)   NOT NULL DEFAULT 'day', -- day（毎月◯日）| nth（第◯◯曜）
+        month_day    TINYINT      NULL,
+        nth          TINYINT      NULL,                -- 1-4、-1 は最終
+        nth_weekday  TINYINT      NULL,
+        time_text    VARCHAR(20)  NOT NULL DEFAULT '', -- 「10:00」など。表示するだけ
+        holiday_rule VARCHAR(5)   NOT NULL DEFAULT 'next', -- skip | next | prev | keep
+        start_on     DATE         NOT NULL,
+        end_on       DATE         NULL,
+        sort_order   INT          NOT NULL DEFAULT 0,
+        created_by   INT NULL,
+        created_at   DATETIME     NOT NULL,
+        updated_at   DATETIME     NOT NULL,
+        KEY idx_meeting_project (project_id, sort_order),
+        CONSTRAINT fk_meeting_project FOREIGN KEY (project_id) REFERENCES projects(id)
+            ON DELETE CASCADE,
+        CONSTRAINT fk_meeting_creator FOREIGN KEY (created_by) REFERENCES users(id)
+            ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS meeting_exceptions (
+        meeting_id INT  NOT NULL,
+        on_date    DATE NOT NULL,                      -- その回の予定日（休日でずらした後）
+        action     VARCHAR(10) NOT NULL,               -- cancel | move
+        moved_to   DATE NULL,
+        note       VARCHAR(200) NOT NULL DEFAULT '',
+        updated_by INT NULL,
+        updated_at DATETIME NOT NULL,
+        PRIMARY KEY (meeting_id, on_date),
+        CONSTRAINT fk_mex_meeting FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+            ON DELETE CASCADE,
+        CONSTRAINT fk_mex_user FOREIGN KEY (updated_by) REFERENCES users(id)
+            ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
     CREATE TABLE IF NOT EXISTS task_statuses (
         status_key VARCHAR(20)  NOT NULL PRIMARY KEY,
         label      VARCHAR(40)  NOT NULL,

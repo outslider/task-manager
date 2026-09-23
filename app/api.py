@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import pymysql
 
-from . import (auth, db, graph, holidays, llm, mentions, nlp, notify, prefs,
+from . import (auth, db, graph, holidays, llm, meetings, mentions, nlp, notify, prefs,
                recurrence, slack, taxonomy, templates, tickets, trash, workload)
 from .config import MAX_UPLOAD_BYTES, UPLOAD_DIR
 from .http_util import (HttpError, as_bool, as_date, as_datetime, as_int, bad_request,
@@ -5482,6 +5482,216 @@ def skip_recurrence(ctx, rule_id):
     row = db.query_one(RECURRENCE_SELECT + " WHERE r.id=%s", (rule_id,))
     row["summary"] = recurrence.describe(row)
     return json_response({"recurrence": row, "skipped": skipped, "next_on": nxt})
+
+
+# --------------------------------------------------------------------------
+# 定例会議（ガントの 1 行に開催日を並べる）
+# --------------------------------------------------------------------------
+
+MEETING_COLUMNS = ("title", "freq", "interval_n", "weekdays", "month_mode", "month_day",
+                   "nth", "nth_weekday", "time_text", "holiday_rule", "start_on", "end_on")
+
+
+def _real_date(value):
+    """形だけでなく、実在する日付か（2026-02-30 などを弾く）。空なら None。"""
+    value = as_date(value)
+    if value:
+        try:
+            as_pydate(value)
+        except ValueError:
+            raise bad_request("存在しない日付です: " + value)
+    return value
+
+
+def meeting_or_404(user, meeting_id, minimum="viewer"):
+    row = db.query_one("SELECT * FROM meetings WHERE id=%s", (meeting_id,))
+    if not row:
+        raise not_found("定例が見つかりません")
+    project_or_404(user, row["project_id"], minimum)
+    return row
+
+
+def _meeting_body(body, current=None):
+    """入力を確かめて、保存する値にする。current があれば未指定の項目は今の値を残す。"""
+    def pick(key, default=None):
+        if key in body:
+            return body[key]
+        return current[key] if current else default
+
+    title = str(pick("title", "") or "").strip()[:200]
+    if not title:
+        raise bad_request("会議の名前を入れてください")
+    freq = pick("freq", "weekly")
+    if freq not in meetings.FREQ_LABEL:
+        raise bad_request("繰り返しの種類が不正です")
+    weekdays = pick("weekdays", "")
+    if isinstance(weekdays, list):
+        weekdays = ",".join(str(d) for d in weekdays)
+    weekdays = ",".join(str(d) for d in meetings.parse_weekdays(weekdays))
+    if freq == "weekly" and not weekdays:
+        raise bad_request("曜日を 1 つ以上選んでください")
+    month_mode = pick("month_mode", "day")
+    if month_mode not in ("day", "nth"):
+        raise bad_request("毎月の決め方が不正です")
+    month_day = as_int(pick("month_day"), None, 1, 31)
+    nth = as_int(pick("nth"), None, -1, 4)
+    nth_weekday = as_int(pick("nth_weekday"), None, 0, 6)
+    if freq == "monthly" and month_mode == "day" and not month_day:
+        raise bad_request("毎月何日かを指定してください")
+    if freq == "monthly" and month_mode == "nth" and (not nth or nth_weekday is None):
+        raise bad_request("第何週の何曜日かを指定してください")
+    holiday_rule = pick("holiday_rule", "next")
+    if holiday_rule not in meetings.HOLIDAY_RULES:
+        raise bad_request("休日の扱いが不正です")
+    start_on = _real_date(pick("start_on")) or db.today().isoformat()
+    end_on = _real_date(pick("end_on"))
+    if end_on and end_on < start_on:
+        raise bad_request("終了日が開始日より前になっています")
+    return {
+        "title": title, "freq": freq,
+        "interval_n": as_int(pick("interval_n"), 1, 1, 12),
+        "weekdays": weekdays if freq == "weekly" else "",
+        "month_mode": month_mode,
+        "month_day": month_day if freq == "monthly" and month_mode == "day" else None,
+        "nth": nth if freq == "monthly" and month_mode == "nth" else None,
+        "nth_weekday": nth_weekday if freq == "monthly" and month_mode == "nth" else None,
+        "time_text": str(pick("time_text", "") or "").strip()[:20],
+        "holiday_rule": holiday_rule, "start_on": start_on, "end_on": end_on,
+    }
+
+
+def meeting_out(row, can_edit=False):
+    out = {k: row[k] for k in ("id", "project_id", "sort_order") + MEETING_COLUMNS}
+    for key in ("start_on", "end_on"):
+        out[key] = out[key].isoformat() if out[key] else None
+    out["weekdays"] = meetings.parse_weekdays(row["weekdays"])
+    out["summary"] = meetings.describe(row)
+    out["can_edit"] = can_edit
+    return out
+
+
+@route("GET", r"/api/meetings")
+def list_meetings(ctx):
+    """見える期間の開催日つきで返す。project_ids が無ければ見えるプロジェクトすべて。"""
+    user = me(ctx)
+    wanted = [as_int(v) for v in (ctx.query.get("project_ids") or "").split(",") if v.strip()]
+    wanted = [v for v in wanted if v]
+    ids = wanted or auth.visible_project_ids(user)
+    roles = auth.project_roles(user, ids)
+    if not roles:
+        return json_response({"meetings": []})
+    today = db.today()
+    lo = as_pydate(as_date(ctx.query.get("from")) or (today - timedelta(days=30)).isoformat())
+    hi = as_pydate(as_date(ctx.query.get("to")) or (today + timedelta(days=90)).isoformat())
+    if hi < lo:
+        raise bad_request("期間の終わりが始まりより前です")
+    if (hi - lo).days > meetings.MAX_SPAN_DAYS:
+        raise bad_request("期間が長すぎます（{} 日まで）".format(meetings.MAX_SPAN_DAYS))
+    rows = db.query("SELECT * FROM meetings WHERE project_id IN %s "
+                    "ORDER BY project_id, sort_order, id", (tuple(roles),))
+    exceptions = meetings.load_exceptions([r["id"] for r in rows])
+    is_off = meetings.off_days(lo, hi)
+    out = []
+    for row in rows:
+        item = meeting_out(row, auth.ROLE_ORDER.get(roles[row["project_id"]], 0)
+                           >= auth.ROLE_ORDER["editor"])
+        item["occurrences"] = meetings.occurrences(
+            row, lo, hi, is_off, exceptions.get(row["id"], {}))
+        out.append(item)
+    return json_response({"meetings": out, "from": lo.isoformat(), "to": hi.isoformat()})
+
+
+@route("POST", r"/api/meetings/preview")
+def preview_meeting(ctx):
+    """入力中の決まりで、次の数回がいつになるか。フォームの確認表示に使う。"""
+    me(ctx)
+    values = _meeting_body(dict(ctx.body, title=ctx.body.get("title") or "（確認）"))
+    values["start_on"] = as_pydate(values["start_on"])
+    values["end_on"] = as_pydate(values["end_on"]) if values["end_on"] else None
+    lo = max(db.today(), values["start_on"])
+    hi = lo + timedelta(days=400)
+    found = meetings.scheduled(values, lo, hi, meetings.off_days(lo, hi))[:5]
+    return json_response({"next": [
+        {"date": day.isoformat(),
+         "shifted_from": planned.isoformat() if planned != day else None}
+        for planned, day in found]})
+
+
+@route("POST", r"/api/projects/(\d+)/meetings")
+def create_meeting(ctx, project_id):
+    user = me(ctx)
+    project_or_404(user, project_id, "editor")
+    values = _meeting_body(ctx.body)
+    now = db.now()
+    order = db.scalar("SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM meetings "
+                      "WHERE project_id=%s", (project_id,), default=1)
+    meeting_id = db.insert(
+        "INSERT INTO meetings(project_id, {}, sort_order, created_by, created_at, updated_at) "
+        "VALUES(%(project_id)s, {}, %(sort_order)s, %(created_by)s, %(now)s, %(now)s)".format(
+            ", ".join(MEETING_COLUMNS), ", ".join("%({})s".format(c) for c in MEETING_COLUMNS)),
+        dict(values, project_id=project_id, sort_order=order, created_by=user["id"], now=now))
+    row = db.query_one("SELECT * FROM meetings WHERE id=%s", (meeting_id,))
+    return json_response({"meeting": meeting_out(row, True)}, 201)
+
+
+@route("PATCH", r"/api/meetings/(\d+)")
+def update_meeting(ctx, meeting_id):
+    user = me(ctx)
+    current = meeting_or_404(user, meeting_id, "editor")
+    values = _meeting_body(ctx.body, current)
+    db.execute(
+        "UPDATE meetings SET {}, updated_at=%(now)s WHERE id=%(id)s".format(
+            ", ".join("{0}=%({0})s".format(c) for c in MEETING_COLUMNS)),
+        dict(values, id=meeting_id, now=db.now()))
+    row = db.query_one("SELECT * FROM meetings WHERE id=%s", (meeting_id,))
+    return json_response({"meeting": meeting_out(row, True)})
+
+
+@route("DELETE", r"/api/meetings/(\d+)")
+def delete_meeting(ctx, meeting_id):
+    user = me(ctx)
+    meeting_or_404(user, meeting_id, "editor")
+    db.execute("DELETE FROM meetings WHERE id=%s", (meeting_id,))
+    return json_response({"ok": True})
+
+
+@route("PUT", r"/api/meetings/(\d+)/exceptions/(\d{4}-\d{2}-\d{2})")
+def set_meeting_exception(ctx, meeting_id, on_date):
+    """その回だけ中止する、または日にちを変える。"""
+    user = me(ctx)
+    row = meeting_or_404(user, meeting_id, "editor")
+    day = as_pydate(_real_date(on_date))
+    if not meetings.is_scheduled(row, day, meetings.off_days(day, day)):
+        raise bad_request("その日は開催日ではありません")
+    action = ctx.body.get("action")
+    if action not in ("cancel", "move"):
+        raise bad_request("中止か日にち変更かを指定してください")
+    moved_to = None
+    if action == "move":
+        moved_to = _real_date(ctx.body.get("moved_to"))
+        if not moved_to:
+            raise bad_request("変更先の日付を指定してください")
+        if moved_to == on_date:
+            raise bad_request("変更先が元の日と同じです")
+    note = str(ctx.body.get("note") or "").strip()[:200]
+    db.execute(
+        "INSERT INTO meeting_exceptions(meeting_id, on_date, action, moved_to, note, "
+        "updated_by, updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s) "
+        "ON DUPLICATE KEY UPDATE action=VALUES(action), moved_to=VALUES(moved_to), "
+        "note=VALUES(note), updated_by=VALUES(updated_by), updated_at=VALUES(updated_at)",
+        (meeting_id, on_date, action, moved_to, note, user["id"], db.now()))
+    return json_response({"ok": True})
+
+
+@route("DELETE", r"/api/meetings/(\d+)/exceptions/(\d{4}-\d{2}-\d{2})")
+def clear_meeting_exception(ctx, meeting_id, on_date):
+    """中止・日にち変更を取り消して、決まりどおりに戻す。"""
+    user = me(ctx)
+    meeting_or_404(user, meeting_id, "editor")
+    _real_date(on_date)
+    db.execute("DELETE FROM meeting_exceptions WHERE meeting_id=%s AND on_date=%s",
+               (meeting_id, on_date))
+    return json_response({"ok": True})
 
 
 @route("POST", r"/api/admin/run-recurrences")

@@ -12,6 +12,7 @@ import { iconLabel } from '../icons.js';
 import { buildTree, loadCollapsed, saveCollapsed } from './tasks.js';
 import { openTaskDetail } from './taskDetail.js';
 import { projectTabs } from './projectNav.js';
+import { occurrenceTitle, openMeetingForm, openOccurrenceDialog } from './meetings.js';
 
 const SCALES = {
   day: { key: 'day', label: '日', dayWidth: 26, minorEvery: 1 },
@@ -85,6 +86,9 @@ const MILESTONE_LANE_H = 44;   // 節目を並べる、チャート上部の専�
 const HEADER_H = 46;
 const PAD = 14;
 const NAME_W_DEFAULT = 250;
+// 定例会議の点の色。状態の色（灰・青・緑・赤）と紛れない紫にする
+const MEETING_COLOR = '#7c5cdb';
+const MEETING_FOLD_KEY = 'tm.gantt.meetingsFolded';
 
 /* Slide presets: width/height in pixels at 96dpi, matching PowerPoint slide sizes. */
 const EXPORT_PRESETS = [
@@ -214,6 +218,12 @@ export async function render(container, route) {
       canEdit && !overview
         ? el('button', { class: 'btn', onClick: () => addTask() }, ...iconLabel('plus', 'タスク'))
         : null,
+      canEdit && !overview
+        ? el('button', {
+          class: 'btn', title: '週次定例などを 1 行にまとめて、開催日を点で並べます',
+          onClick: () => editMeeting(null),
+        }, ...iconLabel('calendar', '定例を追加'))
+        : null,
       el('button', { class: 'btn btn-primary', onClick: () => exportDialog() }, ...iconLabel('download', 'エクスポート')),
     ]);
   syncHeader();
@@ -228,6 +238,78 @@ export async function render(container, route) {
     if (!saved) return;
     await refresh();
     toast(`${saved.title} を追加しました`, 'ok');
+  }
+
+  /* ---- 定例会議 ----
+   * 開催日は見ている期間のぶんだけサーバーで数えてもらう（祝日と例外を反映するため）。
+   * 祝日と同じく、期間の前後に余裕を持たせて取り、足りなくなったら取り直す。 */
+  let meetingCache = { list: [], from: null, to: null, key: null };
+  try {
+    if (localStorage.getItem(MEETING_FOLD_KEY) === '1') collapsedGroups.add('meetings');
+  } catch { /* 覚えられなくても開いた状態で出すだけ */ }
+
+  const meetingProjectIds = () => (overview
+    ? (data.projects || []).map((p) => p.id)
+    : [projectId]);
+
+  async function ensureMeetings(range) {
+    const ids = meetingProjectIds();
+    const key = ids.join(',');
+    if (!ids.length) {
+      const had = meetingCache.list.length > 0;
+      meetingCache = { list: [], from: null, to: null, key };
+      return had;
+    }
+    const from = toISO(addDays(range.from, -40));
+    const to = toISO(addDays(range.to, 40));
+    if (meetingCache.key === key && meetingCache.from && meetingCache.from <= from
+      && meetingCache.to >= to) return false;
+    try {
+      const result = await api.get(`/api/meetings?project_ids=${key}&from=${from}&to=${to}`);
+      meetingCache = { list: result.meetings || [], from, to, key };
+      return true;
+    } catch {
+      return false;                 // 定例が取れなくても本体は描画する
+    }
+  }
+
+  /** 定例を変えたら、数え直してもらう。 */
+  async function reloadMeetings() {
+    meetingCache = { ...meetingCache, key: null };
+    draw();
+  }
+
+  async function editMeeting(meeting) {
+    const saved = await openMeetingForm({ project, meeting });
+    if (saved) await reloadMeetings();
+  }
+
+  async function editOccurrence(meeting, occurrence) {
+    if (!meeting.can_edit) return;
+    if (await openOccurrenceDialog(meeting, occurrence)) await reloadMeetings();
+  }
+
+  /** ガントの先頭に置く「定例」のかたまり。1 つの会議が 1 行。 */
+  function meetingRows() {
+    const list = meetingCache.list;
+    if (!list.length) return [];
+    const projects = new Map((data.projects || []).map((p) => [p.id, p]));
+    const folded = collapsedGroups.has('meetings');
+    const rows = [{
+      group: true, groupId: 'meetings', label: '定例', color: MEETING_COLOR,
+      count: list.length, collapsed: folded,
+    }];
+    if (folded) return rows;
+    for (const meeting of list) {
+      const owner = projects.get(meeting.project_id);
+      rows.push({
+        meeting, inGroup: true, depth: 1,
+        // 全体ガントでは、どの案件の会議かを点の色で分ける
+        color: overview ? (owner?.color || MEETING_COLOR) : MEETING_COLOR,
+        projectName: overview ? (owner?.name || '') : '',
+      });
+    }
+    return rows;
   }
 
   const scroll = el('div', { class: 'gantt-scroll' });
@@ -277,7 +359,9 @@ export async function render(container, route) {
     onChange: (event) => {
       state.group = event.target.value;
       localStorage.setItem(overview ? 'tm.gantt.groupAll' : 'tm.gantt.group', state.group);
+      const meetingsFolded = collapsedGroups.has('meetings');
       collapsedGroups.clear();
+      if (meetingsFolded) collapsedGroups.add('meetings');
       draw();
     },
   }, ...GROUPINGS.filter((g) => overview || !g.overviewOnly).map((g) => el('option', {
@@ -430,6 +514,7 @@ export async function render(container, route) {
         collapsed.clear();
         collapsedGroups.clear();
         saveCollapsed(projectId, collapsed);
+        saveMeetingFold();
         draw();
       },
     }, '⤢ 展開'),
@@ -441,6 +526,7 @@ export async function render(container, route) {
         }
         for (const row of visibleRows()) if (row.group) collapsedGroups.add(row.groupId);
         saveCollapsed(projectId, collapsed);
+        saveMeetingFold();
         draw();
       },
     }, '⤡ 折りたたみ'),
@@ -474,6 +560,11 @@ export async function render(container, route) {
         el('span', { class: 'legend-swatch', style: { background: entry.color } }),
         el('span', { text: entry.label }))),
       el('span', { class: 'legend-item' }, el('span', { text: '◆ マイルストーン' })),
+      meetingCache.list.length
+        ? el('span', { class: 'legend-item', title: '点を押すと、その回を中止・日にち変更できます' },
+          el('span', { style: { color: MEETING_COLOR }, text: '●' }),
+          el('span', { text: '定例（○ 中止・◌ 日にち変更）' }))
+        : null,
       el('span', { class: 'legend-item' },
         el('span', {
           class: 'legend-swatch',
@@ -510,6 +601,15 @@ export async function render(container, route) {
   }
 
   function visibleRows() {
+    const meetingsPart = meetingRows();
+    const tasksPart = taskRows();
+    if (meetingsPart.length && tasksPart.length) {
+      tasksPart[0] = { ...tasksPart[0], separator: true };
+    }
+    return [...meetingsPart, ...tasksPart];
+  }
+
+  function taskRows() {
     const tasks = filteredTasks();
     const { children } = buildTree(tasks);
     if (state.mode === 'roadmap') {
@@ -665,12 +765,19 @@ export async function render(container, route) {
     if (row.group) {
       if (collapsedGroups.has(row.groupId)) collapsedGroups.delete(row.groupId);
       else collapsedGroups.add(row.groupId);
+      if (row.groupId === 'meetings') saveMeetingFold();
     } else {
       if (collapsed.has(row.task.id)) collapsed.delete(row.task.id);
       else collapsed.add(row.task.id);
       saveCollapsed(projectId, collapsed);
     }
     draw();
+  }
+
+  function saveMeetingFold() {
+    try {
+      localStorage.setItem(MEETING_FOLD_KEY, collapsedGroups.has('meetings') ? '1' : '0');
+    } catch { /* private */ }
   }
 
   /** そのタスクの配下にある「回」の期限。たたんだ行に並べる印に使う。 */
@@ -816,6 +923,7 @@ export async function render(container, route) {
     // 期間は、案件ごとの行に並べる節目も含めて決める
     const range = dateRange(rows, allMilestones());
     ensureHolidays(range).then((changed) => { if (changed) draw(); });
+    ensureMeetings(range).then((changed) => { if (changed) draw(); });
     const roadmap = state.mode === 'roadmap';
     syncRangeInputs(range);
     const svg = buildGanttSvg({
@@ -827,6 +935,9 @@ export async function render(container, route) {
       roadmap, milestones, holidays: holidayMap, labels: state.labels,
       onCreate: canEdit && !overview ? addTask : null, onOpenTask: openTask,
       onToggleRow: toggleRow,
+      // 定例の名前を押すと編集、点を押すとその回の中止・日にち変更
+      onMeeting: overview ? null : (meeting) => { if (meeting.can_edit) editMeeting(meeting); },
+      onOccurrence: editOccurrence,
     });
     drawLegend();
     // 描き直すと横位置が先頭に戻ってしまうので、見ていた位置を持ち越す。
@@ -972,7 +1083,7 @@ export function buildGanttSvg({
   title = null, subtitle = null, editable = false, onEdit = null, scroller = null,
   nameWidth = NAME_W_DEFAULT, interactive = false, forExport = false,
   roadmap = false, milestones = [], holidays = null, onCreate = null, onOpenTask = null,
-  labels = null, onToggleRow = null,
+  labels = null, onToggleRow = null, onMeeting = null, onOccurrence = null,
 }) {
   const colorOf = (COLOR_MODES[colorBy] || COLOR_MODES.status).color;
   // 呼び出し側が渡してくれば、閉じたときにチャートを引き直せる
@@ -1282,6 +1393,111 @@ export function buildGanttSvg({
     return g;
   }
 
+  /**
+   * 定例会議の 1 行。開催日に丸を打ち、最初と最後の回を細い線で結ぶ。
+   * 済んだ回は薄く、中止は白抜きに斜線、日にちを変えた回は外側に輪を付ける。
+   */
+  function drawMeetingRow(row, y) {
+    const { meeting, color } = row;
+    // 全体ガントでは、どの案件の会議かを名前の前の色で示す
+    const indent = PAD + 8 + (row.depth || 0) * 12 + (row.projectName ? 12 : 0);
+    if (row.projectName) {
+      namesG.appendChild(svgEl('circle', {
+        cx: indent - 8, cy: y + rowH / 2, r: 3.5, fill: color,
+      }));
+    }
+    const room = nameWidth - (indent - PAD) - 12;
+    const summary = meeting.summary || '';
+    // 説明（毎週 火 10:00）は、名前を詰めすぎない範囲で右に添える
+    const summaryChars = room > 150 ? Math.min(summary.length, Math.floor((room - 60) / 10)) : 0;
+    const nameChars = Math.max(4, Math.floor((room - summaryChars * 10 - 8) / 12));
+    const nameNode = svgEl('text', {
+      x: indent, y: y + rowH / 2 + 4, 'font-size': 11.5, fill: colors.text,
+      text: truncate(meeting.title, nameChars),
+    });
+    nameNode.appendChild(svgEl('title', {
+      text: `${row.projectName ? `${row.projectName} / ` : ''}${meeting.title}\n${summary}`
+        + (interactive && meeting.can_edit && onMeeting ? '\n（押すと決まりを編集）' : ''),
+    }));
+    namesG.appendChild(nameNode);
+    if (summaryChars) {
+      namesG.appendChild(svgEl('text', {
+        x: PAD + nameWidth - 8, y: y + rowH / 2 + 4, 'font-size': 10, 'text-anchor': 'end',
+        fill: colors.muted, text: truncate(summary, summaryChars),
+      }));
+    }
+    if (interactive && onMeeting && meeting.can_edit) {
+      nameNode.style.cursor = 'pointer';
+      nameNode.addEventListener('click', () => onMeeting(meeting));
+    }
+
+    rowsG.appendChild(svgEl('line', {
+      x1: originX, y1: y + rowH, x2: PAD + nameWidth + chartW, y2: y + rowH,
+      stroke: colors.grid, 'stroke-width': 1,
+    }));
+
+    const cy = y + rowH / 2;
+    const r = Math.max(3, Math.min(5.5, dayWidth * 0.42));
+    const shown = (meeting.occurrences || []).filter((o) => {
+      const date = parseDate(o.date);
+      return date && date >= range.from && date <= range.to;
+    });
+    if (!shown.length) return;
+    const g = svgEl('g', { class: 'gantt-meeting' });
+    const live = shown.filter((o) => o.status !== 'cancelled');
+    if (live.length > 1) {
+      g.appendChild(svgEl('line', {
+        x1: x(parseDate(live[0].date)) + dayWidth / 2, y1: cy,
+        x2: x(parseDate(live[live.length - 1].date)) + dayWidth / 2, y2: cy,
+        stroke: color, 'stroke-width': 1.5, opacity: 0.28,
+      }));
+    }
+    const todayDate = today();
+    for (const occurrence of shown) {
+      const date = parseDate(occurrence.date);
+      const cx = x(date) + dayWidth / 2;
+      const past = date < todayDate;
+      const node = svgEl('g', { opacity: past ? 0.45 : 1 });
+      if (occurrence.status === 'cancelled') {
+        node.appendChild(svgEl('circle', {
+          cx, cy, r, fill: forExport ? '#ffffff' : 'var(--surface)',
+          stroke: colors.muted, 'stroke-width': 1.3,
+        }));
+        node.appendChild(svgEl('line', {
+          x1: cx - r * 0.7, y1: cy + r * 0.7, x2: cx + r * 0.7, y2: cy - r * 0.7,
+          stroke: colors.muted, 'stroke-width': 1.3,
+        }));
+      } else {
+        node.appendChild(svgEl('circle', {
+          cx, cy, r, fill: color,
+          stroke: forExport ? '#ffffff' : 'var(--surface)', 'stroke-width': 1,
+        }));
+        if (occurrence.status === 'moved') {
+          node.appendChild(svgEl('circle', {
+            cx, cy, r: r + 2.6, fill: 'none', stroke: color, 'stroke-width': 1.2,
+            'stroke-dasharray': '2 1.6',
+          }));
+        }
+      }
+      // 小さな丸だけだと押しにくいので、当たり判定を広げておく
+      const hit = svgEl('rect', {
+        x: cx - Math.max(r + 3, dayWidth / 2), y: y + 2,
+        width: Math.max((r + 3) * 2, dayWidth), height: rowH - 4, fill: 'transparent',
+      });
+      node.appendChild(hit);
+      node.appendChild(svgEl('title', {
+        text: occurrenceTitle(meeting, occurrence, row.projectName)
+          + (interactive && meeting.can_edit && onOccurrence ? '\n（押すと中止・日にち変更）' : ''),
+      }));
+      if (interactive && onOccurrence && meeting.can_edit) {
+        node.style.cursor = 'pointer';
+        node.addEventListener('click', () => onOccurrence(meeting, occurrence));
+      }
+      g.appendChild(node);
+    }
+    rowsG.appendChild(g);
+  }
+
   rows.forEach((row, index) => {
     const y = originY + index * rowH;
 
@@ -1326,6 +1542,11 @@ export function buildGanttSvg({
       if (row.milestones?.length && !row.collapsed) {
         rowsG.appendChild(milestoneMarks(row.milestones, y, rowH));
       }
+      return;
+    }
+
+    if (row.meeting) {
+      drawMeetingRow(row, y);
       return;
     }
 

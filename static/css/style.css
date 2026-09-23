@@ -1599,3 +1599,8 @@ input[type="color"].input {
   margin: 10px 15px 14px; width: calc(100% - 30px);
   color: var(--text-muted); font-weight: 600;
 }
+
+/* 定例のフォーム：入力に合わせて出す「次の開催」 */
+.meeting-preview { margin-top: 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); }
+.meeting-preview:empty { display: none; }
+.meeting-preview.error { color: var(--danger, #e14c4c); }
