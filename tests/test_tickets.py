@@ -8,6 +8,7 @@ import os
 import sys
 import unittest
 import uuid
+from urllib.parse import quote
 from datetime import timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1154,6 +1155,103 @@ class TestTicketPaging(TicketTestCase):
         self.assertEqual(data["tickets"], [])
         self.assertFalse(data["has_more"])
 
+
+class TestQueueVisibility(TicketTestCase):
+    """「メンバーだけ」にした窓口が、どの入口からも漏れないこと。
+
+    チケットは既定では社内の誰でも読める。プロジェクトに紐づけた窓口は
+    「タスク化の行き先」を決めるだけで見える範囲は変えないため、
+    閉じたい窓口には visibility='project' を立てる。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.secret = self.make_project("部外秘 {}".format(uuid.uuid4().hex[:6]))
+        self.closed = self.make_queue("部外秘の窓口", project_id=self.secret["id"],
+                                      visibility="project")
+        self.ticket = self.make_ticket("社外秘の相談", queue_id=self.closed["id"],
+                                       body="見えてはいけない本文")
+        user, email = self.make_user("部外者")
+        self.outsider = self.client_for(email)
+        member, m_email = self.make_user("中の人")
+        self.admin.put("/api/projects/{}/members".format(self.secret["id"]), {
+            "members": [{"principal_type": "user", "principal_id": member["id"],
+                         "role": "editor"}]})
+        self.insider = self.client_for(m_email)
+
+    def test_an_outsider_sees_nothing_anywhere(self):
+        blob = str(self.outsider.get("/api/tickets")[1])
+        self.assertNotIn("社外秘の相談", blob)
+        self.assertNotIn("部外秘の窓口", str(self.outsider.get("/api/ticket-queues")[1]))
+        self.assertEqual(self.outsider.get("/api/tickets/{}".format(self.ticket["id"]))[0], 404)
+        self.assertNotIn("社外秘の相談",
+                         str(self.outsider.get("/api/search?q=" + quote("社外秘"))[1]))
+        self.assertNotIn("社外秘の相談",
+                         str(self.outsider.get("/api/tickets?queue_id={}".format(
+                             self.closed["id"]))[1]))
+
+    def test_an_outsider_cannot_write_to_it_either(self):
+        path = "/api/tickets/{}".format(self.ticket["id"])
+        self.assertEqual(self.outsider.patch(path, {"title": "書き換え"})[0], 404)
+        self.assertEqual(self.outsider.post(path + "/comments", {"body": "のぞき見"})[0], 404)
+        self.assertEqual(self.outsider.delete(path)[0], 404)
+
+    def test_a_member_sees_it(self):
+        self.assertIn("社外秘の相談", str(self.insider.get("/api/tickets")[1]))
+        status, data = self.insider.get("/api/tickets/{}".format(self.ticket["id"]))
+        self.assertEqual(status, 200)
+        self.assertEqual(data["ticket"]["title"], "社外秘の相談")
+        self.assertEqual(self.insider.post(
+            "/api/tickets/{}/comments".format(self.ticket["id"]), {"body": "了解"})[0], 201)
+
+    def test_an_admin_sees_it(self):
+        self.assertIn("社外秘の相談", str(self.admin.get("/api/tickets")[1]))
+
+    def test_it_is_left_out_of_the_numbers(self):
+        """集計に混ぜない。数だけで中身を推測されないように。
+
+        DB はクラス単位でしか初期化されないので、絶対値ではなく
+        「閉じた窓口に 1 件足したときの増え方」で見る。
+        """
+        stats = "/api/tickets/stats?unit=day&span=7"
+        out_before = self.outsider.get(stats)[1]["totals"]["created"]
+        in_before = self.insider.get(stats)[1]["totals"]["created"]
+        self.make_ticket("もう 1 件の社外秘", queue_id=self.closed["id"])
+        self.assertEqual(self.outsider.get(stats)[1]["totals"]["created"], out_before)
+        self.assertEqual(self.insider.get(stats)[1]["totals"]["created"], in_before + 1)
+
+    def test_an_open_queue_is_still_visible_to_everyone(self):
+        """既定はこれまでどおり。閉じたのは明示した窓口だけ。"""
+        self.make_ticket("みんなの相談")          # setUp の既定窓口（visibility=all）
+        self.assertIn("みんなの相談", str(self.outsider.get("/api/tickets")[1]))
+
+    def test_closing_a_queue_needs_a_project(self):
+        status, data = self.admin.post("/api/ticket-queues", {
+            "name": "紐づけ無し {}".format(uuid.uuid4().hex[:6]), "visibility": "project"})
+        self.assertEqual(status, 400, data)
+        self.assertIn("プロジェクト", data["error"])
+
+    def test_the_link_cannot_be_dropped_while_it_is_closed(self):
+        """紐づけを外すと「メンバーだけ」が成り立たなくなるので止める。"""
+        status, data = self.admin.patch(
+            "/api/ticket-queues/{}".format(self.closed["id"]), {"project_id": None})
+        self.assertEqual(status, 400, data)
+
+    def test_deleting_the_project_leaves_it_closed_not_open(self):
+        """紐づけ先が消えたら、開くのではなく閉じたままにする。
+
+        project_id は消えると NULL になる。ここで「メンバーだけ」が
+        無効になって全員に見えてしまうと、いちばんまずい方向に倒れる。
+        """
+        self.admin.delete("/api/projects/{}".format(self.secret["id"]))
+        self.assertNotIn("社外秘の相談", str(self.outsider.get("/api/tickets")[1]))
+        self.assertNotIn("社外秘の相談", str(self.insider.get("/api/tickets")[1]))
+        # 管理者だけは見えるので、片付けられる
+        self.assertIn("社外秘の相談", str(self.admin.get("/api/tickets")[1]))
+
+    def test_the_default_stays_open(self):
+        queue = self.make_queue("既定の窓口")
+        self.assertEqual(queue["visibility"], "all")
 
 class TestTicketSearch(TicketTestCase):
     def test_a_ticket_turns_up_in_the_global_search(self):

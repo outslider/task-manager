@@ -168,6 +168,9 @@ DDL = [
         color       VARCHAR(20)  NOT NULL DEFAULT '#3b6ef5',
         icon        VARCHAR(8)   NOT NULL DEFAULT '',
         project_id  INT NULL,                          -- 特定プロジェクト専用の窓口にする場合
+        -- all: 社内の誰でも読める（既定） / project: 紐づけたプロジェクトの
+        -- メンバーだけが読める。後者は project_id が必須。
+        visibility  VARCHAR(10)  NOT NULL DEFAULT 'all',
         default_kind VARCHAR(20) NOT NULL DEFAULT 'request',  -- 起票時に最初から選ばれる種別
         sort_order  INT          NOT NULL DEFAULT 0,
         is_active   TINYINT(1)   NOT NULL DEFAULT 1,
@@ -668,6 +671,9 @@ MIGRATIONS = [
      "ALTER TABLE users ADD COLUMN nav_order VARCHAR(300) NOT NULL DEFAULT ''"),
     ("todos", "recurrence_id",
      "ALTER TABLE todos ADD COLUMN recurrence_id INT NULL AFTER sort_order"),
+    ("ticket_queues", "visibility",
+     "ALTER TABLE ticket_queues ADD COLUMN visibility VARCHAR(10) NOT NULL DEFAULT 'all' "
+     "AFTER project_id"),
     ("tasks", "estimate_hours",
      "ALTER TABLE tasks ADD COLUMN estimate_hours DECIMAL(6,1) NULL AFTER progress"),
     ("tasks", "actual_hours",

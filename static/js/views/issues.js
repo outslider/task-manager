@@ -17,7 +17,8 @@ import { openIssueDetail } from './issueDetail.js';
 export async function render(container, route) {
   const projectId = route.projectId || null;
   const project = projectId ? (await api.project(projectId)).project : null;
-  const state = { status: 'open', category: '', owner_id: '', q: '', min_severity: '' };
+  const state = { status: 'open', category: '', owner_id: '', q: '', min_severity: '',
+    project_id: '' };
   let data = { issues: [], summary: {} };
   let loaded = [];
 
@@ -55,6 +56,14 @@ export async function render(container, route) {
     onChange: (event) => { state.owner_id = event.target.value; load(); },
   }, option('', '対応者: すべて'), option('me', '自分の担当'), option('none', '未割当'),
   ...store.users.map((u) => option(u.id, u.name)));
+  // 横断一覧はどのプロジェクトの課題か分かりにくいので、ここで絞れるようにする
+  const projectFilter = projectId ? null : el('select', {
+    class: 'select', style: { maxWidth: '190px' },
+    onChange: (event) => { state.project_id = event.target.value; load(); },
+  }, option('', 'プロジェクト: すべて'),
+  ...store.projects.filter((p) => !p.archived)
+    .map((p) => option(p.id, p.name)));
+
   const severityFilter = el('select', {
     class: 'select', style: { maxWidth: '140px' },
     onChange: (event) => { state.min_severity = event.target.value; load(); },
@@ -70,7 +79,7 @@ export async function render(container, route) {
     summaryHost,
     el('div', { class: 'card' },
       el('div', { class: 'toolbar' },
-        search, statusFilter, categoryFilter, ownerFilter, severityFilter),
+        search, projectFilter, statusFilter, categoryFilter, ownerFilter, severityFilter),
       head,
       el('div', { class: 'card-body tight' }, rowsHost)));
 
@@ -87,7 +96,10 @@ export async function render(container, route) {
       status: state.status, category: state.category, owner_id: state.owner_id,
       q: state.q, min_severity: state.min_severity,
     };
-    if (!projectId) query.offset = append ? loaded.length : 0;
+    if (!projectId) {
+      query.offset = append ? loaded.length : 0;
+      if (state.project_id) query.project_id = state.project_id;
+    }
     data = projectId
       ? await api.get(`/api/projects/${projectId}/issues`, query)
       : await api.get('/api/issues', query);

@@ -868,6 +868,29 @@ async function renderQueues(container) {
         .map((p) => el('option', {
           value: p.id, selected: String(queue?.project_id || '') === String(p.id) ? true : null,
         }, p.name)));
+    // 誰が読めるか。「メンバーだけ」はプロジェクトの紐づけが要る。
+    const visibility = el('select', { class: 'select' },
+      el('option', { value: 'all',
+        selected: (queue?.visibility || 'all') === 'all' ? true : null },
+      '社内の誰でも見られる'),
+      el('option', { value: 'project',
+        selected: queue?.visibility === 'project' ? true : null },
+      '紐づけたプロジェクトのメンバーだけ'));
+    const visNote = el('div', { class: 'hint' });
+    const syncVis = () => {
+      const limited = visibility.value === 'project';
+      visNote.textContent = limited
+        ? (project.value
+          ? 'この窓口のチケットは、そのプロジェクトのメンバー（と管理者）だけに見えます。'
+            + '一覧・検索・集計のどこにも出ません。'
+          : '⚠ 先に上でプロジェクトを選んでください。')
+        : 'この窓口のチケットは、ログインしている人なら誰でも読めます。';
+      visNote.style.color = limited && !project.value ? 'var(--danger)' : '';
+    };
+    visibility.addEventListener('change', syncVis);
+    project.addEventListener('change', syncVis);
+    syncVis();
+
     const color = el('input', { type: 'color', class: 'input', value: queue?.color || '#3b6ef5' });
     const order = el('input', { class: 'input', type: 'number', step: '10' });
     order.value = String(queue?.sort_order ?? 0);
@@ -883,7 +906,9 @@ async function renderQueues(container) {
           el('label', { text: 'プロジェクト' }), project,
           el('div', { class: 'hint',
             text: '紐づけると、この窓口のチケットを「タスクにする」とき、'
-              + 'そのプロジェクトが最初から選ばれます。誰が読めるかは変わりません。' })),
+              + 'そのプロジェクトが最初から選ばれます。' })),
+        el('div', { class: 'field' },
+          el('label', { text: '誰が見られるか' }), visibility, visNote),
         el('div', { class: 'field' },
           el('label', { text: '起票したときの種別' }), defaultKind,
           el('div', { class: 'hint', text: 'この窓口で最初から選ばれている種別です' })),
@@ -908,11 +933,16 @@ async function renderQueues(container) {
               name: name.value.trim(), description: description.value.trim(),
               icon: icon.value(), color: color.value,
               project_id: project.value ? Number(project.value) : null,
+              visibility: visibility.value,
               default_kind: defaultKind.value,
               categories: cats.filter((c) => c.label.trim()),
               sort_order: Number(order.value) || 0, is_active: active.checked,
             };
             if (!payload.name) { toast('窓口名を入れてください', 'error'); return; }
+            if (payload.visibility === 'project' && !payload.project_id) {
+              toast('「メンバーだけ」にするには、プロジェクトを選んでください', 'error');
+              return;
+            }
             try {
               if (queue) await api.patch(`/api/ticket-queues/${queue.id}`, payload);
               else await api.post('/api/ticket-queues', payload);
