@@ -140,9 +140,14 @@ export function defaultNavOrder() {
   return NAV.map((item) => item.id);
 }
 
+// 左メニューに並べるプロジェクトの数。これを超えた分は「ほか N 件」にまとめる
+const SIDEBAR_PROJECTS = 12;
+
 function renderSidebar() {
   const active = (location.hash || '#/daily');
-  const projects = store.projects.filter((p) => !p.archived).slice(0, 12);
+  const live = store.projects.filter((p) => !p.archived);
+  const projects = live.slice(0, SIDEBAR_PROJECTS);
+  const more = live.length - projects.length;
   fill(shell.sidebar, 
     brandLockup('md'),
     el('div', { class: 'sidebar-section' },
@@ -157,8 +162,13 @@ function renderSidebar() {
         ? el('div', { class: 'hint', style: { padding: '4px 10px' },
           text: 'プロジェクトがありません' })
         : null,
-      el('a', { class: 'nav-item', href: '#/projects', onClick: () => toggleSidebar(false) },
-        el('span', { class: 'ico' }, icon('plus')), 'すべて表示')),
+      // 並びきらないときだけ出す。いつも出ていると、隠れているものがあるように見えるため
+      more > 0
+        ? el('a', {
+          class: 'nav-item', href: '#/projects', title: 'プロジェクト一覧ですべて見る',
+          onClick: () => toggleSidebar(false),
+        }, el('span', { class: 'ico' }, icon('list')), `ほか ${more} 件`)
+        : null),
     store.isAdmin()
       ? el('div', { class: 'sidebar-section' },
         el('div', { class: 'sidebar-title', text: '管理' }),
