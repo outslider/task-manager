@@ -191,16 +191,34 @@ class TestHeadings(ApiTestCase):
         status, data = self.admin.post("/api/tasks/bulk", {"ids": ids, "action": "delete"})
         self.assertEqual((status, data["deleted"]), (200, 2))
 
+    def test_heading_levels(self):
+        self.assertEqual(self.heading["heading_level"], 1)
+        small = self.make_heading("小見出し", heading_level=3)
+        self.assertEqual(small["heading_level"], 3)
+        url = "/api/tasks/{}".format(small["id"])
+        status, data = self.admin.patch(url, {"heading_level": 2})
+        self.assertEqual((status, data["task"]["heading_level"]), (200, 2))
+        for bad in (0, 4, "x"):
+            self.assertEqual(self.admin.patch(url, {"heading_level": bad})[0], 400, bad)
+            status, _ = self.admin.post("/api/tasks", {
+                "project_id": self.pid, "title": "x", "is_heading": True, "heading_level": bad})
+            self.assertEqual(status, 400, bad)
+        # 段を持てるのは見出しだけ
+        self.assertEqual(self.admin.patch("/api/tasks/{}".format(self.task["id"]),
+                                          {"heading_level": 2})[0], 400)
+        rows = self.admin.get("/api/gantt?project_ids={}".format(self.pid))[1]["tasks"]
+        self.assertEqual(next(t for t in rows if t["id"] == small["id"])["heading_level"], 2)
+
     def test_duplicate_and_templates_keep_headings(self):
         parent = self.make_task(self.pid, title="まとまり")
-        self.make_heading("まとまりの見出し", parent_id=parent["id"])
+        self.make_heading("まとまりの見出し", parent_id=parent["id"], heading_level=2)
         self.make_task(self.pid, title="まとまりの作業", parent_id=parent["id"])
         status, data = self.admin.post("/api/tasks/{}/duplicate".format(parent["id"]), {})
         self.assertEqual(status, 201, data)
-        copies = db.query("SELECT title, is_heading FROM tasks WHERE parent_id=%s "
+        copies = db.query("SELECT title, is_heading, heading_level FROM tasks WHERE parent_id=%s "
                           "ORDER BY sort_order", (data["task"]["id"],))
-        self.assertEqual([(c["title"], c["is_heading"]) for c in copies],
-                         [("まとまりの見出し", 1), ("まとまりの作業", 0)])
+        self.assertEqual([(c["title"], c["is_heading"], c["heading_level"]) for c in copies],
+                         [("まとまりの見出し", 1, 2), ("まとまりの作業", 0, 1)])
 
 
 if __name__ == "__main__":

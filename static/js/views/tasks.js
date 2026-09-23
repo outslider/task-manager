@@ -9,6 +9,7 @@ import {
   avatar, clear, confirmDialog, debounce, dueClass, dueLabel, el, fill, formatDate, toast,
 } from '../util.js';
 import { iconLabel } from '../icons.js';
+import { HEADING_LEVEL_LABEL, headingLevel, sectionize } from '../outline.js';
 import { openTaskForm } from './taskForm.js';
 import { categoryChip } from './pickers.js';
 import { openTaskDetail } from './taskDetail.js';
@@ -46,51 +47,30 @@ export function buildTree(tasks) {
   return { byId, children };
 }
 
-/**
- * 兄弟の並びを見出しで区切る。見出しをたたんでいれば、次の見出しまでを隠す。
- * keep（残すタスクの id）を渡すと、中身が 1 件も残らない見出しは出さない。
- * 絞り込んだときに、空の区切りだけが並ぶのを避けるため。
- * @returns {Array<{task, heading?: true, count?: number}>}
- */
-export function sectionize(list, collapsed, keep = null, pinned = null) {
-  const sections = [{ heading: null, items: [] }];
-  for (const task of list) {
-    if (task.is_heading) sections.push({ heading: task, items: [] });
-    else sections[sections.length - 1].items.push(task);
-  }
-  const out = [];
-  for (const { heading, items } of sections) {
-    const shown = keep ? items.filter((t) => keep.has(t.id)) : items;
-    if (heading) {
-      // pinned は中身が空でも出す見出し（ガントで定例会議を置いてあるもの）
-      if (keep && !shown.length && !pinned?.has(heading.id)) continue;
-      out.push({ task: heading, heading: true, count: shown.length });
-      if (collapsed.has(heading.id)) continue;
-    }
-    out.push(...shown.map((task) => ({ task })));
-  }
-  return out;
-}
+// 見出しで区切る計算はガントと共通なので outline.js に置いてある
+export { sectionize } from '../outline.js';
 
 /** Depth-first list of {task, depth, hasChildren} honouring the collapsed set. */
 export function flattenTree(tasks, collapsed = new Set(), filter = null) {
   const { children } = buildTree(tasks);
   const keep = filter ? new Set(matchingWithAncestors(tasks, filter)) : null;
   const out = [];
-  const walk = (parentId, depth) => {
+  // outline は、その行を囲む見出しの数（親の分も足し込む）。字下げに使う
+  const walk = (parentId, depth, base) => {
     for (const entry of sectionize(children.get(parentId) || [], collapsed, keep)) {
       const { task } = entry;
+      const outline = base + entry.outline;
       if (entry.heading) {
-        out.push({ task, depth, heading: true, count: entry.count,
-          collapsed: collapsed.has(task.id) });
+        out.push({ task, depth, outline, heading: true, level: entry.level,
+          count: entry.count, collapsed: collapsed.has(task.id) });
         continue;
       }
       const kids = sectionize(children.get(task.id) || [], new Set(), keep);
-      out.push({ task, depth, hasChildren: kids.length > 0 });
-      if (kids.length && !collapsed.has(task.id)) walk(task.id, depth + 1);
+      out.push({ task, depth, outline, hasChildren: kids.length > 0 });
+      if (kids.length && !collapsed.has(task.id)) walk(task.id, depth + 1, outline);
     }
   };
-  walk(null, 0);
+  walk(null, 0, 0);
   return out;
 }
 
@@ -379,7 +359,7 @@ export async function render(container, route) {
         : null));
   }
 
-  function taskRow({ task, depth, hasChildren }) {
+  function taskRow({ task, depth, hasChildren, outline = 0 }) {
     const isDone = task.status === 'done';
     const twisty = el('button', {
       class: `twisty${hasChildren ? '' : ' leaf'}${collapsed.has(task.id) ? '' : ' open'}`,
@@ -409,7 +389,7 @@ export async function render(container, route) {
         openTaskDetail(task.id, { onChange: reload });
       },
     },
-    el('div', { class: 'task-main', style: { paddingLeft: `${depth * 16}px` } },
+    el('div', { class: 'task-main', style: { paddingLeft: `${depth * 16 + outline * 14}px` } },
       canEdit ? el('input', {
         type: 'checkbox', class: 'task-pick', title: 'まとめて編集する対象に選ぶ',
         checked: state.picked.has(task.id) ? true : null,
@@ -480,9 +460,9 @@ export async function render(container, route) {
    * 見出しの行。区切りの帯として描き、押すと次の見出しまでをたたむ。
    * 状態・担当・期限・進捗の欄は持たないので、帯を横いっぱいに伸ばす。
    */
-  function headingRow({ task, depth, count, collapsed: folded }) {
+  function headingRow({ task, depth, count, level = 1, outline = 0, collapsed: folded }) {
     const row = el('div', {
-      class: 'task-row is-heading',
+      class: `task-row is-heading level-${level}`,
       draggable: canEdit ? 'true' : null,
       dataset: { id: String(task.id) },
       title: folded ? 'クリックで開く' : 'クリックでたたむ',
@@ -492,7 +472,8 @@ export async function render(container, route) {
         draw();
       },
     },
-    el('div', { class: 'task-main heading-main', style: { paddingLeft: `${depth * 16}px` } },
+    el('div', { class: 'task-main heading-main',
+      style: { paddingLeft: `${depth * 16 + outline * 14}px` } },
       canEdit ? el('span', {
         class: 'drag-handle', title: 'ドラッグで動かせます',
         onClick: (event) => event.stopPropagation(),
@@ -512,8 +493,12 @@ export async function render(container, route) {
   }
 
   function headingMenu(anchor, task) {
+    const current = headingLevel(task);
     popupMenu(anchor, (item) => [
       item('✏️ 名前を変える', () => renameHeading(task)),
+      ...[1, 2, 3].filter((level) => level !== current).map((level) => item(
+        `${level < current ? '⇤' : '⇥'} ${HEADING_LEVEL_LABEL[level]}にする`,
+        () => setHeadingLevel(task, level))),
       ...hierarchyMenuItems(task, item).filter((node) => !/子タスク|親タスク/.test(node.textContent)),
       item('＋ この下にタスクを追加', () => addTaskAfter(task)),
       item('🗑 見出しを削除', async () => {
@@ -527,6 +512,13 @@ export async function render(container, route) {
         });
       }, true),
     ]);
+  }
+
+  async function setHeadingLevel(task, level) {
+    try {
+      await api.patch(`/api/tasks/${task.id}`, { heading_level: level });
+      reload();
+    } catch (error) { toast(error.message, 'error'); }
   }
 
   async function renameHeading(task) {
@@ -544,20 +536,64 @@ export async function render(container, route) {
    * 渡さなければ、いちばん下に足す。
    */
   async function addHeading(after) {
-    const { promptDialog } = await import('../util.js');
-    const title = await promptDialog({
-      title: '見出しを追加', label: '見出しの名前', placeholder: '例）準備、本番、振り返り',
-    });
-    if (!title || !title.trim()) return;
+    const chosen = await headingDialog(after ? governingLevel(after) : 1);
+    if (!chosen) return;
+    const title = chosen.title;
     try {
       const created = await api.post('/api/tasks', {
-        project_id: projectId, title: title.trim(), is_heading: true,
+        project_id: projectId, title, is_heading: true, heading_level: chosen.level,
         parent_id: after?.parent_id ?? null,
       });
       if (after) await placeAfter(created.task, after);
       await reload();
-      toast(`見出し「${title.trim()}」を足しました`, 'ok');
+      toast(`見出し「${title}」を足しました`, 'ok');
     } catch (error) { toast(error.message, 'error'); }
+  }
+
+  /** その位置を囲んでいる見出しの段。同じ段で足すのがいちばん多いので、既定にする。 */
+  function governingLevel(task) {
+    const siblings = siblingsOf(data.tasks, task.parent_id ?? null);
+    for (let i = siblings.findIndex((t) => t.id === task.id); i >= 0; i -= 1) {
+      if (siblings[i].is_heading) return headingLevel(siblings[i]);
+    }
+    return 1;
+  }
+
+  /** 見出しの名前と段を聞く。 */
+  async function headingDialog(level) {
+    const { openModal } = await import('../util.js');
+    let picked = level;
+    const name = el('input', { class: 'input', maxlength: 300,
+      placeholder: '例）準備、本番、振り返り' });
+    const seg = el('div', { class: 'seg' }, ...[1, 2, 3].map((value) => el('button', {
+      type: 'button', class: value === picked ? 'active' : '',
+      onClick: (event) => {
+        picked = value;
+        [...seg.children].forEach((b) => b.classList.toggle('active', b === event.currentTarget));
+      },
+    }, HEADING_LEVEL_LABEL[value])));
+    const submit = (close) => {
+      const title = name.value.trim();
+      if (!title) { toast('見出しの名前を入れてください', 'error'); return; }
+      close({ title, level: picked });
+    };
+    return openModal({
+      title: '見出しを追加',
+      build: (close) => {
+        name.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' && !event.isComposing) submit(close);
+        });
+        return el('div', {},
+          el('div', { class: 'field' }, el('label', { text: '見出しの名前' }), name),
+          el('div', { class: 'field' }, el('label', { text: '段' }), seg,
+            el('div', { class: 'hint',
+              text: '大見出しの区切りは次の大見出しまで。中・小見出しはその中をさらに区切ります。' })));
+      },
+      footer: (close) => [
+        el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
+        el('button', { class: 'btn btn-primary', onClick: () => submit(close) }, '追加'),
+      ],
+    });
   }
 
   /** 作ったばかりの行を、target のすぐ下へ動かす。 */

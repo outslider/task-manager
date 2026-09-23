@@ -86,6 +86,11 @@ const MILESTONE_LANE_H = 44;   // 節目を並べる、チャート上部の専�
 const HEADER_H = 46;
 const PAD = 14;
 const NAME_W_DEFAULT = 250;
+// 見出しの中にある行を、見出し 1 段ぶん右に寄せる幅
+const OUTLINE_STEP = 10;
+// 見出しの段ごとの文字の大きさと帯の濃さ（1=大・2=中・3=小）
+const HEADING_FONT = { 1: 12.5, 2: 12, 3: 11.5 };
+const HEADING_BAND_OPACITY = { 1: 1, 2: 0.65, 3: 0.35 };
 // 定例会議の点の色。状態の色（灰・青・緑・赤）と紛れない紫にする
 const MEETING_COLOR = '#7c5cdb';
 const MEETING_FOLD_KEY = 'tm.gantt.meetingsFolded';
@@ -325,9 +330,9 @@ export async function render(container, route) {
   }
 
   /** タスクの直下に並べる定例の行。 */
-  function meetingRowsUnder(taskId, depth) {
+  function meetingRowsUnder(taskId, depth, outline = 0) {
     return (meetingsUnder.get(taskId) || []).map((meeting) => ({
-      meeting, depth, inGroup: true, color: MEETING_COLOR, projectName: '',
+      meeting, depth, outline, inGroup: true, color: MEETING_COLOR, projectName: '',
     }));
   }
 
@@ -660,13 +665,16 @@ export async function render(container, route) {
    * 見出しの行と、その区切りの先頭に置いた定例会議の行。
    * たたむ状態はタスク一覧と同じものを使う。
    */
-  function headingRows(entry, depth, extra = {}) {
+  function headingRows(entry, depth, extra = {}, base = 0) {
     const folded = collapsed.has(entry.task.id);
-    const under = meetingsUnder.get(entry.task.id) || [];
-    return [{
-      heading: true, task: entry.task, depth, count: entry.count,
-      collapsed: folded, separator: true, ...extra,
-    }, ...(folded ? [] : meetingRowsUnder(entry.task.id, depth))];
+    const outline = base + entry.outline;
+    const row = {
+      heading: true, task: entry.task, depth, count: entry.count, level: entry.level,
+      outline, collapsed: folded, separator: true, ...extra,
+    };
+    // 太い区切り線は大見出しだけ。中・小見出しまで太線にすると、線だらけになる
+    row.separator = row.separator && entry.level === 1;
+    return [row, ...(folded ? [] : meetingRowsUnder(entry.task.id, depth, outline + 1))];
   }
 
   /** 定例会議を置いてある見出しは、絞り込みで中身が空になっても出す。 */
@@ -693,9 +701,9 @@ export async function render(container, route) {
       return sectionize((children.get(null) || []).filter((task) => !task.is_milestone),
         collapsed, sectionKeep(tasks), pinnedHeadings())
         .flatMap((entry) => (entry.heading ? headingRows(entry, 0) : [{
-          task: entry.task, depth: 0,
+          task: entry.task, depth: 0, outline: entry.outline,
           hasChildren: (children.get(entry.task.id) || []).some((k) => !k.is_heading),
-        }, ...meetingRowsUnder(entry.task.id, 1)]));
+        }, ...meetingRowsUnder(entry.task.id, 1, entry.outline)]));
     }
     if (['assignee', 'category', 'project'].includes(state.group)) {
       return groupedRows(tasks);
@@ -704,19 +712,20 @@ export async function render(container, route) {
     // 階層のまま。折りたたんだ親の下は出さない
     const rows = [];
     const keep = sectionKeep(tasks);
-    const walk = (parentId, depth) => {
+    const walk = (parentId, depth, base = 0) => {
       for (const entry of sectionize(children.get(parentId) || [], collapsed, keep,
         pinnedHeadings())) {
         if (entry.heading) {
-          rows.push(...headingRows(entry, depth, { separator: rows.length > 0 }));
+          rows.push(...headingRows(entry, depth, { separator: rows.length > 0 }, base));
           continue;
         }
         const { task } = entry;
+        const outline = base + entry.outline;
         const kids = sectionize(children.get(task.id) || [], new Set(), keep);
         const folded = collapsed.has(task.id);
         const under = meetingsUnder.get(task.id) || [];
         rows.push({
-          task, depth, hasChildren: kids.length > 0, hasMeetings: under.length > 0,
+          task, depth, outline, hasChildren: kids.length > 0, hasMeetings: under.length > 0,
           collapsed: folded,
           // たたんだ親の行に、隠れている各回を記号で並べる（週次の打ち合わせなど）
           marks: folded && state.showMarks ? occurrenceDates(task.id) : null,
@@ -727,8 +736,8 @@ export async function render(container, route) {
           lead: state.group === 'phase' && depth === 0,
         });
         if (!folded) {
-          rows.push(...meetingRowsUnder(task.id, depth + 1));
-          walk(task.id, depth + 1);
+          rows.push(...meetingRowsUnder(task.id, depth + 1, outline));
+          walk(task.id, depth + 1, outline);
         }
       }
     };
@@ -769,14 +778,14 @@ export async function render(container, route) {
       if (folded) continue;
       for (const entry of sectionize(phases, collapsed, sectionKeep(items), pinnedHeadings())) {
         if (entry.heading) {
-          rows.push(...headingRows(entry, 1, { inGroup: true }));
+          rows.push(...headingRows(entry, 0, { inGroup: true }));
           continue;
         }
         const { task } = entry;
         rows.push({
-          task, depth: 0, inGroup: true,
+          task, depth: 0, inGroup: true, outline: entry.outline,
           hasChildren: (children.get(task.id) || []).some((k) => !k.is_heading),
-        }, ...meetingRowsUnder(task.id, 1));
+        }, ...meetingRowsUnder(task.id, 1, entry.outline));
       }
     }
     return rows;
@@ -839,25 +848,26 @@ export async function render(container, route) {
     const { children } = buildTree(tasks);
     const out = [];
     const keep = sectionKeep(tasks);
-    const walk = (parentId, depth) => {
+    const walk = (parentId, depth, base = 0) => {
       for (const entry of sectionize(children.get(parentId) || [], collapsed, keep,
         pinnedHeadings())) {
         if (entry.heading) {
-          out.push(...headingRows(entry, depth, { inGroup: true }));
+          out.push(...headingRows(entry, depth, { inGroup: true }, base));
           continue;
         }
         const { task } = entry;
+        const outline = base + entry.outline;
         const kids = sectionize(children.get(task.id) || [], new Set(), keep);
         const folded = collapsed.has(task.id);
         const under = meetingsUnder.get(task.id) || [];
         out.push({
-          task, depth, hasChildren: kids.length > 0, hasMeetings: under.length > 0,
+          task, depth, outline, hasChildren: kids.length > 0, hasMeetings: under.length > 0,
           collapsed: folded, inGroup: true,
           marks: folded && state.showMarks ? occurrenceDates(task.id) : null,
         });
         if (!folded) {
-          out.push(...meetingRowsUnder(task.id, depth + 1));
-          walk(task.id, depth + 1);
+          out.push(...meetingRowsUnder(task.id, depth + 1, outline));
+          walk(task.id, depth + 1, outline);
         }
       }
     };
@@ -1259,11 +1269,11 @@ export function buildGanttSvg({
   rows.forEach((row, index) => {
     const y = originY + index * rowH;
     if (row.heading) {
-      // 見出しは横いっぱいの帯。左端にアクセント色の縦線を置く
+      // 見出しは横いっぱいの帯。段が下がるほど帯を薄く、縦線を右に寄せる
       bands.appendChild(svgEl('rect', {
         x: PAD, y, width: nameWidth + chartW, height: rowH, fill: headingFill,
+        opacity: HEADING_BAND_OPACITY[row.level || 1],
       }));
-      bands.appendChild(svgEl('rect', { x: PAD, y, width: 4, height: rowH, fill: headingBar }));
     } else if (row.group) {
       // 区切り行は帯で塗り、担当者やカテゴリの色を左端に置く
       bands.appendChild(svgEl('rect', {
@@ -1449,8 +1459,16 @@ export function buildGanttSvg({
   rows.forEach((row, index) => {
     const y = originY + index * rowH;
     if (row.heading) {
-      namesG.appendChild(svgEl('rect', { x: PAD, y, width: nameWidth, height: rowH, fill: headingFill }));
-      namesG.appendChild(svgEl('rect', { x: PAD, y, width: 4, height: rowH, fill: headingBar }));
+      namesG.appendChild(svgEl('rect', { x: PAD, y, width: nameWidth, height: rowH, fill: colors.bg }));
+      namesG.appendChild(svgEl('rect', {
+        x: PAD, y, width: nameWidth, height: rowH, fill: headingFill,
+        opacity: HEADING_BAND_OPACITY[row.level || 1],
+      }));
+      namesG.appendChild(svgEl('rect', {
+        x: PAD + (row.outline || 0) * OUTLINE_STEP + (row.depth || 0) * 12, y,
+        width: row.level === 1 || !row.level ? 4 : 3, height: rowH, fill: headingBar,
+        opacity: row.level === 3 ? 0.6 : 1,
+      }));
     } else if (row.group) {
       namesG.appendChild(svgEl('rect', {
         x: PAD, y, width: nameWidth, height: rowH,
@@ -1524,7 +1542,8 @@ export function buildGanttSvg({
   function drawMeetingRow(row, y) {
     const { meeting, color } = row;
     // 全体ガントでは、どの案件の会議かを名前の前の色で示す
-    const indent = PAD + 8 + (row.depth || 0) * 12 + (row.projectName ? 12 : 0);
+    const indent = PAD + 8 + (row.depth || 0) * 12 + (row.outline || 0) * OUTLINE_STEP
+      + (row.projectName ? 12 : 0);
     if (row.projectName) {
       namesG.appendChild(svgEl('circle', {
         cx: indent - 8, cy: y + rowH / 2, r: 3.5, fill: color,
@@ -1625,13 +1644,15 @@ export function buildGanttSvg({
 
   /** 見出しの帯。名前と件数だけを書き、押すと次の見出しまでをたたむ。 */
   function drawHeadingRow(row, y) {
-    const x0 = PAD + 10 + (row.depth || 0) * 12;
+    const x0 = PAD + 10 + (row.depth || 0) * 12 + (row.outline || 0) * OUTLINE_STEP;
+    const level = row.level || 1;
     const twisty = svgEl('text', {
       x: x0, y: y + rowH / 2 + 4, 'font-size': 9, fill: colors.muted,
       text: row.collapsed ? '▶' : '▼',
     });
     const label = svgEl('text', {
-      x: x0 + 14, y: y + rowH / 2 + 4, 'font-size': 12, 'font-weight': 700, fill: colors.text,
+      x: x0 + 14, y: y + rowH / 2 + 4, 'font-size': HEADING_FONT[level],
+      'font-weight': level === 3 ? 600 : 700, fill: colors.text,
       text: truncate(row.task.title, Math.max(4, Math.floor((nameWidth - (x0 - PAD) - 60) / 12.5))),
     });
     label.appendChild(svgEl('title', { text: row.task.title }));
@@ -1711,13 +1732,15 @@ export function buildGanttSvg({
     const { task, depth, hasChildren } = row;
     // 子タスクが無くても、下に定例を置いていればたためる
     const foldable = hasChildren || row.hasMeetings;
-    const indent = PAD + 8 + depth * 12 + (foldable ? 12 : 0);
+    // outline は囲んでいる見出しの数。見出しの中にあることが字下げで分かるようにする
+    const lead = PAD + 8 + depth * 12 + (row.outline || 0) * OUTLINE_STEP;
+    const indent = lead + (foldable ? 12 : 0);
     const label = truncate(task.title, Math.max(4, Math.floor((nameWidth - (indent - PAD) - 34) / 12)));
 
     // 子を持つ行には開閉の三角を出す
     if (foldable && !roadmap) {
       const twisty = svgEl('text', {
-        x: PAD + 8 + depth * 12, y: y + rowH / 2 + 4, 'font-size': 9,
+        x: lead, y: y + rowH / 2 + 4, 'font-size': 9,
         fill: colors.muted, text: row.collapsed ? '▶' : '▼',
       });
       if (interactive && onToggleRow) {

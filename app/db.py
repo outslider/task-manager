@@ -97,6 +97,7 @@ DDL = [
         actual_hours   DECIMAL(6,1) NOT NULL DEFAULT 0, -- 実績工数（日次更新で積み上がる）
         is_milestone TINYINT(1)   NOT NULL DEFAULT 0,
         is_heading   TINYINT(1)   NOT NULL DEFAULT 0,  -- 見出し（区切りの帯）。作業ではない
+        heading_level TINYINT     NOT NULL DEFAULT 1,  -- 見出しの段（1=大・2=中・3=小）
         marker      VARCHAR(10)   NOT NULL DEFAULT '',   -- ガントで使う記号（空なら既定）
         sort_order   INT          NOT NULL DEFAULT 0,
         created_by   INT NULL,
@@ -748,6 +749,8 @@ MIGRATIONS = [
      "ALTER TABLE tasks ADD COLUMN marker VARCHAR(10) NOT NULL DEFAULT ''"),
     ("tasks", "is_heading",
      "ALTER TABLE tasks ADD COLUMN is_heading TINYINT(1) NOT NULL DEFAULT 0 AFTER is_milestone"),
+    ("tasks", "heading_level",
+     "ALTER TABLE tasks ADD COLUMN heading_level TINYINT NOT NULL DEFAULT 1 AFTER is_heading"),
     ("shared_links", "category",
      "ALTER TABLE shared_links ADD COLUMN category VARCHAR(40) NOT NULL DEFAULT ''"),
     ("projects", "notify_enabled",

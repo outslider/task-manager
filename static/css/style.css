@@ -746,6 +746,18 @@ button, input, select, textarea { font: inherit; color: inherit; }
   text-overflow: ellipsis; min-width: 0; }
 .heading-count { color: var(--text-muted); font-size: 11.5px; flex: none; }
 .task-row.is-heading .twisty { pointer-events: none; }
+/* 中・小見出しは、大見出しより控えめにする（帯を薄く、線を細く） */
+.task-row.is-heading.level-2 {
+  background: var(--surface-2); border-top-width: 1px;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.task-row.is-heading.level-2 .heading-title { font-size: 13px; }
+.task-row.is-heading.level-3 {
+  background: var(--surface); border-top: 1px dashed var(--border-strong);
+  box-shadow: inset 2px 0 0 var(--border-strong); min-height: 32px;
+}
+.task-row.is-heading.level-3 .heading-title { font-size: 12.5px; font-weight: 650; }
+.task-row.is-heading.level-2:hover, .task-row.is-heading.level-3:hover { filter: brightness(.98); }
 
 /* ---------- gantt ---------- */
 .gantt-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }

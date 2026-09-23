@@ -159,7 +159,18 @@ def task_or_404(user, task_id, minimum="viewer"):
 # タスクを数えたり並べたりする問い合わせには、この条件を付ける。
 NOT_HEADING = "t.is_heading=0"
 # 見出しで変えてよい項目。状態や日付を持たせると「作業」として扱われだすため
-HEADING_EDITABLE = {"title", "parent_id", "sort_order"}
+HEADING_EDITABLE = {"title", "parent_id", "sort_order", "heading_level"}
+# 見出しの段。1 が大見出しで、次の同じ段以上の見出しまでが区切りの範囲になる
+HEADING_LEVELS = (1, 2, 3)
+
+
+def heading_level(value, current=1):
+    if value in (None, ""):
+        return current
+    level = as_int(value)
+    if level not in HEADING_LEVELS:
+        raise bad_request("見出しの段は 1〜3 で指定してください")
+    return level
 
 
 def is_heading(task_id):
@@ -857,7 +868,7 @@ def list_project_tasks(ctx, project_id):
 GANTT_SELECT = """
     SELECT t.id, t.project_id, t.parent_id, t.title, t.status, t.priority, t.category,
            t.assignee_id, t.start_date, t.due_date, t.progress, t.estimate_hours,
-           t.is_milestone, t.is_heading, t.marker, t.sort_order
+           t.is_milestone, t.is_heading, t.heading_level, t.marker, t.sort_order
       FROM tasks t
       JOIN projects p ON p.id = t.project_id
 """
@@ -1104,8 +1115,10 @@ def _create_task(user, body):
     if as_bool(ctx.body.get("is_heading")):
         # 見出しは名前と置き場所だけ。ほかの項目は受け取っても入れない
         ctx = _Body({"project_id": project_id, "title": title, "parent_id": parent_id,
-                     "sort_order": ctx.body.get("sort_order"), "is_heading": True})
+                     "sort_order": ctx.body.get("sort_order"), "is_heading": True,
+                     "heading_level": heading_level(ctx.body.get("heading_level"))})
     heading = 1 if as_bool(ctx.body.get("is_heading")) else 0
+    level = heading_level(ctx.body.get("heading_level")) if heading else 1
     status, progress = _apply_status_progress(ctx.body, None)
     start_date = as_date(ctx.body.get("start_date"))
     due_date = as_date(ctx.body.get("due_date"))
@@ -1125,12 +1138,12 @@ def _create_task(user, body):
     task_id = db.insert(
         "INSERT INTO tasks(project_id, parent_id, title, description, category, status, "
         "priority, assignee_id, start_date, due_date, progress, estimate_hours, is_milestone, "
-        "is_heading, marker, sort_order, created_by, created_at, updated_at, completed_at) "
-        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "is_heading, heading_level, marker, sort_order, created_by, created_at, updated_at, "
+        "completed_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (project_id, parent_id, title, ctx.body.get("description", ""),
          normalize_category(ctx.body.get("category")), status,
          as_int(ctx.body.get("priority"), 1, 0, 3), assignee_id, start_date, due_date,
-         progress, as_hours(ctx.body.get("estimate_hours")), is_milestone, heading,
+         progress, as_hours(ctx.body.get("estimate_hours")), is_milestone, heading, level,
          normalize_marker(ctx.body.get("marker")), sort_order,
          user["id"], now, now, now if status == "done" else None))
     if "depends_on" in ctx.body:
@@ -1228,7 +1241,12 @@ def update_task(ctx, task_id):
     body = ctx.body
     fields, params, notes = [], [], []
     if current["is_heading"] and set(body) - HEADING_EDITABLE:
-        raise bad_request("見出しで変えられるのは名前と置き場所だけです")
+        raise bad_request("見出しで変えられるのは名前・段・置き場所だけです")
+    if "heading_level" in body:
+        if not current["is_heading"]:
+            raise bad_request("段を持てるのは見出しだけです")
+        fields.append("heading_level=%s")
+        params.append(heading_level(body["heading_level"], current["heading_level"]))
 
     if "title" in body:
         title = require(body, "title", "タスク名")
@@ -2778,9 +2796,9 @@ def place_template(project_id, parent_id, body, start, user_id, rename_root=None
             task_id = db.insert(
                 "INSERT INTO tasks(project_id, parent_id, title, description, category, "
                 "status, priority, assignee_id, start_date, due_date, progress, "
-                "estimate_hours, is_milestone, is_heading, marker, sort_order, created_by, "
-                "created_at, updated_at) "
-                "VALUES(%s,%s,%s,%s,%s,'todo',%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "estimate_hours, is_milestone, is_heading, heading_level, marker, sort_order, "
+                "created_by, created_at, updated_at) "
+                "VALUES(%s,%s,%s,%s,%s,'todo',%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (project_id, parent, title[:300], item.get("description") or "",
                  normalize_category(item.get("category"), ""),
                  as_int(item.get("priority"), 1, 0, 3),
@@ -2788,6 +2806,7 @@ def place_template(project_id, parent_id, body, start, user_id, rename_root=None
                  item.get("assignee_id"), begin, due,
                  as_hours(item.get("estimate_hours")),
                  1 if item.get("is_milestone") else 0, 1 if item.get("is_heading") else 0,
+                 as_int(item.get("heading_level"), 1, 1, 3),
                  (item.get("marker") or "")[:10], order, user_id, now, now))
             created.append(task_id)
             # 番号の並びを templates.build と揃えるため、兄弟より先に子へ降りる
