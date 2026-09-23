@@ -1947,14 +1947,22 @@ LINK_SELECT = """
 """
 
 
+def can_edit_shared_link(user, link):
+    """全体のリンクは誰でも置けるが、直せる・消せるのは置いた本人と管理者だけ。
+
+    全員の画面に出るものなので、他人が置いたものを誰でも書き換えられると困る。
+    """
+    return auth.is_admin(user) or (link.get("created_by") == user["id"])
+
+
 def link_or_404(user, link_id, write=False):
     link = db.query_one(LINK_SELECT + " WHERE l.id=%s", (link_id,))
     if not link:
         raise not_found("リンクが見つかりません")
     if link["project_id"]:
         project_or_404(user, link["project_id"], "editor" if write else "viewer")
-    elif write and not auth.is_admin(user):
-        raise forbidden("全体のリンクを編集できるのは管理者だけです")
+    elif write and not can_edit_shared_link(user, link):
+        raise forbidden("全体のリンクを直せるのは、置いた本人と管理者だけです")
     return link
 
 
@@ -1980,17 +1988,19 @@ def list_links(ctx):
     sql += (" ORDER BY (l.project_id IS NOT NULL), p.name, (l.category = ''), "
             "l.category, l.sort_order, l.id")
     rows = db.query(sql, params)
+    roles = auth.project_roles(user, {r["project_id"] for r in rows if r["project_id"]})
     for row in rows:
         row["can_edit"] = bool(
-            auth.is_admin(user) if row["project_id"] is None
-            else auth.project_role(user, row["project_id"]) in ("owner", "editor"))
+            can_edit_shared_link(user, row) if row["project_id"] is None
+            else roles.get(row["project_id"]) in ("owner", "editor"))
     return json_response({
         "links": rows,
         # 入力の表記ゆれを減らすため、すでに使われている分類を候補として渡す
         "categories": [r["category"] for r in db.query(
             "SELECT DISTINCT category FROM shared_links WHERE category <> '' "
             "ORDER BY category")],
-        "can_add_shared": auth.is_admin(user),
+        # 全体のリンクは誰でも置ける（直せるのは置いた本人と管理者だけ）
+        "can_add_shared": True,
         "projects": db.query(
             "SELECT id, name, color FROM projects WHERE id IN %s AND archived=0 ORDER BY name",
             (tuple(ids),)) if ids else [],
@@ -2003,8 +2013,6 @@ def create_link(ctx):
     project_id = as_int(ctx.body.get("project_id"))
     if project_id:
         project_or_404(user, project_id, "editor")
-    else:
-        admin_only(ctx)
     title = require(ctx.body, "title", "タイトル")
     url = normalize_link_url(ctx.body.get("url"))
     now = db.now()
@@ -2044,8 +2052,7 @@ def update_link(ctx, link_id):
         target = as_int(ctx.body["project_id"])
         if target:
             project_or_404(user, target, "editor")
-        else:
-            admin_only(ctx)
+        # 全体へ移すのは、そのリンクを直せる人なら誰でもよい（上の link_or_404 で確かめ済み）
         fields.append("project_id=%s")
         params.append(target)
     if not fields:

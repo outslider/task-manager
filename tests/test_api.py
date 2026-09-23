@@ -3811,16 +3811,52 @@ class TestSharedLinks(ApiTestCase):
                          "role": "viewer"}]})
         self.assertIn("手順書", self.titles(client))
 
-    def test_only_admins_can_add_a_shared_link(self):
-        user, email = self.make_user("一般")
+    def test_anyone_can_add_a_shared_link(self):
+        _user, email = self.make_user("一般")
+        client = self.client_for(email)
+        status, data = self.add(client=client, title="みんなの手順書")
+        self.assertEqual(status, 201, data)
+        self.assertIsNone(data["link"]["project_id"])
+        # ほかの人にも見える
+        _other, other_email = self.make_user("別の人")
+        self.assertIn("みんなの手順書", self.titles(self.client_for(other_email)))
+
+    def test_only_the_owner_or_an_admin_can_change_a_shared_link(self):
+        _user, email = self.make_user("置いた人")
+        owner = self.client_for(email)
+        link = self.add(client=owner, title="置いたもの")[1]["link"]
+        _other, other_email = self.make_user("ほかの人")
+        other = self.client_for(other_email)
+        url = "/api/links/{}".format(link["id"])
+        # ほかの人は直せないし消せない
+        self.assertEqual(other.patch(url, {"title": "書き換え"})[0], 403)
+        self.assertEqual(other.delete(url)[0], 403)
+        seen = {l["title"]: l for l in other.get("/api/links")[1]["links"]}
+        self.assertFalse(seen["置いたもの"]["can_edit"])
+        # 置いた本人は直せる
+        self.assertTrue({l["title"]: l for l in owner.get("/api/links")[1]["links"]}
+                        ["置いたもの"]["can_edit"])
+        self.assertEqual(owner.patch(url, {"title": "直した"})[0], 200)
+        # 管理者も直せる・消せる
+        self.assertEqual(self.admin.patch(url, {"note": "管理者より"})[0], 200)
+        self.assertEqual(self.admin.delete(url)[0], 200)
+
+    def test_moving_a_link_between_shared_and_project(self):
+        user, email = self.make_user("編集する人")
         self.admin.put("/api/projects/{}/members".format(self.project["id"]), {
             "members": [{"principal_type": "user", "principal_id": user["id"],
                          "role": "editor"}]})
         client = self.client_for(email)
-        self.assertEqual(self.add(client=client)[0], 403)
-        # プロジェクトのものなら足せる
-        self.assertEqual(self.add(client=client, title="PJ の資料",
-                                  project_id=self.project["id"])[0], 201)
+        link = self.add(client=client, title="PJ の資料",
+                        project_id=self.project["id"])[1]["link"]
+        url = "/api/links/{}".format(link["id"])
+        # プロジェクトのものを全体へ出す
+        status, data = client.patch(url, {"project_id": None})
+        self.assertEqual((status, data["link"]["project_id"]), (200, None))
+        # 参加していないプロジェクトには移せない
+        self.assertEqual(client.patch(url, {"project_id": self.other["id"]})[0], 403)
+        # 自分のプロジェクトへは戻せる
+        self.assertEqual(client.patch(url, {"project_id": self.project["id"]})[0], 200)
 
     def test_a_viewer_cannot_add_a_project_link(self):
         user, email = self.make_user("閲覧のみ")
@@ -3838,7 +3874,7 @@ class TestSharedLinks(ApiTestCase):
             "members": [{"principal_type": "user", "principal_id": user["id"],
                          "role": "editor"}]})
         links = {l["title"]: l for l in self.client_for(email).get("/api/links")[1]["links"]}
-        self.assertFalse(links["社内ポータル"]["can_edit"], "全体のものは触れない")
+        self.assertFalse(links["社内ポータル"]["can_edit"], "他人が置いた全体のものは触れない")
         self.assertTrue(links["PJ の資料"]["can_edit"])
 
     def test_editing_and_deleting(self):

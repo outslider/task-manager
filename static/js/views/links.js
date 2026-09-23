@@ -145,13 +145,9 @@ export async function render(container) {
     });
     const suggestions = el('datalist', { id: listId },
       ...(data.categories || []).map((c) => el('option', { value: c })));
-    // 全体で共有できるのは管理者だけ。選択肢を消すと「なくなった」ように見えるので、
-    // 管理者以外にも選べない形で出しておく
     const scope = el('select', { class: 'select' },
-      el('option', {
-        value: '', selected: link && !link.project_id ? true : null,
-        disabled: data.can_add_shared ? null : true,
-      }, data.can_add_shared ? '全体で共有' : '全体で共有（管理者のみ）'),
+      el('option', { value: '', selected: link && !link.project_id ? true : null },
+        '全体で共有'),
       ...data.projects.map((p) => el('option', {
         value: String(p.id), selected: String(link?.project_id || '') === String(p.id) ? true : null,
       }, p.name)));
@@ -169,9 +165,8 @@ export async function render(container) {
             text: '同じ言葉を使うとまとまります。入力欄で既存の分類から選べます。' })),
         el('div', { class: 'field' }, el('label', { text: '公開範囲' }), scope,
           el('div', { class: 'hint',
-            text: '全体で共有すると全員に見えます。プロジェクトを選ぶと、'
-              + 'そのメンバーだけに見えます。'
-              + (data.can_add_shared ? '' : '全員に見えるリンクを置けるのは管理者だけです。') }))),
+            text: '全体で共有すると全員に見えます（直せるのは置いた人と管理者です）。'
+              + 'プロジェクトを選ぶと、そのメンバーだけに見えます。' }))),
       footer: (close) => [
         el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
         el('button', {
