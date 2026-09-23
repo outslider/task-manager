@@ -5,7 +5,7 @@ import {
   store, STATUS_COLOR, STATUS_LABEL, IMPORTANCE_LABEL, CATEGORIES, category, markerChar,
 } from '../store.js';
 import {
-  addDays, daysBetween, downloadBlob, el, fill, isWeekend, openModal, parseDate, svgEl,
+  addDays, daysBetween, downloadBlob, el, fill, formatSpan, isWeekend, openModal, parseDate, svgEl,
   toISO, toast, today, weekday,
 } from '../util.js';
 import { iconLabel } from '../icons.js';
@@ -854,7 +854,7 @@ export async function render(container, route) {
     try {
       await api.patch(`/api/tasks/${task.id}`, patch);
       await refresh();
-      toast(`${task.title}: ${patch.start_date || '—'} 〜 ${patch.due_date}`, 'ok');
+      toast(`${task.title}: ${formatSpan(patch.start_date, patch.due_date, { sep: ' 〜 ' })}`, 'ok');
     } catch (error) {
       toast(error.message, 'error');
       await refresh();                    // 画面を実際の値に戻す
@@ -900,9 +900,9 @@ export async function render(container, route) {
         el('div', { class: 'hint',
           text: state.mode === 'roadmap'
             ? `ロードマップ表示: フェーズ ${rows.length} 件 / 節目 ${milestones.length} 件`
-              + ` / 期間 ${toISO(range.from)} 〜 ${toISO(range.to)}`
+              + ` / 期間 ${formatSpan(toISO(range.from), toISO(range.to), { sep: ' 〜 ' })}`
             : `対象タスク ${rows.filter((r) => r.task).length} 件`
-              + ` / 期間 ${toISO(range.from)} 〜 ${toISO(range.to)}` })),
+              + ` / 期間 ${formatSpan(toISO(range.from), toISO(range.to), { sep: ' 〜 ' })}` })),
       footer: (close) => [
         el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
         el('button', {
@@ -935,7 +935,7 @@ export async function render(container, route) {
       conflicts: data.conflicts, colorBy: state.colorBy,
       title: withTitle ? project.name : null,
       subtitle: withTitle
-        ? `${toISO(range.from)} 〜 ${toISO(range.to)}　作成日: ${toISO(today())}`
+        ? `${formatSpan(toISO(range.from), toISO(range.to), { sep: ' 〜 ' })}　作成日: ${toISO(today())}`
         : null,
       nameWidth: NAME_W_DEFAULT, forExport: true,
       roadmap, milestones: milestoneRows(), holidays: holidayMap, labels: state.labels,
@@ -1495,7 +1495,7 @@ export function buildGanttSvg({
     if (fillRect) group.appendChild(fillRect);
     group.appendChild(outlineRect);
     group.appendChild(svgEl('title', {
-      text: `${task.title}\n${startISO || '?'} 〜 ${dueISO || '?'}  進捗 ${progress}%`
+      text: `${task.title}\n${formatSpan(startISO, dueISO, { sep: ' 〜 ' })}  進捗 ${progress}%`
         + (assigneeName(task) ? `\n担当: ${assigneeName(task)}` : '')
         + (task.blocks_open ? `\n⛔ 後続 ${task.blocks_open} 件が待機` : '')
         + (critical ? '\n🔗 クリティカルパス上' : ''),
@@ -1536,7 +1536,7 @@ export function buildGanttSvg({
 
     const labelParts = [];
     if (show.date && (startISO || dueISO)) {
-      labelParts.push(`${shortDate(startISO)}〜${shortDate(dueISO)}`);
+      labelParts.push(formatSpan(startISO, dueISO, { format: shortDate }));
     }
     if (show.progress && progress > 0 && progress < 100) labelParts.push(`${progress}%`);
     if (show.assignee && assigneeName(task)) labelParts.push(assigneeName(task));
@@ -1621,7 +1621,8 @@ export function buildGanttSvg({
       preview.setAttribute('visibility', 'visible');
       hint.setAttribute('x', originX + a * dayWidth + 4);
       hint.setAttribute('visibility', 'visible');
-      hint.textContent = `${toISO(addDays(range.from, a))} 〜 ${toISO(addDays(range.from, b))}`;
+      hint.textContent = formatSpan(toISO(addDays(range.from, a)), toISO(addDays(range.from, b)),
+        { sep: ' 〜 ' });
     };
     const clear = () => {
       preview.setAttribute('visibility', 'hidden');
@@ -1896,7 +1897,7 @@ function attachDrag({ group, task, dayWidth, range, scroller, onEdit, setGeometr
     const preview = shiftedDates(dates, drag.mode, days);
     const hint = dragHint();
     hint.textContent = preview
-      ? `${preview.start_date || '—'} 〜 ${preview.due_date}`
+      ? formatSpan(preview.start_date, preview.due_date, { sep: ' 〜 ' })
       : '動かせません';
     hint.style.left = `${event.clientX + 14}px`;
     hint.style.top = `${event.clientY - 34}px`;

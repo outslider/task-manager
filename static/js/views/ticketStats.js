@@ -3,7 +3,7 @@
  * 溜まっているかどうかは、この 2 本の差を見れば分かる。
  * 数字はそのまま CSV に落とせるようにしておく。 */
 import { api } from '../api.js';
-import { avatar, downloadBlob, el, fill, toISO } from '../util.js';
+import { avatar, downloadBlob, el, fill, formatSpan, toISO } from '../util.js';
 
 const UNITS = [
   { value: 'day', label: '日次', spans: [7, 14, 30, 60] },
@@ -87,7 +87,7 @@ export async function ticketStats({ queueId = '', onBack } = {}) {
         class: 'btn btn-sm', title: '前の期間', disabled: d.can_go_back ? null : true,
         onClick: () => shift(-1),
       }, '←'),
-      el('span', { class: 'tk-range-label', text: `${d.from} 〜 ${d.to}` }),
+      el('span', { class: 'tk-range-label', text: formatSpan(d.from, d.to, { sep: ' 〜 ' }) }),
       el('button', {
         class: 'btn btn-sm', title: '次の期間', disabled: d.can_go_forward ? null : true,
         onClick: () => shift(1),

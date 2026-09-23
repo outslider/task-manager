@@ -103,6 +103,18 @@ export function formatDate(value, withWeekday = false) {
   return year + base + (withWeekday ? `(${weekday(date)})` : '');
 }
 
+/**
+ * 期間の表記。同じ日なら「9/23」の 1 つだけにし、「9/23〜9/23」とは書かない。
+ * 片方だけのときは「9/14〜」「〜9/20」。format は日付 1 つ（ISO 文字列）の書き方。
+ */
+export function formatSpan(from, to, { format = (iso) => iso, sep = '〜' } = {}) {
+  const a = from ? String(from).slice(0, 10) : '';
+  const b = to ? String(to).slice(0, 10) : '';
+  if (!a && !b) return '—';
+  if (a === b) return format(a);
+  return `${a ? format(a) : ''}${sep}${b ? format(b) : ''}`;
+}
+
 export function formatDateTime(value) {
   if (!value) return '—';
   const iso = String(value).replace(' ', 'T');
