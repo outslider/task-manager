@@ -175,7 +175,8 @@ def bottlenecks(tasks, deps, today=None, limit=20):
         if m["is_blocked"]:
             reasons.append("先行 {} 件が未完了".format(m["blocked_by_open"]))
         if task["status"] == "blocked":
-            reasons.append("ブロック中として登録")
+            # 表示名は管理画面で変えられるので、その時点の名前で書く
+            reasons.append("{}として登録".format(_status_label("blocked")))
         if not reasons:
             continue
         score = (m["blocks_open"] * 10
@@ -208,3 +209,20 @@ def bottlenecks(tasks, deps, today=None, limit=20):
         "critical_path": result["critical_path"],
         "metrics": metrics,
     }
+
+
+def _status_label(key):
+    """状態の表示名。引けないときはキーのまま返す（解析自体は止めない）。"""
+    try:
+        from . import taxonomy
+        for row in taxonomy.statuses():
+            if row["value"] == key:
+                return row["label"]
+    except Exception:  # 画面表示のための飾りなので、失敗しても解析は続ける
+        pass
+    return _DEFAULT_LABELS.get(key, key)
+
+
+# 名前を引けないときの既定（taxonomy の初期値と同じ）
+_DEFAULT_LABELS = {"todo": "未着手", "doing": "進行中", "review": "レビュー中",
+                   "done": "完了", "blocked": "ブロック中"}

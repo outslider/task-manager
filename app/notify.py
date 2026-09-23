@@ -21,6 +21,35 @@ OPEN_STATUSES = taxonomy.OPEN_STATUS_KEYS
 # in-app notifications
 # --------------------------------------------------------------------------
 
+def may_receive(user_id, task_id=None, issue_id=None, ticket_id=None):
+    """通知の中身（件名・抜粋）を、いまそれを見られる人にだけ届ける。
+
+    通知には件名やコメントの抜粋が入る。送り先の選び方は呼び出し側ごとに
+    違う（担当者・過去にコメントした人・@で呼ばれた人…）ので、そこで
+    漏れがあっても中身が外へ出ないよう、最後にここで必ず確かめる。
+    プロジェクトから外れた人や、「メンバーだけ」の窓口に入っていない人が該当する。
+    """
+    if not (task_id or issue_id or ticket_id):
+        return True
+    user = db.query_one("SELECT id, role, is_active FROM users WHERE id=%s", (user_id,))
+    if not user or not user["is_active"]:
+        return False
+    if auth.is_admin(user):
+        return True
+    if task_id:
+        project_id = db.scalar("SELECT project_id FROM tasks WHERE id=%s", (task_id,))
+        return bool(project_id) and auth.has_project_access(user, project_id)
+    if issue_id:
+        project_id = db.scalar("SELECT project_id FROM issues WHERE id=%s", (issue_id,))
+        return bool(project_id) and auth.has_project_access(user, project_id)
+    from . import tickets          # tickets は auth を読むので、ここで遅延読み込み
+    queue = db.query_one(
+        "SELECT q.visibility, q.project_id FROM tickets t "
+        "JOIN ticket_queues q ON q.id = t.queue_id WHERE t.id=%s", (ticket_id,))
+    return bool(queue) and tickets.queue_visible_to(
+        user, queue["visibility"], queue["project_id"])
+
+
 def create(user_id, ntype, title, body="", task_id=None, dedupe_key=None, email=True,
            project_id=None, issue_id=None, ticket_id=None):
     """Insert a notification.  A repeated dedupe_key for the same user is a no-op.
@@ -28,6 +57,8 @@ def create(user_id, ntype, title, body="", task_id=None, dedupe_key=None, email=
     画面の通知一覧には必ず残し、メールを送るかどうかだけ通知設定で判断する。
     """
     if project_id and not prefs.project_notify_enabled(project_id):
+        return False
+    if not may_receive(user_id, task_id, issue_id, ticket_id):
         return False
     try:
         db.insert(
@@ -73,7 +104,9 @@ def send_email(to_address, subject, body, to_name=""):
     msg["Subject"] = subject
     msg["From"] = s.get("mail_from") or "task-manager@example.com"
     msg["To"] = formataddr((to_name, to_address)) if to_name else to_address
-    footer = "\n\n---\nタスク管理システム\n{}\n".format(base) if base else ""
+    # 名前は管理画面で変えられるので、送るたびにその時点の名前を使う
+    name = db.get_setting("app_name", "タスク管理") or "タスク管理"
+    footer = "\n\n---\n{}\n{}\n".format(name, base) if base else ""
     msg.set_content((body or subject) + footer)
 
     try:

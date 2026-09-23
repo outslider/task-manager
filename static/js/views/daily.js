@@ -40,14 +40,27 @@ export async function render(container) {
 
   setHeader('今日の確認');
 
+  // 課題・チケットなどの一覧は頭の数件だけが届く。数字カードや見出しで
+  // 並べた件数を出すと、多い人ほど少なく見えるので、本当の件数を使う。
+  const total = (key, list) => data.totals?.[key] ?? (list || []).length;
   const counts = {
     overdue: data.buckets.overdue.length,
     today: data.buckets.today.length,
     soon: data.buckets.soon.length,
     open: Object.values(data.buckets).reduce((sum, list) => sum + list.length, 0)
       - data.buckets.later.length,
-    tickets: (data.tickets || []).length,
+    tickets: total('tickets', data.tickets),
+    issues: total('issues', data.issues),
+    done: total('recently_done', data.recently_done),
+    stale: total('stale', data.stale),
+    todos: total('todos', data.todos),
   };
+  /** 並べきれなかったぶんを知らせる一行。全部並んでいれば何も出さない。 */
+  const moreLine = (shown, all, href) => (all > shown
+    ? el('div', { class: 'daily-more' },
+      el('span', { text: `ほか ${all - shown} 件あります` }),
+      href ? el('a', { href, text: '一覧で見る' }) : null)
+    : null);
 
   const saveBar = el('div', { class: 'sticky-save', hidden: true });
   const noteInput = el('input', {
@@ -70,10 +83,10 @@ export async function render(container) {
     el('div', { class: 'grid daily-stats', style: { marginBottom: '14px' } },
       statCard('期限超過', counts.overdue, counts.overdue ? 'danger' : '', 'overdue'),
       statCard('本日期限', counts.today, counts.today ? 'warn' : '', 'today'),
-      statCard('担当の課題', (data.issues || []).length, '', 'issues'),
+      statCard('担当の課題', counts.issues, '', 'issues'),
       statCard('担当のチケット', counts.tickets, '', 'tickets'),
       statCard('まもなく期限', counts.soon, '', 'soon'),
-      statCard('直近7日の完了', data.recently_done.length, 'ok', 'done')),
+      statCard('直近7日の完了', counts.done, 'ok', 'done')),
     listHost, saveBar);
 
   /**
@@ -89,7 +102,7 @@ export async function render(container) {
     return el('div', { class: 'card daily-bucket kind-ticket' },
       el('div', { class: 'card-head' },
         el('h2', {}, '🎫 自分が担当のチケット'),
-        list.length ? el('span', { class: 'badge', text: `${list.length} 件` }) : null,
+        counts.tickets ? el('span', { class: 'badge', text: `${counts.tickets} 件` }) : null,
         data.unclaimed_tickets
           ? el('span', { class: 'badge warn-badge',
             text: `未割当 ${data.unclaimed_tickets} 件` })
@@ -97,7 +110,8 @@ export async function render(container) {
         el('a', { class: 'btn btn-sm', href: '#/tickets' }, '一覧を開く')),
       el('div', { class: 'card-body tight' },
         list.length
-          ? el('div', {}, ...list.map(ticketItem))
+          ? el('div', {}, ...list.map(ticketItem),
+            moreLine(list.length, counts.tickets, '#/tickets?scope=mine'))
           : el('div', { class: 'hint', style: { padding: '12px 15px' },
             text: '自分が担当のチケットはありません。'
               + '誰も受けていないものが残っています。' })));
@@ -226,7 +240,7 @@ export async function render(container) {
   /** 片付いたぶん。振り返り用なので、既定ではたたんでおく。 */
   function doneCard() {
     return foldableCard(DONE_KEY, '✅ 直近7日で完了したタスク',
-      data.recently_done.length, 'kind-done',
+      counts.done, 'kind-done',
       () => data.recently_done.map((task) => el('div', { class: 'daily-item' },
         el('div', {},
           el('div', {}, el('a', {
@@ -263,14 +277,15 @@ export async function render(container) {
   /** 止まっているタスク。開始日がまだのものはサーバー側で除いてある。 */
   function staleCard() {
     return foldableCard(STALE_KEY, '💤 1週間以上動きのないタスク',
-      data.stale.length, 'kind-task', () => data.stale.map(taskItem));
+      counts.stale, 'kind-task', () => [...data.stale.map(taskItem),
+        moreLine(data.stale.length, counts.stale, '#/mytasks')]);
   }
 
   function issueCard() {
     return el('div', { class: 'card daily-bucket kind-issue' },
         el('div', { class: 'card-head' },
           el('h2', {}, '📌 自分が対応者の課題'),
-          el('span', { class: 'badge', text: `${data.issues.length} 件` })),
+          el('span', { class: 'badge', text: `${counts.issues} 件` })),
         el('div', { class: 'card-body tight' },
           ...data.issues.map((issue) => el('div', {
             class: 'daily-item', style: { cursor: 'pointer' },
@@ -293,7 +308,8 @@ export async function render(container) {
             el('span', { class: `sev sev-${issue.severity}`,
               text: `影響度 ${SEVERITY_LABEL[issue.severity]}` }),
             el('span', { class: `badge ${issue.status}`,
-              text: ISSUE_STATUS_LABEL[issue.status] }))))));
+              text: ISSUE_STATUS_LABEL[issue.status] })))),
+          moreLine(data.issues.length, counts.issues, '#/issues')));
   }
 
   function todoCard() {
@@ -326,7 +342,8 @@ export async function render(container) {
                 class: `badge ${dueClass(todo.due_date, 'todo') || ''}`.trim(),
                 text: `期限 ${formatDate(todo.due_date)}`,
               })
-              : null))));
+              : null)),
+          moreLine(data.todos.length, counts.todos, '#/todos')));
   }
 
   /** 区分ごとのまとまり。見出しを押すと開け閉めできる。 */

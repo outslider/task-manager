@@ -7,7 +7,7 @@
 受付の流れは部署ごとに変わるものではないうえ、ここを可変にすると
 「未対応のまま何日」といった集計が崩れるため。
 """
-from . import db
+from . import auth, db
 
 # value, 表示名, 記号
 KINDS = [
@@ -84,3 +84,17 @@ def meta():
         "open_statuses": list(OPEN_STATUSES),
         "queue_icons": list(QUEUE_ICONS),
     }
+
+
+def queue_visible_to(user, visibility, project_id):
+    """この人がこの窓口のチケットを読めるか。判断はここ 1 か所だけに置く。
+
+    画面の問い合わせ（api.visible_queue_clause）と通知の関所（notify）が
+    ここを使う。別々に書くと、片方だけ直って食い違うため。
+    紐づけ先が消えた「メンバーだけ」の窓口は、管理者以外には閉じたままにする。
+    """
+    if (visibility or "all") != "project":
+        return True
+    if auth.is_admin(user):
+        return True
+    return bool(project_id) and auth.has_project_access(user, project_id)

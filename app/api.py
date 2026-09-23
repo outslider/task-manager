@@ -1170,12 +1170,15 @@ def get_task(ctx, task_id):
         "SELECT i.id, i.seq, i.title, i.status, i.severity, i.due_date FROM issues i "
         "JOIN issue_tasks it ON it.issue_id = i.id WHERE it.task_id=%s ORDER BY i.seq",
         (task_id,))
+    # 別プロジェクトの「メンバーだけ」窓口のチケットは、紐づいていても出さない
+    seen, seen_params = visible_queue_clause(user)
     linked_tickets = db.query(
         "SELECT t.id, t.title, t.status, t.kind, t.on_behalf_of, "
         "       q.name AS queue_name, q.icon AS queue_icon "
         "  FROM tickets t JOIN ticket_tasks tt ON tt.ticket_id = t.id "
         "  JOIN ticket_queues q ON q.id = t.queue_id "
-        " WHERE tt.task_id=%s ORDER BY t.id", (task_id,))
+        " WHERE tt.task_id=%s" + (" AND " + seen if seen else "") + " ORDER BY t.id",
+        (task_id,) + seen_params)
     return json_response({
         "task": task, "path": path, "children": children, "comments": comments,
         "attachments": attachments, "deps": deps, "blocking": blocking, "issues": issues,
@@ -1760,6 +1763,8 @@ def search(ctx):
         "       OR i.resolution LIKE %s) "
         " ORDER BY i.severity DESC, i.seq DESC LIMIT %s",
         (scope, like, like, like, limit))
+    # チケットへのコメントも、「メンバーだけ」の窓口のものは出さない
+    q_seen, q_seen_params = visible_queue_clause(user)
     comments = db.query(
         "SELECT c.id, c.body, c.created_at, c.task_id, c.issue_id, c.ticket_id, "
         "       u.name AS user_name, "
@@ -1774,9 +1779,10 @@ def search(ctx):
         "  LEFT JOIN tickets tk ON tk.id = c.ticket_id "
         "  LEFT JOIN ticket_queues q ON q.id = tk.queue_id "
         " WHERE c.kind='comment' AND c.body LIKE %s "
-        "   AND (t.project_id IN %s OR i.project_id IN %s OR c.ticket_id IS NOT NULL) "
+        "   AND (t.project_id IN %s OR i.project_id IN %s OR "
+        "        (c.ticket_id IS NOT NULL" + (" AND " + q_seen if q_seen else "") + ")) "
         " ORDER BY c.created_at DESC LIMIT %s",
-        (like, scope, scope, limit))
+        (like, scope, scope) + q_seen_params + (limit,))
     projects = db.query(
         "SELECT id, name, description, color FROM projects "
         " WHERE id IN %s AND (name LIKE %s OR description LIKE %s) ORDER BY archived, name "
@@ -2055,9 +2061,9 @@ IMPORT_FIELDS = [
     ("assignee", "担当者", "氏名またはメールアドレス"),
     ("start_date", "開始日", "2026-04-01 / 2026/4/1 / 4月1日 など"),
     ("due_date", "期限", "同上"),
-    ("category", "カテゴリ", "調査・リサーチ / 設計・企画 …（表示名でも英字でも可）"),
+    ("category", "カテゴリ", ""),   # 説明は import_fields でその時点の名前から作る
     ("priority", "重要度", "低 / 中 / 高 / 最重要 または 0〜3"),
-    ("status", "状態", "未着手 / 進行中 / レビュー中 / 完了 / ブロック中"),
+    ("status", "状態", ""),         # 同上（状態名は管理画面で変えられるため）
     ("progress", "進捗", "0〜100 の数字（% は付いていても構いません）"),
     ("estimate_hours", "見積 (h)", "数字。空欄でも構いません"),
     ("description", "メモ", ""),
@@ -2126,11 +2132,26 @@ def _import_level(row):
     return indent // 2 if indent else 0
 
 
+def _import_help(key, fixed):
+    """状態とカテゴリの説明は、その時点の表示名から作る。
+
+    どちらも管理画面で名前を変えられる。説明を文字で固定しておくと、
+    名前を変えたあと説明だけが古いまま残る（取り込み自体は新しい名前で通る）。
+    """
+    if key == "status":
+        return " / ".join(row["label"] for row in taxonomy.statuses())
+    if key == "category":
+        labels = [row["label"] for row in taxonomy.categories()]
+        shown = " / ".join(labels[:4]) + (" …" if len(labels) > 4 else "")
+        return "{}（表示名でも英字でも可）".format(shown) if labels else "空欄で可"
+    return fixed
+
+
 @route("GET", r"/api/import/fields")
 def import_fields(ctx):
     me(ctx)
     return json_response({
-        "fields": [{"value": v, "label": label, "help": help_text}
+        "fields": [{"value": v, "label": label, "help": _import_help(v, help_text)}
                    for v, label, help_text in IMPORT_FIELDS],
         "statuses": list(status_by_label()),
         "categories": list(category_by_label()),
@@ -3007,6 +3028,10 @@ def purge_trash_now(ctx):
 # daily check-in
 # --------------------------------------------------------------------------
 
+# 今日の確認の各一覧に並べる件数。本当の件数は totals で別に返す。
+DAILY_LIST = 20
+
+
 @route("GET", r"/api/daily")
 def daily(ctx):
     user = me(ctx)
@@ -3015,47 +3040,61 @@ def daily(ctx):
     today = db.today()
     # 参加していないプロジェクトのタスクは、担当でも出さない
     visible = tuple(auth.visible_project_ids(user)) or (0,)
+    # ここに並べる一覧は、どれも頭の DAILY_LIST 件だけ返す。上の数字カードが
+    # 並べた件数（＝頭打ちの数）を出すと、多い人ほど少なく見えてしまうので、
+    # 本当の件数は同じ条件で別に数えて totals に入れる。
+    totals = {}
+    recent_where = ("t.assignee_id=%s AND t.status='done' AND t.completed_at >= %s "
+                    "AND t.project_id IN %s")
+    recent_params = (user["id"], db.now() - timedelta(days=7), visible)
     recent = db.query(
-        """
-        SELECT t.id, t.title, t.status, t.progress, t.due_date, p.name AS project_name
-          FROM tasks t JOIN projects p ON p.id = t.project_id
-         WHERE t.assignee_id=%s AND t.status='done' AND t.completed_at >= %s
-           AND t.project_id IN %s
-         ORDER BY t.completed_at DESC LIMIT 20
-        """,
-        (user["id"], db.now() - timedelta(days=7), visible))
+        "SELECT t.id, t.title, t.status, t.progress, t.due_date, p.name AS project_name "
+        "FROM tasks t JOIN projects p ON p.id = t.project_id WHERE " + recent_where
+        + " ORDER BY t.completed_at DESC LIMIT %s", recent_params + (DAILY_LIST,))
+    totals["recently_done"] = _daily_total(
+        "tasks t JOIN projects p ON p.id = t.project_id", recent_where, recent_params,
+        recent)
     # 開始日がまだ来ていないタスクは、動いていなくて当たり前なので数えない
+    stale_where = ("t.assignee_id=%s AND t.status IN %s AND p.archived=0 "
+                   "AND t.updated_at < %s AND t.project_id IN %s "
+                   "AND (t.start_date IS NULL OR t.start_date <= %s)")
+    stale_params = (user["id"], OPEN_STATUSES, db.now() - timedelta(days=7), visible, today)
     stale = db.query(
-        """
-        SELECT t.id, t.title, t.status, t.progress, t.due_date, p.name AS project_name,
-               t.updated_at
-          FROM tasks t JOIN projects p ON p.id = t.project_id
-         WHERE t.assignee_id=%s AND t.status IN %s AND p.archived=0
-           AND t.updated_at < %s AND t.project_id IN %s
-           AND (t.start_date IS NULL OR t.start_date <= %s)
-         ORDER BY t.updated_at LIMIT 20
-        """,
-        (user["id"], OPEN_STATUSES, db.now() - timedelta(days=7), visible, today))
+        "SELECT t.id, t.title, t.status, t.progress, t.due_date, p.name AS project_name, "
+        "t.updated_at FROM tasks t JOIN projects p ON p.id = t.project_id WHERE "
+        + stale_where + " ORDER BY t.updated_at LIMIT %s", stale_params + (DAILY_LIST,))
+    totals["stale"] = _daily_total(
+        "tasks t JOIN projects p ON p.id = t.project_id", stale_where, stale_params, stale)
     checkin = db.query_one(
         "SELECT * FROM checkins WHERE user_id=%s AND checkin_date=%s", (user["id"], today))
+    issue_where = ("i.owner_id=%s AND i.status IN %s AND p.archived=0 "
+                   "AND i.project_id IN %s")
+    issue_params = (user["id"], OPEN_ISSUE_STATUSES, visible)
     issues = db.query(
         "SELECT i.id, i.seq, i.title, i.status, i.severity, i.due_date, p.name AS project_name "
-        "FROM issues i JOIN projects p ON p.id = i.project_id "
-        "WHERE i.owner_id=%s AND i.status IN %s AND p.archived=0 AND i.project_id IN %s "
-        "ORDER BY i.severity DESC, (i.due_date IS NULL), i.due_date LIMIT 20",
-        (user["id"], OPEN_ISSUE_STATUSES, visible))
+        "FROM issues i JOIN projects p ON p.id = i.project_id WHERE " + issue_where
+        + " ORDER BY i.severity DESC, (i.due_date IS NULL), i.due_date LIMIT %s",
+        issue_params + (DAILY_LIST,))
+    totals["issues"] = _daily_total(
+        "issues i JOIN projects p ON p.id = i.project_id", issue_where, issue_params, issues)
     todos = db.query(
         TODO_SELECT + " WHERE user_id=%s AND is_done=0 "
-        "ORDER BY (due_date IS NULL), due_date, sort_order, id LIMIT 20", (user["id"],))
+        "ORDER BY (due_date IS NULL), due_date, sort_order, id LIMIT %s",
+        (user["id"], DAILY_LIST))
+    totals["todos"] = _daily_total("todos", "user_id=%s AND is_done=0", (user["id"],), todos)
     # 自分が担当のチケット。期限切れ → 期限の近い順 → 優先度の高い順で並べる。
     # 担当に付いていても、見えない窓口のものは出さない（外れたあとに残らないように）
     seen, seen_params = visible_queue_clause(user)
+    ticket_where = "t.assignee_id=%s AND t.status IN %s" + (" AND " + seen if seen else "")
+    ticket_params = (user["id"], tickets.OPEN_STATUSES) + seen_params
     my_tickets = db.query(
-        TICKET_BASE + " WHERE t.assignee_id=%s AND t.status IN %s"
-        + (" AND " + seen if seen else "")
+        TICKET_BASE + " WHERE " + ticket_where
         + " ORDER BY (t.due_date IS NOT NULL AND t.due_date < %s) DESC, "
-          "(t.due_date IS NULL), t.due_date, t.priority DESC, t.id LIMIT 20",
-        (user["id"], tickets.OPEN_STATUSES) + seen_params + (today,))
+          "(t.due_date IS NULL), t.due_date, t.priority DESC, t.id LIMIT %s",
+        ticket_params + (today, DAILY_LIST))
+    totals["tickets"] = _daily_total(
+        "tickets t JOIN ticket_queues q ON q.id = t.queue_id", ticket_where, ticket_params,
+        my_tickets)
     # 誰も受けていないチケットは、件数だけ知らせて一覧へ送る
     unclaimed = db.scalar(
         "SELECT COUNT(*) AS c FROM tickets t JOIN ticket_queues q ON q.id = t.queue_id "
@@ -3066,8 +3105,17 @@ def daily(ctx):
         "date": today, "buckets": buckets, "recently_done": recent,
         "stale": stale, "checkin": checkin, "issues": issues, "todos": todos,
         "tickets": my_tickets, "unclaimed_tickets": unclaimed,
+        "totals": totals, "list_limit": DAILY_LIST,
         "streak": _checkin_streak(user["id"]),
     })
+
+
+def _daily_total(frm, where, params, shown):
+    """並べた件数が上限に届いていなければ、それが本当の件数。届いていれば数え直す。"""
+    if len(shown) < DAILY_LIST:
+        return len(shown)
+    return db.scalar("SELECT COUNT(*) AS c FROM {} WHERE {}".format(frm, where),
+                     params, default=0) or 0
 
 
 def _checkin_streak(user_id):
@@ -3195,7 +3243,8 @@ def test_mail(ctx):
     user = admin_only(ctx)
     to = ctx.body.get("to") or user["email"]
     ok, message = notify.send_email(
-        to, "[テスト] タスク管理システムのメール設定",
+        to, "[テスト] {} のメール設定".format(
+            db.get_setting("app_name", "タスク管理") or "タスク管理"),
         "このメールが届いていれば SMTP 設定は正しく動作しています。", user["name"])
     # テスト自体は実行できているので 200 を返し、成否は本文で伝える
     return json_response({"ok": ok, "message": message})
@@ -3479,12 +3528,14 @@ def get_issue(ctx, issue_id):
         "SELECT a.*, u.name AS uploaded_by_name FROM attachments a "
         "LEFT JOIN users u ON u.id = a.uploaded_by WHERE a.issue_id=%s ORDER BY a.created_at",
         (issue_id,))
+    seen, seen_params = visible_queue_clause(user)
     linked_tickets = db.query(
         "SELECT t.id, t.title, t.status, t.kind, t.on_behalf_of, "
         "       q.name AS queue_name, q.icon AS queue_icon "
         "  FROM tickets t JOIN ticket_issues ti ON ti.ticket_id = t.id "
         "  JOIN ticket_queues q ON q.id = t.queue_id "
-        " WHERE ti.issue_id=%s ORDER BY t.id", (issue_id,))
+        " WHERE ti.issue_id=%s" + (" AND " + seen if seen else "") + " ORDER BY t.id",
+        (issue_id,) + seen_params)
     return json_response({
         "issue": issue, "tasks": tasks, "comments": comments, "attachments": attachments,
         "tickets": linked_tickets,
@@ -3709,12 +3760,9 @@ def visible_queue_clause(user, alias="q"):
 
 def may_see_queue(user, queue):
     """1 件ぶんの判定。queue は visibility と project_id を持つ辞書。"""
-    if (queue.get("visibility") or "all") != "project":
-        return True
-    if auth.is_admin(user):
-        return True
-    project_id = queue.get("project_id") or queue.get("queue_project_id")
-    return bool(project_id) and auth.has_project_access(user, project_id)
+    return tickets.queue_visible_to(
+        user, queue.get("visibility"),
+        queue.get("project_id") or queue.get("queue_project_id"))
 
 COUNT_KEYS = ("task_count", "open_task_count", "issue_count",
               "comment_count", "attachment_count")
@@ -3779,6 +3827,23 @@ def ticket_or_404(user, ticket_id):
 def can_drop_ticket(user, ticket):
     """消せるのは出した本人と管理者だけ。対応履歴を他人に消させない。"""
     return auth.is_admin(user) or ticket["requester_id"] == user["id"]
+
+
+def check_assignee_can_see(assignee_id, queue):
+    """担当に付ける人が、その窓口のチケットを読める人か確かめる。
+
+    読めない人を担当にすると、その人は開けないチケットの担当になり、
+    しかも通知の件名で中身の一部を知ってしまう。どちらも起きないよう止める。
+    """
+    if not assignee_id:
+        return
+    person = db.query_one("SELECT id, role, is_active FROM users WHERE id=%s",
+                          (assignee_id,))
+    if not person or not person["is_active"]:
+        raise bad_request("担当者が見つかりません")
+    if not may_see_queue(person, queue):
+        raise bad_request("この窓口はプロジェクトのメンバーだけのものです。"
+                          "担当にできるのは、そのプロジェクトに入っている人だけです")
 
 
 def queue_visibility(body, current=None):
@@ -4061,14 +4126,17 @@ def list_tickets(ctx):
         "SUM(status='done') AS done_total, "
         "SUM(status='done' AND resolved_at >= %s) AS done_week, "
         "SUM(status='done' AND resolved_at >= %s) AS done_month "
-        "FROM tickets",
+        "FROM tickets t JOIN ticket_queues q ON q.id = t.queue_id"
+        + (" WHERE " + seen if seen else ""),
         (tickets.OPEN_STATUSES, tickets.OPEN_STATUSES, today, tickets.OPEN_STATUSES,
-         week_start, month_start))
+         week_start, month_start) + seen_params)
     # 受けてから返すまでにかかった日数（直近 90 日に片付いたぶん）
     turnaround = db.scalar(
-        "SELECT AVG(TIMESTAMPDIFF(HOUR, created_at, resolved_at)) AS m FROM tickets "
-        "WHERE status='done' AND resolved_at IS NOT NULL AND resolved_at >= %s",
-        (today - timedelta(days=90),))
+        "SELECT AVG(TIMESTAMPDIFF(HOUR, t.created_at, t.resolved_at)) AS m "
+        "FROM tickets t JOIN ticket_queues q ON q.id = t.queue_id "
+        "WHERE t.status='done' AND t.resolved_at IS NOT NULL AND t.resolved_at >= %s"
+        + (" AND " + seen if seen else ""),
+        (today - timedelta(days=90),) + seen_params)
     return json_response({
         "tickets": rows,
         "matched": matched,
@@ -4155,19 +4223,21 @@ def import_tickets(ctx):
     fallback_queue = as_int(ctx.body.get("queue_id"))
     fallback_row = None
     if fallback_queue:
-        fallback_row = db.query_one("SELECT * FROM ticket_queues WHERE id=%s",
-                                    (fallback_queue,))
-        if not fallback_row:
-            raise not_found("窓口が見つかりません")
+        # 「メンバーだけ」の窓口へは、入っていない人は取り込めない（あることも伏せる）
+        fallback_row = queue_or_404(user, fallback_queue)
 
-    queues = {q["name"].strip(): q for q in db.query("SELECT * FROM ticket_queues")}
+    # 名前で指す窓口も、読める窓口だけを候補にする。見えない窓口の名前を
+    # 書いても「ありません」と返り、在ることは分からない。
+    queues = {q["name"].strip(): q for q in db.query("SELECT * FROM ticket_queues")
+              if may_see_queue(user, q)}
     categories = {}
     for row in db.query("SELECT id, queue_id, label FROM ticket_categories"):
         categories[(row["queue_id"], row["label"].strip())] = row["id"]
-    people = {}
-    for person in db.query("SELECT id, name, email FROM users WHERE is_active=1"):
+    people, person_by_id = {}, {}
+    for person in db.query("SELECT id, name, email, role FROM users WHERE is_active=1"):
         people[person["name"].strip()] = person["id"]
         people[person["email"].strip().lower()] = person["id"]
+        person_by_id[person["id"]] = person
     kind_by_label = {label: value for value, label, _i in tickets.KINDS}
     status_by_label = {label: value for value, label, _c in tickets.STATUSES}
     priority_by_label = {label: value for value, label in tickets.PRIORITY_LABEL.items()}
@@ -4203,6 +4273,13 @@ def import_tickets(ctx):
                 problems.append({
                     "line": line,
                     "message": "「{}」という人が見つかりません".format(assignee_text)})
+            elif not may_see_queue(person_by_id[assignee_id], queue):
+                # 見えない人は担当にしない（行は取り込み、担当だけ空ける）
+                problems.append({
+                    "line": line,
+                    "message": "「{}」さんはこの窓口のプロジェクトに入っていないので、"
+                               "担当は空けて取り込みます".format(assignee_text)})
+                assignee_id = None
 
         category_text = _import_text(raw.get("category"))
         category_id = None
@@ -4433,9 +4510,7 @@ def create_ticket(ctx):
         raise bad_request("この窓口はいま受付を止めています")
     title = require(ctx.body, "title", "件名")
     assignee_id = as_int(ctx.body.get("assignee_id"))
-    if assignee_id and not db.query_one(
-            "SELECT 1 AS x FROM users WHERE id=%s AND is_active=1", (assignee_id,)):
-        raise bad_request("担当者が見つかりません")
+    check_assignee_can_see(assignee_id, queue)
     now = db.now()
     ticket_id = db.insert(
         "INSERT INTO tickets(queue_id, kind, category_id, title, body, status, priority, "
@@ -4458,12 +4533,22 @@ def create_ticket(ctx):
 def get_ticket(ctx, ticket_id):
     user = me(ctx)
     ticket = ticket_or_404(user, ticket_id)
+    # チケットは誰でも読めても、紐づけ先のタスク・課題はプロジェクトのもの。
+    # 参加していないプロジェクトのものは、名前も出さずに件数だけ伝える。
+    visible = tuple(auth.visible_project_ids(user)) or (0,)
     linked_tasks = db.query(
         TASK_SELECT + " JOIN ticket_tasks tt ON tt.task_id = t.id WHERE tt.ticket_id=%s "
-        "ORDER BY t.id", (ticket_id,))
+        "AND t.project_id IN %s ORDER BY t.id", (ticket_id, visible))
     linked_issues = db.query(
         ISSUE_SELECT + " JOIN ticket_issues ti ON ti.issue_id = i.id WHERE ti.ticket_id=%s "
-        "ORDER BY i.id", (ticket_id,))
+        "AND i.project_id IN %s ORDER BY i.id", (ticket_id, visible))
+    hidden_links = (db.scalar(
+        "SELECT COUNT(*) AS c FROM ticket_tasks tt JOIN tasks t ON t.id = tt.task_id "
+        "WHERE tt.ticket_id=%s AND t.project_id NOT IN %s", (ticket_id, visible), default=0)
+        or 0) + (db.scalar(
+        "SELECT COUNT(*) AS c FROM ticket_issues ti JOIN issues i ON i.id = ti.issue_id "
+        "WHERE ti.ticket_id=%s AND i.project_id NOT IN %s", (ticket_id, visible), default=0)
+        or 0)
     comments = db.query(
         "SELECT c.*, u.name AS user_name, u.avatar_color FROM comments c "
         "LEFT JOIN users u ON u.id = c.user_id WHERE c.ticket_id=%s "
@@ -4474,6 +4559,7 @@ def get_ticket(ctx, ticket_id):
         (ticket_id,))
     return json_response({
         "ticket": ticket, "tasks": linked_tasks, "issues": linked_issues,
+        "hidden_links": hidden_links,
         "comments": comments, "attachments": attachments,
         "queue_categories": db.query(
             "SELECT id, label, color FROM ticket_categories WHERE queue_id=%s "
@@ -4500,9 +4586,13 @@ def update_ticket(ctx, ticket_id):
         fields.append("on_behalf_of=%s")
         params.append((body["on_behalf_of"] or "")[:120])
     queue_id = current["queue_id"]
+    # 担当者の確認に使う、変更後の窓口
+    target_queue = {"visibility": current.get("queue_visibility"),
+                    "project_id": current.get("queue_project_id")}
     if "queue_id" in body:
         queue_id = as_int(body["queue_id"])
         queue = queue_or_404(user, queue_id)
+        target_queue = queue
         if queue_id != current["queue_id"]:
             notes.append("窓口: {} → {}".format(current["queue_name"], queue["name"]))
             # 分類は窓口ごとなので、移すと前の分類は使えない
@@ -4555,9 +4645,11 @@ def update_ticket(ctx, ticket_id):
     new_assignee = current["assignee_id"]
     if "assignee_id" in body:
         new_assignee = as_int(body["assignee_id"])
-        if new_assignee and not db.query_one(
-                "SELECT 1 AS x FROM users WHERE id=%s AND is_active=1", (new_assignee,)):
-            raise bad_request("担当者が見つかりません")
+    # 担当を変えたときだけでなく、「メンバーだけ」の窓口へ移したときも、
+    # いまの担当者がその窓口を読める人かを確かめる
+    if "assignee_id" in body or "queue_id" in body:
+        check_assignee_can_see(new_assignee, target_queue)
+    if "assignee_id" in body:
         if new_assignee != current["assignee_id"]:
             notes.append("担当: {} → {}".format(
                 current["assignee_name"] or "未割当",
@@ -4656,8 +4748,13 @@ def _notify_ticket_comment(ticket, actor, body):
     for row in db.query("SELECT DISTINCT user_id FROM comments WHERE ticket_id=%s "
                         "AND kind='comment' AND user_id IS NOT NULL", (ticket["id"],)):
         recipients.add(row["user_id"])
-    # チケットは全員が見られるので、呼べる相手も全員
-    everyone = db.query("SELECT id, name, email FROM users WHERE is_active=1")
+    # 呼べるのは、このチケットを読める人だけ。既定の窓口なら全員、
+    # 「メンバーだけ」の窓口ならそのプロジェクトの人だけになる。
+    queue = {"visibility": ticket.get("queue_visibility"),
+             "project_id": ticket.get("queue_project_id")}
+    everyone = [u for u in db.query(
+        "SELECT id, name, email, role FROM users WHERE is_active=1")
+        if may_see_queue(u, queue)]
     mentioned, _labels = mentions.find(body, everyone)
     mentioned_ids = {m["id"] for m in mentioned} - {actor["id"]}
     recipients.discard(actor["id"])
@@ -4688,22 +4785,30 @@ def link_ticket_tasks(ctx, ticket_id):
     user = me(ctx)
     ticket_or_404(user, ticket_id)
     wanted = [i for i in (as_int(v) for v in (ctx.body.get("task_ids") or [])) if i]
+    visible = tuple(auth.visible_project_ids(user)) or (0,)
     allowed = []
     if wanted:
-        visible = auth.visible_project_ids(user)
         rows = db.query(
             "SELECT id FROM tasks WHERE id IN %s AND project_id IN %s",
-            (tuple(set(wanted)), tuple(visible))) if visible else []
+            (tuple(set(wanted)), visible))
         allowed = [row["id"] for row in rows]
     before = {r["task_id"] for r in db.query(
         "SELECT task_id FROM ticket_tasks WHERE ticket_id=%s", (ticket_id,))}
-    db.execute("DELETE FROM ticket_tasks WHERE ticket_id=%s", (ticket_id,))
-    for task_id in allowed:
-        db.execute("INSERT IGNORE INTO ticket_tasks(ticket_id, task_id) VALUES(%s,%s)",
-                   (ticket_id, task_id))
-    if set(allowed) != before:
+    # 入れ替えるのは、この人に見えるタスクとの紐づけだけ。見えないプロジェクトの
+    # タスクとの紐づけは、この人の画面には出ていないので、送られてこなくて当然。
+    # 全部消してから入れ直すと、他の人が結んだ紐づけを黙って消してしまう。
+    with db.transaction():
+        db.execute(
+            "DELETE tt FROM ticket_tasks tt JOIN tasks t ON t.id = tt.task_id "
+            "WHERE tt.ticket_id=%s AND t.project_id IN %s", (ticket_id, visible))
+        for task_id in allowed:
+            db.execute("INSERT IGNORE INTO ticket_tasks(ticket_id, task_id) VALUES(%s,%s)",
+                       (ticket_id, task_id))
+    after = {r["task_id"] for r in db.query(
+        "SELECT task_id FROM ticket_tasks WHERE ticket_id=%s", (ticket_id,))}
+    if after != before:
         ticket_note(ticket_id, user["id"],
-                    "関連タスク: {} 件 → {} 件".format(len(before), len(allowed)))
+                    "関連タスク: {} 件 → {} 件".format(len(before), len(after)))
         db.execute("UPDATE tickets SET updated_at=%s WHERE id=%s", (db.now(), ticket_id))
     return json_response({"task_ids": allowed})
 

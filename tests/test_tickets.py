@@ -1253,6 +1253,134 @@ class TestQueueVisibility(TicketTestCase):
         queue = self.make_queue("既定の窓口")
         self.assertEqual(queue["visibility"], "all")
 
+    # --- 脇道からの漏れ ------------------------------------------------
+
+    def test_the_list_header_counts_leave_it_out(self):
+        """一覧の上に出る「未完了」「受付待ち」などの数にも混ぜない。"""
+        before = self.outsider.get("/api/tickets")[1]["summary"]
+        self.make_ticket("数に混ざるか", queue_id=self.closed["id"])
+        after = self.outsider.get("/api/tickets")[1]["summary"]
+        self.assertEqual(after["total"], before["total"])
+        self.assertEqual(after["open"], before["open"])
+
+    def test_a_linked_task_does_not_reveal_it(self):
+        """別プロジェクトのタスクに紐づいていても、タスク詳細に出さない。"""
+        other = self.make_project("出入り自由 {}".format(uuid.uuid4().hex[:6]))
+        task = self.admin.post("/api/tasks", {"project_id": other["id"],
+                                              "title": "紐づけ先"})[1]["task"]
+        self.admin.put("/api/tickets/{}/tasks".format(self.ticket["id"]),
+                       {"task_ids": [task["id"]]})
+        _u, email = self.make_user("other のメンバー")
+        self.admin.put("/api/projects/{}/members".format(other["id"]), {
+            "members": [{"principal_type": "user", "principal_id": _u["id"],
+                         "role": "editor"}]})
+        viewer = self.client_for(email)
+        detail = viewer.get("/api/tasks/{}".format(task["id"]))[1]
+        self.assertNotIn("社外秘の相談", str(detail["tickets"]))
+
+    def test_a_linked_issue_does_not_reveal_it(self):
+        other = self.make_project("課題側 {}".format(uuid.uuid4().hex[:6]))
+        issue = self.admin.post("/api/issues", {"project_id": other["id"],
+                                                "title": "紐づけ先の課題"})[1]["issue"]
+        self.admin.post("/api/tickets/{}/issue".format(self.ticket["id"]),
+                        {"issue_id": issue["id"]})
+        # 直接紐づける口が無ければ、DB で紐づけて確かめる
+        from app import db
+        db.execute("INSERT IGNORE INTO ticket_issues(ticket_id, issue_id) VALUES(%s,%s)",
+                   (self.ticket["id"], issue["id"]))
+        _u, email = self.make_user("課題側のメンバー")
+        self.admin.put("/api/projects/{}/members".format(other["id"]), {
+            "members": [{"principal_type": "user", "principal_id": _u["id"],
+                         "role": "editor"}]})
+        detail = self.client_for(email).get("/api/issues/{}".format(issue["id"]))[1]
+        self.assertNotIn("社外秘の相談", str(detail["tickets"]))
+
+    def test_comments_on_it_stay_out_of_search(self):
+        self.admin.post("/api/tickets/{}/comments".format(self.ticket["id"]),
+                        {"body": "検索されてはいけない書き込み"})
+        hits = self.outsider.get("/api/search?q=" + quote("検索されてはいけない"))[1]
+        self.assertNotIn("検索されてはいけない書き込み", str(hits))
+        # 中の人には出る
+        hits = self.insider.get("/api/search?q=" + quote("検索されてはいけない"))[1]
+        self.assertIn("検索されてはいけない書き込み", str(hits))
+
+    def test_an_outsider_cannot_be_made_the_assignee(self):
+        """見えない人を担当にすると、開けない担当と件名入りの通知が生まれる。"""
+        outsider = db_user_id("部外者")
+        status, data = self.admin.patch("/api/tickets/{}".format(self.ticket["id"]),
+                                        {"assignee_id": outsider})
+        self.assertEqual(status, 400, data)
+        status, data = self.admin.post("/api/tickets", {
+            "queue_id": self.closed["id"], "title": "最初から部外者に",
+            "assignee_id": outsider})
+        self.assertEqual(status, 400, data)
+
+    def test_moving_it_into_a_closed_queue_checks_the_current_assignee(self):
+        outsider = db_user_id("部外者")
+        open_ticket = self.make_ticket("はじめは誰でも", assignee_id=outsider)
+        status, data = self.admin.patch("/api/tickets/{}".format(open_ticket["id"]),
+                                        {"queue_id": self.closed["id"]})
+        self.assertEqual(status, 400, data)
+
+    def test_an_outsider_cannot_be_mentioned_on_it(self):
+        """同名の人がいるとメンション自体が成り立たないので、名前は一意にする。"""
+        from app import db
+        name = "呼ばれ役{}".format(uuid.uuid4().hex[:4])
+        person, _email = self.make_user(name)
+        count = "SELECT COUNT(*) AS c FROM notifications WHERE user_id=%s"
+        # 誰でも見られる窓口なら、呼べば届く（＝メンションが成り立つことの確認）
+        self.admin.post("/api/tickets/{}/comments".format(
+            self.make_ticket("みんなの窓口の相談")["id"]),
+            {"body": "@{} 見てください".format(name)})
+        reached = db.scalar(count, (person["id"],), default=0)
+        self.assertGreater(reached, 0, "メンション自体が成り立っていない")
+        # 「メンバーだけ」の窓口では、呼んでも届かない
+        self.admin.post("/api/tickets/{}/comments".format(self.ticket["id"]),
+                        {"body": "@{} こちらも見てください".format(name)})
+        self.assertEqual(db.scalar(count, (person["id"],), default=0), reached)
+
+    def test_import_cannot_reach_it(self):
+        status, data = self.outsider.post("/api/tickets/import", {
+            "rows": [{"title": "紛れ込ませる"}], "queue_id": self.closed["id"]})
+        self.assertEqual(status, 404, data)
+        status, data = self.outsider.post("/api/tickets/import", {
+            "rows": [{"title": "名前で指す", "queue": self.closed["name"]}],
+            "queue_id": self.queue["id"], "dry_run": True})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["would_create"], 0)
+        self.assertIn("ありません", str(data["problems"]))
+
+
+def db_user_id(name):
+    from app import db
+    return db.scalar("SELECT id FROM users WHERE name=%s ORDER BY id DESC LIMIT 1", (name,))
+
+
+class TestNotificationGate(TicketTestCase):
+    """通知は、いまそれを見られる人にだけ届く（送り先の選び方に漏れがあっても）。"""
+
+    def test_someone_removed_from_a_project_stops_getting_its_comments(self):
+        from app import db
+        project = self.make_project("抜けた人 {}".format(uuid.uuid4().hex[:6]))
+        leaver, email = self.make_user("抜けた人")
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": leaver["id"],
+                         "role": "editor"}]})
+        task = self.admin.post("/api/tasks", {"project_id": project["id"],
+                                              "title": "抜ける前のタスク"})[1]["task"]
+        # 抜ける前にコメントしておく（＝以後コメント通知の送り先になる）
+        self.client_for(email).post("/api/tasks/{}/comments".format(task["id"]),
+                                    {"body": "参加していたころの書き込み"})
+        self.admin.put("/api/projects/{}/members".format(project["id"]), {"members": []})
+        before = db.scalar("SELECT COUNT(*) AS c FROM notifications WHERE user_id=%s",
+                           (leaver["id"],), default=0)
+        self.admin.post("/api/tasks/{}/comments".format(task["id"]),
+                        {"body": "抜けたあとの書き込み"})
+        after = db.scalar("SELECT COUNT(*) AS c FROM notifications WHERE user_id=%s",
+                          (leaver["id"],), default=0)
+        self.assertEqual(after, before)
+
+
 class TestTicketSearch(TicketTestCase):
     def test_a_ticket_turns_up_in_the_global_search(self):
         self.make_ticket("ぷりんたの調子がわるい")
@@ -1270,3 +1398,61 @@ class TestTicketSearch(TicketTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class TestDailyTotals(TicketTestCase):
+    """今日の確認の数字カードが、並べた件数（上限）で頭打ちにならないこと。"""
+
+    def test_the_ticket_card_counts_all_of_them(self):
+        me = self.admin.get("/api/auth/me")[1]["user"]
+        before = self.admin.get("/api/daily")[1]
+        base = before["totals"]["tickets"]
+        for i in range(25):
+            self.make_ticket("担当の山 {}".format(i), assignee_id=me["id"])
+        data = self.admin.get("/api/daily")[1]
+        self.assertEqual(len(data["tickets"]), data["list_limit"])   # 並ぶのは頭だけ
+        self.assertEqual(data["totals"]["tickets"], base + 25)      # 数は本当の件数
+
+
+
+class TestHiddenLinks(TicketTestCase):
+    """見えないプロジェクトとの紐づけを、見えない人が消せない・覗けないこと。"""
+
+    def setUp(self):
+        super().setUp()
+        self.secret = self.make_project("見えない側 {}".format(uuid.uuid4().hex[:6]))
+        self.secret_task = self.admin.post("/api/tasks", {
+            "project_id": self.secret["id"], "title": "見えない側のタスク"})[1]["task"]
+        self.open_project = self.make_project("見える側 {}".format(uuid.uuid4().hex[:6]))
+        self.open_task = self.admin.post("/api/tasks", {
+            "project_id": self.open_project["id"], "title": "見える側のタスク"})[1]["task"]
+        self.ticket = self.make_ticket("紐づけのあるチケット")
+        self.admin.put("/api/tickets/{}/tasks".format(self.ticket["id"]),
+                       {"task_ids": [self.secret_task["id"]]})
+        user, email = self.make_user("見える側の人")
+        self.admin.put("/api/projects/{}/members".format(self.open_project["id"]), {
+            "members": [{"principal_type": "user", "principal_id": user["id"],
+                         "role": "editor"}]})
+        self.editor = self.client_for(email)
+
+    def test_the_hidden_link_is_not_shown_by_name(self):
+        detail = self.editor.get("/api/tickets/{}".format(self.ticket["id"]))[1]
+        self.assertNotIn("見えない側のタスク", str(detail["tasks"]))
+        self.assertEqual(detail["hidden_links"], 1)     # 在ることだけは伝える
+
+    def test_editing_links_keeps_the_ones_i_cannot_see(self):
+        """見える側の人が紐づけを足しても、見えない側の紐づけは消えない。"""
+        self.editor.put("/api/tickets/{}/tasks".format(self.ticket["id"]),
+                        {"task_ids": [self.open_task["id"]]})
+        ids = {t["id"] for t in
+               self.admin.get("/api/tickets/{}".format(self.ticket["id"]))[1]["tasks"]}
+        self.assertIn(self.secret_task["id"], ids)
+        self.assertIn(self.open_task["id"], ids)
+
+    def test_i_cannot_link_a_task_i_cannot_see(self):
+        self.editor.put("/api/tickets/{}/tasks".format(self.ticket["id"]),
+                        {"task_ids": [self.open_task["id"], 999999]})
+        ids = {t["id"] for t in
+               self.admin.get("/api/tickets/{}".format(self.ticket["id"]))[1]["tasks"]}
+        self.assertNotIn(999999, ids)

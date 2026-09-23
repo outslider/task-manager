@@ -83,4 +83,5 @@ def _send(text, project_id):
 
 
 def check(webhook_url=None):
-    return post("✅ タスク管理システムからのテスト通知です。", webhook_url=webhook_url)
+    name = db.get_setting("app_name", "タスク管理") or "タスク管理"
+    return post("✅ {} からのテスト通知です。".format(name), webhook_url=webhook_url)

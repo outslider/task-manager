@@ -5,7 +5,7 @@
 import { api, url } from '../api.js';
 import { STATUS_LABEL, store } from '../store.js';
 import {
-  avatar, confirmDialog, dueClass, dueDelta, el, fill, formatBytes, formatDate,
+  avatar, confirmDialog, debounce, dueClass, dueDelta, el, fill, formatBytes, formatDate,
   formatDateTime, openDrawer, openModal, skeleton, toast, undoToast,
 } from '../util.js';
 import { icon } from '../icons.js';
@@ -222,6 +222,13 @@ async function renderDetail(instance, ticketId, onChange) {
         text: formatDate(task.due_date) })
       : null)));
   }
+  // 参加していないプロジェクトとの紐づけは、名前を出さずに在ることだけ伝える。
+  // 紐づけを編集しても、それらは消えずに残る。
+  if (data.hidden_links) {
+    body.append(el('div', { class: 'hint', style: { marginTop: '6px' },
+      text: `ほかに、参加していないプロジェクトのタスク・課題との紐づけが `
+        + `${data.hidden_links} 件あります（編集しても消えません）` }));
+  }
 
   /* ---- 課題へ渡す ---- */
   body.append(sectionTitle(`関連課題 (${issues.length})`,
@@ -391,18 +398,51 @@ async function makeIssue(ticket, reload) {
   if (made) reload();
 }
 
+/**
+ * 既存のタスクへの紐づけ。
+ *
+ * 候補を一度に全部読むと、タスクが多い環境では上限で黙って切れて、
+ * 紐づけたいタスクが出てこない。名前で探せるようにし、切れているときは伝える。
+ */
 async function editTaskLinks(ticket, linked, reload) {
-  const { tasks } = await api.get('/api/tasks?status=all&limit=500');
-  const picker = chipPicker(tasks, linked.map((t) => t.id), {
-    placeholder: 'このチケットに関係するタスクを選ぶ…',
-    emptyText: '紐づけたタスクはありません',
-    exhausted: '選べるタスクがありません',
-    labelOf: (task) => `${task.title}（${task.project_name}）`,
+  let chosen = linked.map((t) => t.id);
+  const known = new Map(linked.map((t) => [t.id, t]));   // 検索結果の外にある選択済みの名前
+  const pickerHost = el('div', {});
+  const note = el('div', { class: 'hint' });
+  const search = el('input', {
+    class: 'input', type: 'search', placeholder: 'タスク名で探す…', style: { marginBottom: '8px' },
   });
+  let picker = null;
+  const draw = async (query) => {
+    if (picker) chosen = picker.ids();
+    const params = new URLSearchParams({ status: 'all', limit: '100' });
+    if (query) params.set('q', query);
+    let data;
+    try { data = await api.get(`/api/tasks?${params}`); } catch (error) {
+      toast(error.message, 'error');
+      return;
+    }
+    data.tasks.forEach((t) => known.set(t.id, t));
+    // 選んである分は、今の検索結果に無くても候補に残す（外すと保存で消える）
+    const pool = new Map(chosen.filter((id) => known.has(id)).map((id) => [id, known.get(id)]));
+    data.tasks.forEach((t) => pool.set(t.id, t));
+    picker = chipPicker([...pool.values()], chosen, {
+      placeholder: 'このチケットに関係するタスクを選ぶ…',
+      emptyText: '紐づけたタスクはありません',
+      exhausted: query ? '該当するタスクがありません' : '選べるタスクがありません',
+      labelOf: (task) => `${task.title}（${task.project_name}）`,
+    });
+    fill(pickerHost, picker.node);
+    note.textContent = data.truncated
+      ? `該当 ${data.matched} 件のうち ${data.tasks.length} 件を出しています。名前で絞り込んでください`
+      : '';
+  };
+  search.addEventListener('input', debounce(() => draw(search.value.trim()), 250));
+  await draw('');
   const saved = await openModal({
     title: '既存のタスクに紐づける',
     build: () => el('div', { class: 'field' },
-      el('label', { text: 'このチケットに関係するタスク' }), picker.node),
+      el('label', { text: 'このチケットに関係するタスク' }), search, pickerHost, note),
     footer: (close) => [
       el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
       el('button', {

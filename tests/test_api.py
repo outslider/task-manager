@@ -3654,6 +3654,31 @@ class TestTaxonomy(ApiTestCase):
         self.assertEqual(todo["label"], "着手前")
         self.assertEqual(todo["color"], "#112233")
 
+    def test_a_renamed_status_shows_up_everywhere_it_is_named(self):
+        """名前を変えたら、取り込みの説明にもボトルネックの理由にも出ること。
+
+        以前は取り込みの説明が「未着手 / 進行中 …」の固定文字で、名前を変えても
+        古いまま残っていた（取り込み自体は新しい名前で通るので、説明だけが嘘になる）。
+        """
+        self.admin.put("/api/admin/taxonomy", {"statuses": [
+            {"value": "todo", "label": "着手前", "color": "#112233"},
+            {"value": "blocked", "label": "止まっている", "color": "#aa0000"}]})
+        fields = self.admin.get("/api/import/fields")[1]["fields"]
+        help_text = next(f["help"] for f in fields if f["value"] == "status")
+        self.assertIn("着手前", help_text)
+        self.assertNotIn("未着手", help_text)
+        # 新しい名前で取り込める
+        project = self.make_project()
+        status, data = self.admin.post("/api/projects/{}/tasks/import".format(project["id"]), {
+            "rows": [{"title": "名前を変えた状態", "status": "止まっている"}]})
+        self.assertIn(status, (200, 201), data)
+        tasks = self.admin.get("/api/projects/{}/tasks".format(project["id"]))[1]["tasks"]
+        self.assertEqual(next(t for t in tasks if t["title"] == "名前を変えた状態")["status"],
+                         "blocked")
+        # ボトルネックの理由文も新しい名前
+        from app import graph
+        self.assertEqual(graph._status_label("blocked"), "止まっている")
+
     def test_status_keys_cannot_be_added(self):
         """キーは判定に使うので増やせないこと。"""
         self.admin.put("/api/admin/taxonomy", {"statuses": [

@@ -935,6 +935,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* 空の状態に置く線画。文字より一段淡くする。 */
 .empty-ico { color: var(--text-faint); display: grid; place-items: center; margin-bottom: 6px; }
 
+/* 今日の確認で、並べきれなかったぶんを知らせる一行 */
+.daily-more {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 9px 16px; font-size: 12.5px; color: var(--text-muted);
+  border-top: 1px dashed var(--border); background: var(--surface-2);
+}
+
 /* 全体ガントで並べるプロジェクトを選ぶ一覧 */
 .pick-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 2px;
