@@ -111,7 +111,11 @@ export async function setParent(task, parentId, tasks) {
 export function indentTarget(tasks, task) {
   const siblings = siblingsOf(tasks, task.parent_id ?? null);
   const index = siblings.findIndex((t) => t.id === task.id);
-  return index > 0 ? siblings[index - 1] : null;
+  // 見出しの下には入れられないので、直前の「タスク」を探す（見出しを飛ばす）
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (!siblings[i].is_heading) return siblings[i];
+  }
+  return null;
 }
 
 /** 親と同じ階層に上げる。トップレベルなら null（＝これ以上上げられない）。 */
@@ -131,7 +135,8 @@ export function openParentPicker(task, tasks) {
   const current = task.parent_id ?? null;
   let chosen = current;
 
-  const candidates = tasks.filter((t) => !blocked.has(t.id));
+  // 見出しは親にできない（区切りの線であって、まとめ役ではない）
+  const candidates = tasks.filter((t) => !blocked.has(t.id) && !t.is_heading);
   const list = el('div', { class: 'parent-pick-list' });
   const search = el('input', {
     class: 'input', type: 'search', placeholder: 'タスク名で絞り込む',

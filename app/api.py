@@ -154,6 +154,24 @@ def task_or_404(user, task_id, minimum="viewer"):
     return task
 
 
+# 見出しは、タスク一覧とガントで区切りの帯として描くためだけの行。
+# 作業ではないので、件数・完了率・一覧・通知・負荷・分析には入れない。
+# タスクを数えたり並べたりする問い合わせには、この条件を付ける。
+NOT_HEADING = "t.is_heading=0"
+# 見出しで変えてよい項目。状態や日付を持たせると「作業」として扱われだすため
+HEADING_EDITABLE = {"title", "parent_id", "sort_order"}
+
+
+def is_heading(task_id):
+    return bool(task_id) and bool(db.scalar(
+        "SELECT is_heading AS h FROM tasks WHERE id=%s", (task_id,), default=0))
+
+
+def reject_heading_parent(parent_id):
+    if is_heading(parent_id):
+        raise bad_request("見出しの下にはタスクを置けません（見出しは区切りの線です）")
+
+
 def descendant_ids(task_id):
     """All descendants of a task (breadth first, no recursion limits)."""
     out, frontier = [], [task_id]
@@ -203,6 +221,10 @@ def task_rows_with_rollup(rows):
     children = {}
     for r in rows:
         r["child_count"] = 0
+        # 見出しは子として数えない。数えると進捗 0% の子として平均を下げ、
+        # 子が見出しだけのタスクが「まとめ役」扱いになって日程を動かせなくなる
+        if r.get("is_heading"):
+            continue
         children.setdefault(r["parent_id"], []).append(r["id"])
     for parent_id, kids in children.items():
         if parent_id in by_id:
@@ -567,7 +589,7 @@ def project_stats(project_ids):
                SUM(status <> 'done' AND EXISTS (
                    SELECT 1 FROM task_deps d JOIN tasks pt ON pt.id = d.depends_on_id
                     WHERE d.task_id = tasks.id AND pt.status <> 'done')) AS blocked
-          FROM tasks WHERE project_id IN %s GROUP BY project_id
+          FROM tasks WHERE project_id IN %s AND is_heading=0 GROUP BY project_id
         """,
         (db.today(), tuple(project_ids)),
     )
@@ -817,7 +839,7 @@ def list_project_tasks(ctx, project_id):
                     (project_id,))
     task_rows_with_rollup(rows)
     deps = project_deps(project_id)
-    analysis = graph.analyze(rows, deps)
+    analysis = graph.analyze([r for r in rows if not r["is_heading"]], deps)
     for row in rows:
         row.update(slim_metrics(analysis["metrics"].get(row["id"], {})))
     return json_response({
@@ -835,7 +857,7 @@ def list_project_tasks(ctx, project_id):
 GANTT_SELECT = """
     SELECT t.id, t.project_id, t.parent_id, t.title, t.status, t.priority, t.category,
            t.assignee_id, t.start_date, t.due_date, t.progress, t.estimate_hours,
-           t.is_milestone, t.marker, t.sort_order
+           t.is_milestone, t.is_heading, t.marker, t.sort_order
       FROM tasks t
       JOIN projects p ON p.id = t.project_id
 """
@@ -863,7 +885,7 @@ def gantt_overview(ctx):
         "SELECT d.task_id, d.depends_on_id FROM task_deps d "
         "JOIN tasks t ON t.id = d.task_id WHERE t.project_id IN %s", (scope,))
     # 依存はプロジェクトの中で閉じているので、まとめて解析しても混ざらない
-    analysis = graph.analyze(rows, deps)
+    analysis = graph.analyze([r for r in rows if not r["is_heading"]], deps)
     for row in rows:
         row.update(slim_metrics(analysis["metrics"].get(row["id"], {})))
     projects = db.query(
@@ -896,7 +918,8 @@ def project_bottlenecks(ctx, project_id):
     project_or_404(user, project_id)
     rows = db.query(
         "SELECT t.*, u.name AS assignee_name FROM tasks t "
-        "LEFT JOIN users u ON u.id = t.assignee_id WHERE t.project_id=%s", (project_id,))
+        "LEFT JOIN users u ON u.id = t.assignee_id WHERE t.project_id=%s AND " + NOT_HEADING,
+        (project_id,))
     result = graph.bottlenecks(rows, project_deps(project_id),
                                limit=as_int(ctx.query.get("limit"), 20, 1, 100))
     titles = {r["id"]: r["title"] for r in rows}
@@ -914,7 +937,7 @@ def search_tasks(ctx):
     ids = auth.visible_project_ids(user)
     if not ids:
         return json_response({"tasks": []})
-    where = ["t.project_id IN %s"]
+    where = ["t.project_id IN %s", NOT_HEADING]
     params = [tuple(ids)]
     q = (ctx.query.get("q") or "").strip()
     if q:
@@ -1015,9 +1038,11 @@ def set_task_deps(task_id, project_id, ids):
         dep_id = as_int(raw)
         if dep_id is None or dep_id == task_id or dep_id in wanted:
             continue
-        other = db.query_one("SELECT project_id FROM tasks WHERE id=%s", (dep_id,))
+        other = db.query_one("SELECT project_id, is_heading FROM tasks WHERE id=%s", (dep_id,))
         if not other or other["project_id"] != project_id:
             raise bad_request("先行タスクは同じプロジェクトから選んでください")
+        if other["is_heading"]:
+            raise bad_request("見出しは先行タスクにできません")
         wanted.append(dep_id)
     with db.transaction():
         db.execute("DELETE FROM task_deps WHERE task_id=%s", (task_id,))
@@ -1073,8 +1098,14 @@ def _create_task(user, body):
         parent = db.query_one("SELECT project_id FROM tasks WHERE id=%s", (parent_id,))
         if not parent or parent["project_id"] != project_id:
             raise bad_request("親タスクが同じプロジェクトにありません")
+        reject_heading_parent(parent_id)
         if task_depth(parent_id) >= MAX_TASK_DEPTH:
             raise bad_request("階層が深すぎます（最大 {} 階層）".format(MAX_TASK_DEPTH))
+    if as_bool(ctx.body.get("is_heading")):
+        # 見出しは名前と置き場所だけ。ほかの項目は受け取っても入れない
+        ctx = _Body({"project_id": project_id, "title": title, "parent_id": parent_id,
+                     "sort_order": ctx.body.get("sort_order"), "is_heading": True})
+    heading = 1 if as_bool(ctx.body.get("is_heading")) else 0
     status, progress = _apply_status_progress(ctx.body, None)
     start_date = as_date(ctx.body.get("start_date"))
     due_date = as_date(ctx.body.get("due_date"))
@@ -1094,12 +1125,12 @@ def _create_task(user, body):
     task_id = db.insert(
         "INSERT INTO tasks(project_id, parent_id, title, description, category, status, "
         "priority, assignee_id, start_date, due_date, progress, estimate_hours, is_milestone, "
-        "marker, sort_order, created_by, created_at, updated_at, completed_at) "
-        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "is_heading, marker, sort_order, created_by, created_at, updated_at, completed_at) "
+        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (project_id, parent_id, title, ctx.body.get("description", ""),
          normalize_category(ctx.body.get("category")), status,
          as_int(ctx.body.get("priority"), 1, 0, 3), assignee_id, start_date, due_date,
-         progress, as_hours(ctx.body.get("estimate_hours")), is_milestone,
+         progress, as_hours(ctx.body.get("estimate_hours")), is_milestone, heading,
          normalize_marker(ctx.body.get("marker")), sort_order,
          user["id"], now, now, now if status == "done" else None))
     if "depends_on" in ctx.body:
@@ -1140,7 +1171,8 @@ def get_task(ctx, task_id):
         path.insert(0, {"id": parent["id"], "title": parent["title"]})
         parent_id = parent["parent_id"]
     children = db.query(
-        TASK_SELECT + " WHERE t.parent_id=%s ORDER BY t.sort_order, t.id", (task_id,))
+        TASK_SELECT + " WHERE t.parent_id=%s AND " + NOT_HEADING + " ORDER BY t.sort_order, t.id",
+        (task_id,))
     comments = db.query(
         "SELECT c.*, u.name AS user_name, u.avatar_color FROM comments c "
         "LEFT JOIN users u ON u.id = c.user_id WHERE c.task_id=%s ORDER BY c.created_at, c.id",
@@ -1157,7 +1189,7 @@ def get_task(ctx, task_id):
         "JOIN tasks t ON t.id = d.task_id WHERE d.depends_on_id=%s", (task_id,))
     siblings = db.query(
         "SELECT id, title, status, start_date, due_date, is_milestone, priority, category "
-        "FROM tasks WHERE project_id=%s", (task["project_id"],))
+        "FROM tasks WHERE project_id=%s AND is_heading=0", (task["project_id"],))
     analysis = graph.analyze(siblings, project_deps(task["project_id"]))
     metrics = analysis["metrics"].get(task_id, {})
     by_id = {t["id"]: t for t in siblings}
@@ -1195,6 +1227,8 @@ def update_task(ctx, task_id):
     current = task_or_404(user, task_id, "editor")
     body = ctx.body
     fields, params, notes = [], [], []
+    if current["is_heading"] and set(body) - HEADING_EDITABLE:
+        raise bad_request("見出しで変えられるのは名前と置き場所だけです")
 
     if "title" in body:
         title = require(body, "title", "タスク名")
@@ -1360,6 +1394,7 @@ def _validate_parent(task_id, parent_id, project_id):
     parent = db.query_one("SELECT project_id FROM tasks WHERE id=%s", (parent_id,))
     if not parent or parent["project_id"] != project_id:
         raise bad_request("親タスクが同じプロジェクトにありません")
+    reject_heading_parent(parent_id)
     if parent_id in descendant_ids(task_id):
         raise bad_request("子孫タスクを親にはできません")
     # 動かすタスクだけでなく、その下にぶら下がる子孫まで入る深さか確かめる
@@ -1375,8 +1410,9 @@ def reorder_tasks(ctx):
     items = ctx.body.get("items")
     if not isinstance(items, list):
         raise bad_request("items は配列で指定してください")
-    valid_ids = {r["id"] for r in db.query(
-        "SELECT id FROM tasks WHERE project_id=%s", (project_id,))}
+    rows = db.query("SELECT id, is_heading FROM tasks WHERE project_id=%s", (project_id,))
+    valid_ids = {r["id"] for r in rows}
+    headings = {r["id"] for r in rows if r["is_heading"]}
     updates = []
     for item in items:
         task_id = as_int(item.get("id"))
@@ -1385,6 +1421,8 @@ def reorder_tasks(ctx):
         parent_id = as_int(item.get("parent_id"))
         if parent_id is not None and parent_id not in valid_ids:
             raise bad_request("親タスクが不正です")
+        if parent_id in headings:
+            raise bad_request("見出しの下にはタスクを置けません（見出しは区切りの線です）")
         updates.append((parent_id, as_int(item.get("sort_order"), 0), db.now(), task_id))
     parents = {u[3]: u[0] for u in updates}
     for task_id in parents:
@@ -1429,9 +1467,11 @@ def add_dep(ctx, task_id):
         raise bad_request("depends_on_id は必須です")
     if depends_on == task_id:
         raise bad_request("自分自身には依存できません")
-    other = db.query_one("SELECT project_id FROM tasks WHERE id=%s", (depends_on,))
+    other = db.query_one("SELECT project_id, is_heading FROM tasks WHERE id=%s", (depends_on,))
     if not other or other["project_id"] != task["project_id"]:
         raise bad_request("同じプロジェクトのタスクを指定してください")
+    if task["is_heading"] or other["is_heading"]:
+        raise bad_request("見出しには依存関係を付けられません")
     if _creates_dep_cycle(task_id, depends_on):
         raise bad_request("依存関係が循環します")
     db.execute("INSERT IGNORE INTO task_deps(task_id, depends_on_id) VALUES(%s,%s)",
@@ -1753,6 +1793,7 @@ def search(ctx):
         "  FROM tasks t JOIN projects p ON p.id = t.project_id "
         "  LEFT JOIN users u ON u.id = t.assignee_id "
         " WHERE t.project_id IN %s AND (t.title LIKE %s OR t.description LIKE %s) "
+        "   AND " + NOT_HEADING +
         " ORDER BY (t.status='done'), (t.due_date IS NULL), t.due_date LIMIT %s",
         (scope, like, like, limit))
     issues = db.query(
@@ -1841,7 +1882,8 @@ def search(ctx):
 def get_taxonomy(ctx):
     admin_only(ctx)
     used = {r["category"]: r["c"] for r in db.query(
-        "SELECT category, COUNT(*) AS c FROM tasks WHERE category <> '' GROUP BY category")}
+        "SELECT category, COUNT(*) AS c FROM tasks WHERE category <> '' AND is_heading=0 "
+        "GROUP BY category")}
     categories = [dict(c, used=used.get(c["value"], 0)) for c in taxonomy.categories()]
     return json_response({
         "statuses": taxonomy.statuses(),
@@ -2332,6 +2374,11 @@ def bulk_update_tasks(ctx):
                 deleted += len(ids)
         return json_response({"deleted": deleted, "trash_ids": bins})
 
+    # 見出しには状態も日付も担当も無い。消す以外の一括操作では素通りさせる
+    tasks = [task for task in tasks if not task["is_heading"]]
+    if not tasks:
+        return json_response({"updated": 0})
+
     if action == "shift":
         days = as_int(ctx.body.get("days"), 0)
         if not days:
@@ -2393,7 +2440,7 @@ def bulk_update_tasks(ctx):
     params.append(db.now())
     with db.transaction():
         db.execute("UPDATE tasks SET {} WHERE id IN %s".format(", ".join(fields)),
-                   params + [tuple(ids)])
+                   params + [tuple(task["id"] for task in tasks)])
     note = "一括更新 — " + " / ".join(notes)
     for task in tasks:
         system_comment(task["id"], user["id"], note)
@@ -2402,7 +2449,7 @@ def bulk_update_tasks(ctx):
         for task in tasks:
             if task["assignee_id"] != new_assignee and new_assignee != user["id"]:
                 _notify_assignment(task["id"], task["title"], new_assignee, user)
-    return json_response({"updated": len(ids)})
+    return json_response({"updated": len(tasks)})
 
 
 # --------------------------------------------------------------------------
@@ -2731,17 +2778,17 @@ def place_template(project_id, parent_id, body, start, user_id, rename_root=None
             task_id = db.insert(
                 "INSERT INTO tasks(project_id, parent_id, title, description, category, "
                 "status, priority, assignee_id, start_date, due_date, progress, "
-                "estimate_hours, is_milestone, marker, sort_order, created_by, "
+                "estimate_hours, is_milestone, is_heading, marker, sort_order, created_by, "
                 "created_at, updated_at) "
-                "VALUES(%s,%s,%s,%s,%s,'todo',%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s,%s)",
+                "VALUES(%s,%s,%s,%s,%s,'todo',%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (project_id, parent, title[:300], item.get("description") or "",
                  normalize_category(item.get("category"), ""),
                  as_int(item.get("priority"), 1, 0, 3),
                  # 担当は複製のときだけ引き継ぐ（雛形には入っていない）
                  item.get("assignee_id"), begin, due,
                  as_hours(item.get("estimate_hours")),
-                 1 if item.get("is_milestone") else 0, (item.get("marker") or "")[:10],
-                 order, user_id, now, now))
+                 1 if item.get("is_milestone") else 0, 1 if item.get("is_heading") else 0,
+                 (item.get("marker") or "")[:10], order, user_id, now, now))
             created.append(task_id)
             # 番号の並びを templates.build と揃えるため、兄弟より先に子へ降りる
             place(item.get("children") or [], task_id, 10)
@@ -2912,6 +2959,7 @@ def apply_template(ctx, template_id):
         parent = task_or_404(user, parent_id, "editor")
         if parent["project_id"] != project_id:
             raise bad_request("差し込み先が違うプロジェクトです")
+        reject_heading_parent(parent_id)
     if task_depth(parent_id) + templates.height(body) > MAX_TASK_DEPTH:
         raise bad_request("階層が深すぎます（最大 {} 階層）".format(MAX_TASK_DEPTH))
     with db.transaction():
@@ -3341,9 +3389,11 @@ def set_issue_tasks(issue_id, project_id, task_ids):
         task_id = as_int(raw)
         if task_id is None or task_id in wanted:
             continue
-        owner = db.query_one("SELECT project_id FROM tasks WHERE id=%s", (task_id,))
+        owner = db.query_one("SELECT project_id, is_heading FROM tasks WHERE id=%s", (task_id,))
         if not owner or owner["project_id"] != project_id:
             raise bad_request("同じプロジェクトのタスクを指定してください")
+        if owner["is_heading"]:
+            raise bad_request("見出しは課題と結びつけられません")
         wanted.append(task_id)
     with db.transaction():
         db.execute("DELETE FROM issue_tasks WHERE issue_id=%s", (issue_id,))
@@ -4789,7 +4839,7 @@ def link_ticket_tasks(ctx, ticket_id):
     allowed = []
     if wanted:
         rows = db.query(
-            "SELECT id FROM tasks WHERE id IN %s AND project_id IN %s",
+            "SELECT id FROM tasks WHERE id IN %s AND project_id IN %s AND is_heading=0",
             (tuple(set(wanted)), visible))
         allowed = [row["id"] for row in rows]
     before = {r["task_id"] for r in db.query(
@@ -5222,8 +5272,8 @@ def project_review(ctx, project_id):
         "SELECT t.id, t.title, t.status, t.progress, t.start_date, t.due_date, "
         "t.is_milestone, t.updated_at, t.assignee_id, t.estimate_hours, t.actual_hours, "
         "t.project_id, u.name AS assignee_name "
-        "FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id WHERE t.project_id=%s",
-        (project_id,))
+        "FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id WHERE t.project_id=%s AND "
+        + NOT_HEADING, (project_id,))
     if not tasks:
         raise bad_request("タスクがまだないので、見てもらえることがありません")
     if not llm.available():
@@ -5296,7 +5346,7 @@ def workload_view(ctx):
         "SELECT t.id, t.title, t.status, t.assignee_id, t.start_date, t.due_date, t.progress, "
         "t.estimate_hours, t.actual_hours, t.project_id "
         "FROM tasks t JOIN projects p ON p.id = t.project_id "
-        "WHERE t.project_id IN %s AND p.archived = 0", (tuple(project_ids),))
+        "WHERE t.project_id IN %s AND p.archived = 0 AND " + NOT_HEADING, (tuple(project_ids),))
     users = db.query("SELECT id, name, avatar_color FROM users WHERE is_active=1")
     weeks = as_int(ctx.query.get("weeks"), 8, 2, 26)
     hours_per_day = float(db.get_setting("work_hours_per_day", "8") or 8)
@@ -5401,6 +5451,7 @@ def create_recurrence(ctx, project_id):
     ensure_member(values["assignee_id"], project_id)
     if values["parent_id"] and auth.task_project_id(values["parent_id"]) != project_id:
         raise bad_request("親タスクが同じプロジェクトにありません")
+    reject_heading_parent(values["parent_id"])
     now = db.now()
     rule_id = db.insert(
         "INSERT INTO recurrences(project_id, title, description, category, priority, assignee_id, "
@@ -5425,6 +5476,7 @@ def update_recurrence(ctx, rule_id):
     values = _recurrence_body(ctx, current)
     if values["parent_id"] and auth.task_project_id(values["parent_id"]) != current["project_id"]:
         raise bad_request("親タスクが同じプロジェクトにありません")
+    reject_heading_parent(values["parent_id"])
     db.execute(
         "UPDATE recurrences SET title=%(title)s, description=%(description)s, "
         "category=%(category)s, priority=%(priority)s, assignee_id=%(assignee_id)s, "
@@ -5579,6 +5631,8 @@ def _check_meeting_parent(values, project_id):
     """置き場所のタスクは同じプロジェクトのものに限る。"""
     if values["parent_id"] and auth.task_project_id(values["parent_id"]) != project_id:
         raise bad_request("置き場所のタスクが同じプロジェクトにありません")
+    if is_heading(values["parent_id"]):
+        raise bad_request("見出しの下には置けません。すぐ下のタスクを選んでください")
 
 
 def meeting_out(row, can_edit=False):

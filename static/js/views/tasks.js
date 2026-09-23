@@ -46,15 +46,45 @@ export function buildTree(tasks) {
   return { byId, children };
 }
 
+/**
+ * 兄弟の並びを見出しで区切る。見出しをたたんでいれば、次の見出しまでを隠す。
+ * keep（残すタスクの id）を渡すと、中身が 1 件も残らない見出しは出さない。
+ * 絞り込んだときに、空の区切りだけが並ぶのを避けるため。
+ * @returns {Array<{task, heading?: true, count?: number}>}
+ */
+export function sectionize(list, collapsed, keep = null) {
+  const sections = [{ heading: null, items: [] }];
+  for (const task of list) {
+    if (task.is_heading) sections.push({ heading: task, items: [] });
+    else sections[sections.length - 1].items.push(task);
+  }
+  const out = [];
+  for (const { heading, items } of sections) {
+    const shown = keep ? items.filter((t) => keep.has(t.id)) : items;
+    if (heading) {
+      if (keep && !shown.length) continue;
+      out.push({ task: heading, heading: true, count: shown.length });
+      if (collapsed.has(heading.id)) continue;
+    }
+    out.push(...shown.map((task) => ({ task })));
+  }
+  return out;
+}
+
 /** Depth-first list of {task, depth, hasChildren} honouring the collapsed set. */
 export function flattenTree(tasks, collapsed = new Set(), filter = null) {
   const { children } = buildTree(tasks);
   const keep = filter ? new Set(matchingWithAncestors(tasks, filter)) : null;
   const out = [];
   const walk = (parentId, depth) => {
-    for (const task of children.get(parentId) || []) {
-      if (keep && !keep.has(task.id)) continue;
-      const kids = (children.get(task.id) || []).filter((k) => !keep || keep.has(k.id));
+    for (const entry of sectionize(children.get(parentId) || [], collapsed, keep)) {
+      const { task } = entry;
+      if (entry.heading) {
+        out.push({ task, depth, heading: true, count: entry.count,
+          collapsed: collapsed.has(task.id) });
+        continue;
+      }
+      const kids = sectionize(children.get(task.id) || [], new Set(), keep);
       out.push({ task, depth, hasChildren: kids.length > 0 });
       if (kids.length && !collapsed.has(task.id)) walk(task.id, depth + 1);
     }
@@ -68,7 +98,8 @@ function matchingWithAncestors(tasks, filter) {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const keep = new Set();
   for (const task of tasks) {
-    if (!filter(task)) continue;
+    // 見出しは状態を持たないので「未完了」などに当たってしまう。中身で判断する
+    if (task.is_heading || !filter(task)) continue;
     let node = task;
     let guard = 0;
     while (node && guard < 20) {
@@ -121,6 +152,12 @@ export async function render(container, route) {
           await openTemplates({ project, onApplied: reload });
         },
       }, ...iconLabel('blocks', '雛形'))
+      : null,
+    canEdit
+      ? el('button', {
+        class: 'btn', title: '区切りの見出しを足します（作業ではないので件数には入りません）',
+        onClick: () => addHeading(null),
+      }, ...iconLabel('list', '見出し'))
       : null,
     canEdit
       ? el('button', { class: 'btn btn-primary', onClick: () => addTask(null) }, ...iconLabel('plus', 'タスク'))
@@ -253,23 +290,27 @@ export async function render(container, route) {
     if (rows.length === 0) {
       rowsHost.append(el('div', { class: 'empty' },
         el('div', { class: 'big', text: '📋' }),
-        data.tasks.length === 0 ? 'まだタスクがありません' : '条件に一致するタスクがありません',
+        !data.tasks.some((t) => !t.is_heading) && !state.query
+          ? 'まだタスクがありません' : '条件に一致するタスクがありません',
         canEdit && data.tasks.length === 0
           ? el('div', { style: { marginTop: '12px' } },
             el('button', { class: 'btn btn-primary', onClick: () => addTask(null) }, '最初のタスクを追加'))
           : null));
     } else {
-      rows.forEach((row) => rowsHost.append(taskRow(row)));
+      rows.forEach((row) => rowsHost.append(row.heading ? headingRow(row) : taskRow(row)));
     }
     drawAlerts();
     drawBulkBar();
-    const done = data.tasks.filter((t) => t.status === 'done').length;
-    const overdue = data.tasks.filter((t) => dueClass(t.due_date, t.status) === 'overdue').length;
-    const hidden = data.tasks.length - rows.length;
+    // 見出しは作業ではないので、件数には入れない
+    const work = data.tasks.filter((t) => !t.is_heading);
+    const shownWork = rows.filter((r) => !r.heading).length;
+    const done = work.filter((t) => t.status === 'done').length;
+    const overdue = work.filter((t) => dueClass(t.due_date, t.status) === 'overdue').length;
+    const hidden = work.length - shownWork;
     fill(summary,
-      `全 ${data.tasks.length} 件 / 完了 ${done} 件`,
+      `全 ${work.length} 件 / 完了 ${done} 件`,
       overdue ? el('span', { class: 'badge overdue', style: { marginLeft: '8px' }, text: `期限超過 ${overdue}` }) : null,
-      el('span', { style: { marginLeft: '8px' }, text: `表示 ${rows.length} 件` }));
+      el('span', { style: { marginLeft: '8px' }, text: `表示 ${shownWork} 件` }));
     drawFilterNotice(hidden);
   }
 
@@ -434,6 +475,117 @@ export async function render(container, route) {
     return row;
   }
 
+  /**
+   * 見出しの行。区切りの帯として描き、押すと次の見出しまでをたたむ。
+   * 状態・担当・期限・進捗の欄は持たないので、帯を横いっぱいに伸ばす。
+   */
+  function headingRow({ task, depth, count, collapsed: folded }) {
+    const row = el('div', {
+      class: 'task-row is-heading',
+      draggable: canEdit ? 'true' : null,
+      dataset: { id: String(task.id) },
+      title: folded ? 'クリックで開く' : 'クリックでたたむ',
+      onClick: () => {
+        if (collapsed.has(task.id)) collapsed.delete(task.id); else collapsed.add(task.id);
+        saveCollapsed(projectId, collapsed);
+        draw();
+      },
+    },
+    el('div', { class: 'task-main heading-main', style: { paddingLeft: `${depth * 16}px` } },
+      canEdit ? el('span', {
+        class: 'drag-handle', title: 'ドラッグで動かせます',
+        onClick: (event) => event.stopPropagation(),
+      }, '⠿') : null,
+      el('span', { class: `twisty${folded ? '' : ' open'}` }, '▶'),
+      el('span', { class: 'heading-title', text: task.title, title: task.title }),
+      el('span', { class: 'heading-count', text: `${count} 件` })),
+    el('div', {},
+      canEdit
+        ? el('button', {
+          class: 'icon-btn', title: 'メニュー',
+          onClick: (event) => { event.stopPropagation(); headingMenu(event.currentTarget, task); },
+        }, '⋯')
+        : null));
+    if (canEdit) attachDragHandlers(row, task);
+    return row;
+  }
+
+  function headingMenu(anchor, task) {
+    popupMenu(anchor, (item) => [
+      item('✏️ 名前を変える', () => renameHeading(task)),
+      ...hierarchyMenuItems(task, item).filter((node) => !/子タスク|親タスク/.test(node.textContent)),
+      item('＋ この下にタスクを追加', () => addTaskAfter(task)),
+      item('🗑 見出しを削除', async () => {
+        const { undoToast } = await import('../util.js');
+        // 見出しを消しても、その下のタスクはそのまま残る（区切りが 1 本消えるだけ）
+        const result = await api.del(`/api/tasks/${task.id}`);
+        reload();
+        undoToast(`見出し「${task.title}」を削除しました`, async () => {
+          await api.post(`/api/trash/${result.trash_id}/restore`, {});
+          reload();
+        });
+      }, true),
+    ]);
+  }
+
+  async function renameHeading(task) {
+    const { promptDialog } = await import('../util.js');
+    const title = await promptDialog({ title: '見出しの名前', label: '名前', value: task.title });
+    if (!title || !title.trim() || title.trim() === task.title) return;
+    try {
+      await api.patch(`/api/tasks/${task.id}`, { title: title.trim() });
+      reload();
+    } catch (error) { toast(error.message, 'error'); }
+  }
+
+  /**
+   * 見出しを足す。after を渡すと、そのすぐ下（同じ階層）に入れる。
+   * 渡さなければ、いちばん下に足す。
+   */
+  async function addHeading(after) {
+    const { promptDialog } = await import('../util.js');
+    const title = await promptDialog({
+      title: '見出しを追加', label: '見出しの名前', placeholder: '例）準備、本番、振り返り',
+    });
+    if (!title || !title.trim()) return;
+    try {
+      const created = await api.post('/api/tasks', {
+        project_id: projectId, title: title.trim(), is_heading: true,
+        parent_id: after?.parent_id ?? null,
+      });
+      if (after) await placeAfter(created.task, after);
+      await reload();
+      toast(`見出し「${title.trim()}」を足しました`, 'ok');
+    } catch (error) { toast(error.message, 'error'); }
+  }
+
+  /** 作ったばかりの行を、target のすぐ下へ動かす。 */
+  async function placeAfter(item, target) {
+    const parentId = target.parent_id ?? null;
+    const siblings = siblingsOf(data.tasks, parentId).filter((t) => t.id !== item.id);
+    const at = siblings.findIndex((t) => t.id === target.id);
+    siblings.splice(at + 1, 0, item);
+    await api.post('/api/tasks/reorder', {
+      project_id: projectId,
+      items: siblings.map((t, index) => ({
+        id: t.id, parent_id: parentId, sort_order: (index + 1) * 10,
+      })),
+    });
+  }
+
+  /** 見出しのすぐ下にタスクを足す（その区切りの先頭に入る）。 */
+  async function addTaskAfter(heading) {
+    const saved = await openTaskForm({
+      project, parentId: heading.parent_id ?? null, tasks: data.tasks, deps: data.deps,
+      members: data.members });
+    if (!saved) return;
+    try {
+      await placeAfter(saved, heading);
+    } catch (error) { toast(error.message, 'error'); }
+    collapsed.delete(heading.id);
+    reload();
+  }
+
   /** 高・最重要だけ目印を出す。中／低は無印にしてノイズを減らす。 */
   function importanceMark(priority) {
     if (priority < 2) return null;
@@ -492,7 +644,9 @@ export async function render(container, route) {
       const offset = (event.clientY - rect.top) / rect.height;
       // 上下に落とせば並べ替え、真ん中だけが「子にする」。
       // 並べ替えのほうが使う頻度が高いので、子にする帯は狭くしてある
-      const mode = offset < 0.35 ? 'before' : offset > 0.65 ? 'after' : 'into';
+      let mode = offset < 0.35 ? 'before' : offset > 0.65 ? 'after' : 'into';
+      // 見出しの下（子）には入れられない。上下の並べ替えだけにする
+      if (task.is_heading && mode === 'into') mode = offset < 0.5 ? 'before' : 'after';
       row.classList.remove('drop-before', 'drop-after', 'drop-into');
       row.classList.add('drop-' + mode);
       showDropHint(event, mode, task);
@@ -573,15 +727,10 @@ export async function render(container, route) {
 
   /* ---- row menu ---- */
   function rowMenu(anchor, task) {
-    const menu = el('div', {
-      class: 'card',
-      style: {
-        position: 'absolute', zIndex: '120', minWidth: '190px', padding: '5px',
-        boxShadow: 'var(--shadow-lg)',
-      },
-    },
+    popupMenu(anchor, (menuItem) => [
     menuItem('👁 詳細を開く', () => openTaskDetail(task.id, { onChange: reload })),
     menuItem('＋ 子タスクを追加', () => addTask(task.id)),
+    menuItem('☰ この下に見出しを追加', () => addHeading(task)),
     ...hierarchyMenuItems(task, menuItem),
     menuItem('✏️ 編集', async () => {
       const saved = await openTaskForm({
@@ -620,7 +769,18 @@ export async function render(container, route) {
         await api.post(`/api/trash/${result.trash_id}/restore`, {});
         reload();
       });
-    }, true));
+    }, true)]);
+  }
+
+  /** ⋯ から開く小さなメニュー。build には項目を作る関数が渡る。 */
+  function popupMenu(anchor, build) {
+    const menu = el('div', {
+      class: 'card',
+      style: {
+        position: 'absolute', zIndex: '120', minWidth: '190px', padding: '5px',
+        boxShadow: 'var(--shadow-lg)',
+      },
+    }, ...build(menuItem));
 
     const rect = anchor.getBoundingClientRect();
     menu.style.top = `${window.scrollY + rect.bottom + 4}px`;

@@ -137,7 +137,7 @@ export function parentCandidates(tasks) {
   const walk = (parentId, depth) => {
     for (const task of children.get(parentId) || []) {
       // 子を1段ぶら下げる余地が要る。マイルストーンは束ね役に向かない
-      if (depth + 2 <= MAX_DEPTH && !task.is_milestone) {
+      if (depth + 2 <= MAX_DEPTH && !task.is_milestone && !task.is_heading) {
         out.push({ id: task.id, title: task.title, depth });
       }
       walk(task.id, depth + 1);

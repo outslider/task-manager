@@ -26,7 +26,9 @@ export function openTaskForm({
   const editing = Boolean(task);
   const fields = {};
 
+  // 見出しは区切りの線なので、親にも先行タスクにもできない
   const parentOptions = tasks
+    .filter((t) => !t.is_heading)
     .filter((t) => !task || (t.id !== task.id && !isDescendant(tasks, t.id, task.id)))
     .map((t) => {
       // 同じ名前のタスクが他にもあるときは、どこにあるものか添えて見分けられるようにする
@@ -37,7 +39,7 @@ export function openTaskForm({
         Number(task ? task.parent_id : parentId) === t.id);
     });
 
-  const depCandidates = tasks.filter((t) => !task || t.id !== task.id);
+  const depCandidates = tasks.filter((t) => !t.is_heading && (!task || t.id !== task.id));
   const currentDeps = task
     ? deps.filter((d) => d.task_id === task.id).map((d) => d.depends_on_id)
     : [];

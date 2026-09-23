@@ -486,7 +486,7 @@ async function addLink(task, reload) {
 
 async function addDependency(task, reload) {
   const data = await api.projectTasks(task.project_id);
-  const candidates = data.tasks.filter((t) => t.id !== task.id);
+  const candidates = data.tasks.filter((t) => t.id !== task.id && !t.is_heading);
   const select = el('select', { class: 'select' },
     ...candidates.map((t) => el('option', { value: t.id }, t.title)));
   const chosen = await openModal({

@@ -735,6 +735,18 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .drag-handle { cursor: grab; color: var(--text-faint); opacity: 0; font-size: 13px; }
 .task-row:hover .drag-handle { opacity: 1; }
 
+/* 見出し：作業ではなく区切りの帯。状態などの欄は持たないので横いっぱいに伸ばす */
+.task-row.is-heading {
+  grid-template-columns: 1fr 36px; min-height: 36px; padding-top: 4px; padding-bottom: 4px;
+  background: var(--surface-3); border-top: 2px solid var(--border-strong);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+.task-row.is-heading:hover { background: var(--surface-3); filter: brightness(.98); }
+.heading-title { font-weight: 700; font-size: 13.5px; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; min-width: 0; }
+.heading-count { color: var(--text-muted); font-size: 11.5px; flex: none; }
+.task-row.is-heading .twisty { pointer-events: none; }
+
 /* ---------- gantt ---------- */
 .gantt-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .gantt-scroll { overflow: auto; flex: 1; background: var(--surface); }

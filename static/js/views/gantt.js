@@ -9,7 +9,7 @@ import {
   toISO, toast, today, weekday,
 } from '../util.js';
 import { iconLabel } from '../icons.js';
-import { buildTree, loadCollapsed, saveCollapsed } from './tasks.js';
+import { buildTree, loadCollapsed, saveCollapsed, sectionize } from './tasks.js';
 import { openTaskDetail } from './taskDetail.js';
 import { projectTabs } from './projectNav.js';
 import { occurrenceTitle, openMeetingForm, openOccurrenceDialog } from './meetings.js';
@@ -554,7 +554,7 @@ export async function render(container, route) {
       onClick: () => {
         collapsed.clear();
         collapsedGroups.clear();
-        saveCollapsed(projectId, collapsed);
+        saveCollapsed(projectId || 'all', collapsed);
         saveMeetingFold();
         draw();
       },
@@ -568,8 +568,11 @@ export async function render(container, route) {
         for (const meeting of meetingCache.list) {
           if (meeting.parent_id) collapsed.add(meeting.parent_id);
         }
-        for (const row of visibleRows()) if (row.group) collapsedGroups.add(row.groupId);
-        saveCollapsed(projectId, collapsed);
+        for (const row of visibleRows()) {
+          if (row.group) collapsedGroups.add(row.groupId);
+          if (row.heading) collapsed.add(row.task.id);
+        }
+        saveCollapsed(projectId || 'all', collapsed);
         saveMeetingFold();
         draw();
       },
@@ -637,11 +640,28 @@ export async function render(container, route) {
   }
 
   function filteredTasks() {
+    // 担当者別・カテゴリ別の並びでは、見出しの区切りは意味をなさないので出さない
+    const flat = state.mode !== 'roadmap' && ['assignee', 'category'].includes(state.group);
     return data.tasks.filter((task) => {
+      if (task.is_heading) return !flat;
       if (!state.showDone && task.status === 'done') return false;
       if (state.onlyMine && task.assignee_id !== store.user.id) return false;
       return true;
     });
+  }
+
+  /** 絞り込み中なら、中身が 1 件も残らない見出しを隠すための集合。 */
+  function sectionKeep(tasks) {
+    if (state.showDone && !state.onlyMine) return null;
+    return new Set(tasks.filter((t) => !t.is_heading).map((t) => t.id));
+  }
+
+  /** 見出しの行。タスク一覧と同じ「たたむ」状態を使う。 */
+  function headingRow(entry, depth, extra = {}) {
+    return {
+      heading: true, task: entry.task, depth, count: entry.count,
+      collapsed: collapsed.has(entry.task.id), separator: true, ...extra,
+    };
   }
 
   function visibleRows() {
@@ -662,11 +682,12 @@ export async function render(container, route) {
       // その見出しの行に自分の節目を並べる。
       if (overview) return roadmapByProject(tasks);
       // フェーズ＝トップレベルのタスク。節目は上のレーンにまとめるので行にはしない
-      return (children.get(null) || [])
-        .filter((task) => !task.is_milestone)
-        .flatMap((task) => [{
-          task, depth: 0, hasChildren: (children.get(task.id) || []).length > 0,
-        }, ...meetingRowsUnder(task.id, 1)]);
+      return sectionize((children.get(null) || []).filter((task) => !task.is_milestone),
+        collapsed, sectionKeep(tasks))
+        .flatMap((entry) => (entry.heading ? [headingRow(entry, 0)] : [{
+          task: entry.task, depth: 0,
+          hasChildren: (children.get(entry.task.id) || []).some((k) => !k.is_heading),
+        }, ...meetingRowsUnder(entry.task.id, 1)]));
     }
     if (['assignee', 'category', 'project'].includes(state.group)) {
       return groupedRows(tasks);
@@ -674,9 +695,15 @@ export async function render(container, route) {
 
     // 階層のまま。折りたたんだ親の下は出さない
     const rows = [];
+    const keep = sectionKeep(tasks);
     const walk = (parentId, depth) => {
-      for (const task of children.get(parentId) || []) {
-        const kids = children.get(task.id) || [];
+      for (const entry of sectionize(children.get(parentId) || [], collapsed, keep)) {
+        if (entry.heading) {
+          rows.push(headingRow(entry, depth, { separator: rows.length > 0 }));
+          continue;
+        }
+        const { task } = entry;
+        const kids = sectionize(children.get(task.id) || [], new Set(), keep);
         const folded = collapsed.has(task.id);
         const under = meetingsUnder.get(task.id) || [];
         rows.push({
@@ -685,7 +712,9 @@ export async function render(container, route) {
           // たたんだ親の行に、隠れている各回を記号で並べる（週次の打ち合わせなど）
           marks: folded && state.showMarks ? occurrenceDates(task.id) : null,
           // フェーズ区切り: トップレベルの行の上に太い線を引く
-          separator: state.group === 'phase' && depth === 0 && rows.length > 0,
+          // （見出しの帯のすぐ下なら、帯が区切りになっているので引かない）
+          separator: state.group === 'phase' && depth === 0 && rows.length > 0
+            && !rows[rows.length - 1].heading,
           lead: state.group === 'phase' && depth === 0,
         });
         if (!folded) {
@@ -725,13 +754,19 @@ export async function render(container, route) {
       rows.push({
         group: true, groupId, label: projects.get(pid)?.name || '（不明なプロジェクト）',
         color: projects.get(pid)?.color || '#98a2b3',
-        count: phases.length, collapsed: folded, separator: rows.length > 0,
-        milestones: marks,
+        count: phases.filter((t) => !t.is_heading).length, collapsed: folded,
+        separator: rows.length > 0, milestones: marks,
       });
       if (folded) continue;
-      for (const task of phases) {
+      for (const entry of sectionize(phases, collapsed, sectionKeep(items))) {
+        if (entry.heading) {
+          rows.push(headingRow(entry, 1, { inGroup: true }));
+          continue;
+        }
+        const { task } = entry;
         rows.push({
-          task, depth: 0, hasChildren: (children.get(task.id) || []).length > 0, inGroup: true,
+          task, depth: 0, inGroup: true,
+          hasChildren: (children.get(task.id) || []).some((k) => !k.is_heading),
         }, ...meetingRowsUnder(task.id, 1));
       }
     }
@@ -794,9 +829,15 @@ export async function render(container, route) {
   function hierarchyRows(tasks, baseDepth) {
     const { children } = buildTree(tasks);
     const out = [];
+    const keep = sectionKeep(tasks);
     const walk = (parentId, depth) => {
-      for (const task of children.get(parentId) || []) {
-        const kids = children.get(task.id) || [];
+      for (const entry of sectionize(children.get(parentId) || [], collapsed, keep)) {
+        if (entry.heading) {
+          out.push(headingRow(entry, depth, { inGroup: true }));
+          continue;
+        }
+        const { task } = entry;
+        const kids = sectionize(children.get(task.id) || [], new Set(), keep);
         const folded = collapsed.has(task.id);
         const under = meetingsUnder.get(task.id) || [];
         out.push({
@@ -815,6 +856,14 @@ export async function render(container, route) {
   }
 
   function toggleRow(row) {
+    if (row.heading) {
+      // 見出しのたたみはタスク一覧と共通（どちらでたたんでも同じ）
+      if (collapsed.has(row.task.id)) collapsed.delete(row.task.id);
+      else collapsed.add(row.task.id);
+      saveCollapsed(projectId || 'all', collapsed);
+      draw();
+      return;
+    }
     if (row.group) {
       if (collapsedGroups.has(row.groupId)) collapsedGroups.delete(row.groupId);
       else collapsedGroups.add(row.groupId);
@@ -822,7 +871,7 @@ export async function render(container, route) {
     } else {
       if (collapsed.has(row.task.id)) collapsed.delete(row.task.id);
       else collapsed.add(row.task.id);
-      saveCollapsed(projectId, collapsed);
+      saveCollapsed(projectId || 'all', collapsed);
     }
     draw();
   }
@@ -1063,9 +1112,10 @@ export async function render(container, route) {
             text: '期間の長さに合わせて目盛りの幅を自動調整し、余白の少ない図にします。' })),
         el('div', { class: 'hint',
           text: state.mode === 'roadmap'
-            ? `ロードマップ表示: フェーズ ${rows.length} 件 / 節目 ${milestones.length} 件`
+            ? `ロードマップ表示: フェーズ ${rows.filter((r) => r.task && !r.heading).length} 件`
+              + ` / 節目 ${milestones.length} 件`
               + ` / 期間 ${formatSpan(toISO(range.from), toISO(range.to), { sep: ' 〜 ' })}`
-            : `対象タスク ${rows.filter((r) => r.task).length} 件`
+            : `対象タスク ${rows.filter((r) => r.task && !r.heading).length} 件`
               + ` / 期間 ${formatSpan(toISO(range.from), toISO(range.to), { sep: ' 〜 ' })}` })),
       footer: (close) => [
         el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
@@ -1194,9 +1244,17 @@ export function buildGanttSvg({
 
   /* ---- background bands and weekend shading ---- */
   const bands = svgEl('g');
+  const headingFill = forExport ? '#e9ecf3' : 'var(--surface-3)';
+  const headingBar = forExport ? '#4f6bed' : 'var(--accent)';
   rows.forEach((row, index) => {
     const y = originY + index * rowH;
-    if (row.group) {
+    if (row.heading) {
+      // 見出しは横いっぱいの帯。左端にアクセント色の縦線を置く
+      bands.appendChild(svgEl('rect', {
+        x: PAD, y, width: nameWidth + chartW, height: rowH, fill: headingFill,
+      }));
+      bands.appendChild(svgEl('rect', { x: PAD, y, width: 4, height: rowH, fill: headingBar }));
+    } else if (row.group) {
       // 区切り行は帯で塗り、担当者やカテゴリの色を左端に置く
       bands.appendChild(svgEl('rect', {
         x: PAD, y, width: nameWidth + chartW, height: rowH,
@@ -1380,7 +1438,10 @@ export function buildGanttSvg({
   }
   rows.forEach((row, index) => {
     const y = originY + index * rowH;
-    if (row.group) {
+    if (row.heading) {
+      namesG.appendChild(svgEl('rect', { x: PAD, y, width: nameWidth, height: rowH, fill: headingFill }));
+      namesG.appendChild(svgEl('rect', { x: PAD, y, width: 4, height: rowH, fill: headingBar }));
+    } else if (row.group) {
       namesG.appendChild(svgEl('rect', {
         x: PAD, y, width: nameWidth, height: rowH,
         fill: forExport ? '#eef1f6' : 'var(--surface-3)',
@@ -1552,6 +1613,35 @@ export function buildGanttSvg({
     rowsG.appendChild(g);
   }
 
+  /** 見出しの帯。名前と件数だけを書き、押すと次の見出しまでをたたむ。 */
+  function drawHeadingRow(row, y) {
+    const x0 = PAD + 10 + (row.depth || 0) * 12;
+    const twisty = svgEl('text', {
+      x: x0, y: y + rowH / 2 + 4, 'font-size': 9, fill: colors.muted,
+      text: row.collapsed ? '▶' : '▼',
+    });
+    const label = svgEl('text', {
+      x: x0 + 14, y: y + rowH / 2 + 4, 'font-size': 12, 'font-weight': 700, fill: colors.text,
+      text: truncate(row.task.title, Math.max(4, Math.floor((nameWidth - (x0 - PAD) - 60) / 12.5))),
+    });
+    label.appendChild(svgEl('title', { text: row.task.title }));
+    const count = svgEl('text', {
+      x: PAD + nameWidth - 8, y: y + rowH / 2 + 4, 'font-size': 10, 'text-anchor': 'end',
+      fill: colors.muted, text: `${row.count}件`,
+    });
+    const hit = svgEl('rect', { x: PAD, y, width: nameWidth, height: rowH, fill: 'transparent' });
+    namesG.appendChild(svgEl('g', {}, hit, twisty, label, count));
+    if (interactive && onToggleRow) {
+      hit.style.cursor = 'pointer';
+      hit.appendChild(svgEl('title', { text: '次の見出しまでを開く / 閉じる' }));
+      hit.addEventListener('click', () => onToggleRow(row));
+    }
+    rowsG.appendChild(svgEl('line', {
+      x1: originX, y1: y + rowH, x2: PAD + nameWidth + chartW, y2: y + rowH,
+      stroke: colors.grid, 'stroke-width': 1,
+    }));
+  }
+
   rows.forEach((row, index) => {
     const y = originY + index * rowH;
 
@@ -1601,6 +1691,10 @@ export function buildGanttSvg({
 
     if (row.meeting) {
       drawMeetingRow(row, y);
+      return;
+    }
+    if (row.heading) {
+      drawHeadingRow(row, y);
       return;
     }
 

@@ -5,7 +5,8 @@ import { el, fill, openModal, toISO, toast, today } from '../util.js';
 import { chipPicker, issueCategorySelect, option, userSelect } from './pickers.js';
 
 export function taskPicker(tasks, selectedIds = []) {
-  return chipPicker(tasks, selectedIds, {
+  // 見出しは作業ではないので、課題と結びつける候補に出さない
+  return chipPicker(tasks.filter((t) => !t.is_heading), selectedIds, {
     placeholder: 'この課題に関係するタスクを選ぶ…',
     emptyText: '関連づけたタスクはありません',
     exhausted: '追加できるタスクがありません',

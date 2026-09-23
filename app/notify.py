@@ -372,7 +372,7 @@ def slack_daily_summary():
                SUM(t.status IN %s AND t.due_date IS NOT NULL AND t.due_date < %s) AS overdue,
                SUM(t.status IN %s AND t.due_date = %s) AS due_today,
                SUM(t.status IN %s) AS open_tasks
-          FROM projects p LEFT JOIN tasks t ON t.project_id = p.id
+          FROM projects p LEFT JOIN tasks t ON t.project_id = p.id AND t.is_heading = 0
          WHERE p.archived = 0 AND p.notify_enabled = 1
          GROUP BY p.id
         """,

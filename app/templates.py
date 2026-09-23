@@ -13,7 +13,7 @@ SCOPES = {"project": "プロジェクト一式", "tasks": "タスクのかたま
 
 # 雛形に残すタスクの項目。状態・進捗・担当は毎回変わるので持たない。
 FIELDS = ("title", "description", "category", "priority", "estimate_hours",
-          "is_milestone", "marker")
+          "is_milestone", "is_heading", "marker")
 
 
 def _offset(start, value):
@@ -51,6 +51,7 @@ def build(rows, deps, root_ids, keep_people=False):
         item["estimate_hours"] = (float(row["estimate_hours"])
                                   if row["estimate_hours"] is not None else None)
         item["is_milestone"] = 1 if row["is_milestone"] else 0
+        item["is_heading"] = 1 if row.get("is_heading") else 0
         if keep_people:
             item["assignee_id"] = row["assignee_id"]
         # 開始と期限を別々の「何日目」で持つ。片方だけ入っていた場合に、
