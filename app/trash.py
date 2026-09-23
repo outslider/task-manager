@@ -103,8 +103,11 @@ def snapshot_ticket(ticket_id):
 def describe(payload):
     """一覧に出す「子タスク3件・コメント5件」の部分。"""
     counts = {name: len(rows) for name, rows in payload}
-    head = next(iter(payload))[0]
+    head, head_rows = payload[0]
     parts = []
+    if head == "tasks" and head_rows and head_rows[0].get("is_heading"):
+        # 一覧では種類が「タスク」になるので、見出しだと分かるようにしておく
+        parts.append("見出し")
     if head == "tasks" and counts.get("tasks", 0) > 1:
         parts.append("子タスク {} 件".format(counts["tasks"] - 1))
     for name, label in (("comments", "コメント"), ("attachments", "添付"),

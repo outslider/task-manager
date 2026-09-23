@@ -11,13 +11,16 @@
  *
  * @param {Array} list 同じ親を持つタスク（並び順どおり）
  * @param {Set} collapsed たたんでいる見出しの id。たたんだ見出しの範囲は出さない
- * @param {Set|null} keep 絞り込み中に残すタスクの id。渡すと、中身が 1 件も
- *   残らない見出しは出さない（空の区切りだけが並ぶのを避けるため）
+ * @param {Set|null} keep 絞り込み中に残すタスクの id。渡すと、絞り込みで中身が
+ *   1 件も残らなくなった見出しは出さない（空の区切りだけが並ぶのを避けるため）。
+ *   もともと中身の無い見出しは出す
  * @param {Set|null} pinned 中身が空でも出す見出しの id（ガントで定例会議を置いたもの）
+ * @param {Set|null} filled 絞り込む前に中身があった見出しの id。list がすでに絞り込み
+ *   済みのとき（ガント）に渡す。渡さなければ list から数える
  * @returns {Array<{task, heading?: true, level?: number, count?: number, outline: number}>}
  *   outline はその行を囲んでいる見出しの数（字下げに使う）
  */
-export function sectionize(list, collapsed, keep = null, pinned = null) {
+export function sectionize(list, collapsed, keep = null, pinned = null, filled = null) {
   // 1) 見出しの入れ子を組み立てる
   const root = { children: [] };
   const stack = [{ level: 0, node: root }];
@@ -35,8 +38,9 @@ export function sectionize(list, collapsed, keep = null, pinned = null) {
 
   // 2) 中身の数え上げ（見出しの件数と、空の区切りを隠す判断に使う）
   const passes = (task) => !keep || keep.has(task.id);
-  const count = (node) => node.children.reduce(
-    (sum, child) => sum + (child.heading ? count(child) : (passes(child.task) ? 1 : 0)), 0);
+  const count = (node, all = false) => node.children.reduce(
+    (sum, child) => sum + (child.heading ? count(child, all)
+      : ((all || passes(child.task)) ? 1 : 0)), 0);
   const pinnedInside = (node) => Boolean(pinned?.has(node.heading.id))
     || node.children.some((child) => child.heading && pinnedInside(child));
 
@@ -49,7 +53,10 @@ export function sectionize(list, collapsed, keep = null, pinned = null) {
         continue;
       }
       const total = count(child);
-      if (keep && !total && !pinnedInside(child)) continue;
+      // 隠すのは「中身はあるのに、絞り込みで全部消えた」区切りだけ。
+      // 足したばかりで中身がまだ無い見出しまで隠すと、足したのに出てこなくなる
+      const hadItems = filled ? filled.has(child.heading.id) : count(child, true) > 0;
+      if (keep && !total && hadItems && !pinnedInside(child)) continue;
       out.push({ task: child.heading, heading: true, level: child.level, count: total, outline });
       if (!collapsed.has(child.heading.id)) emit(child, outline + 1);
     }

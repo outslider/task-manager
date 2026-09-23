@@ -899,6 +899,9 @@ def gantt_overview(ctx):
     analysis = graph.analyze([r for r in rows if not r["is_heading"]], deps)
     for row in rows:
         row.update(slim_metrics(analysis["metrics"].get(row["id"], {})))
+        if not row["is_heading"]:
+            # 見出しでない行には要らない（画面は無ければ「見出しでない」と読む）
+            del row["is_heading"], row["heading_level"]
     projects = db.query(
         "SELECT id, name, color FROM projects WHERE id IN %s AND archived=0 ORDER BY name",
         (scope,))
@@ -5667,6 +5670,23 @@ def meeting_out(row, can_edit=False):
     return out
 
 
+def _slim_occurrence(occurrence):
+    """既定どおりの項目（予定どおり・休日のずらし無し・メモ無し）を省く。
+
+    全体ガントでは開催日が数千件になり、同じ値の繰り返しだけで数百 KB になっていた。
+    省いた項目は画面側で補う（gantt.js の expandMeeting）。
+    """
+    out = {"date": occurrence["date"]}
+    if occurrence["planned"] != occurrence["date"]:
+        out["planned"] = occurrence["planned"]
+    for key in ("shifted_from", "note"):
+        if occurrence.get(key):
+            out[key] = occurrence[key]
+    if occurrence["status"] != "normal":
+        out["status"] = occurrence["status"]
+    return out
+
+
 @route("GET", r"/api/meetings")
 def list_meetings(ctx):
     """見える期間の開催日つきで返す。project_ids が無ければ見えるプロジェクトすべて。"""
@@ -5692,8 +5712,8 @@ def list_meetings(ctx):
     for row in rows:
         item = meeting_out(row, auth.ROLE_ORDER.get(roles[row["project_id"]], 0)
                            >= auth.ROLE_ORDER["editor"])
-        item["occurrences"] = meetings.occurrences(
-            row, lo, hi, is_off, exceptions.get(row["id"], {}))
+        item["occurrences"] = [_slim_occurrence(o) for o in meetings.occurrences(
+            row, lo, hi, is_off, exceptions.get(row["id"], {}))]
         out.append(item)
     return json_response({"meetings": out, "from": lo.isoformat(), "to": hi.isoformat()})
 

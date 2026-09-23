@@ -209,6 +209,31 @@ class TestHeadings(ApiTestCase):
         rows = self.admin.get("/api/gantt?project_ids={}".format(self.pid))[1]["tasks"]
         self.assertEqual(next(t for t in rows if t["id"] == small["id"])["heading_level"], 2)
 
+    def test_trash_says_it_is_a_heading(self):
+        result = self.admin.delete("/api/tasks/{}".format(self.heading["id"]))[1]
+        items = self.admin.get("/api/trash")[1]["items"]
+        entry = next(t for t in items if t["id"] == result["trash_id"])
+        self.assertIn("見出し", entry["summary"])
+        # 見出しを消しても、同じ並びのタスクは残る
+        self.assertEqual(self.admin.get("/api/tasks/{}".format(self.task["id"]))[0], 200)
+
+    def test_project_template_keeps_headings_and_levels(self):
+        self.make_heading("中の見出し", heading_level=2)
+        status, data = self.admin.post("/api/templates", {
+            "name": "一式", "scope": "project", "project_id": self.pid})
+        self.assertEqual(status, 201, data)
+        status, made = self.admin.post("/api/templates/{}/apply".format(data["template"]["id"]),
+                                       {"name": "雛形から"})
+        self.assertEqual(status, 201, made)
+        rows = db.query("SELECT title, is_heading, heading_level FROM tasks WHERE project_id=%s "
+                        "AND is_heading=1 ORDER BY sort_order", (made["project"]["id"],))
+        self.assertEqual([(r["title"], r["heading_level"]) for r in rows],
+                         [(HEAD, 1), ("中の見出し", 2)])
+        # 雛形から作ったプロジェクトでも、見出しは件数に入らない
+        projects = self.admin.get("/api/projects")[1]["projects"]
+        mine = next(p for p in projects if p["id"] == made["project"]["id"])
+        self.assertEqual(mine["stats"]["total"], 1)
+
     def test_duplicate_and_templates_keep_headings(self):
         parent = self.make_task(self.pid, title="まとまり")
         self.make_heading("まとまりの見出し", parent_id=parent["id"], heading_level=2)

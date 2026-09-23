@@ -1558,6 +1558,8 @@ input[type="color"].input {
   }
   .topbar-actions::-webkit-scrollbar { display: none; }
   .topbar-actions > * { flex: none; }
+  /* 横に流すと右端のボタンは隠れがち。いちばん使う主ボタン（＋タスクなど）は先頭に出す */
+  .topbar-actions > .btn-primary { order: -1; }
 }
 
 /* 集計の期間送り */

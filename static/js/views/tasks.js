@@ -66,7 +66,9 @@ export function flattenTree(tasks, collapsed = new Set(), filter = null) {
         continue;
       }
       const kids = sectionize(children.get(task.id) || [], new Set(), keep);
-      out.push({ task, depth, outline, hasChildren: kids.length > 0 });
+      // hasChildren はたためるか（見出しだけでも）。isParent は本当に子タスクを持つか
+      out.push({ task, depth, outline, hasChildren: kids.length > 0,
+        isParent: kids.some((k) => !k.heading) });
       if (kids.length && !collapsed.has(task.id)) walk(task.id, depth + 1, outline);
     }
   };
@@ -359,7 +361,7 @@ export async function render(container, route) {
         : null));
   }
 
-  function taskRow({ task, depth, hasChildren, outline = 0 }) {
+  function taskRow({ task, depth, hasChildren, isParent = hasChildren, outline = 0 }) {
     const isDone = task.status === 'done';
     const twisty = el('button', {
       class: `twisty${hasChildren ? '' : ' leaf'}${collapsed.has(task.id) ? '' : ' open'}`,
@@ -377,7 +379,7 @@ export async function render(container, route) {
 
     const row = el('div', {
       class: [
-        'task-row', isDone ? 'is-done' : '', hasChildren ? 'is-parent' : '',
+        'task-row', isDone ? 'is-done' : '', isParent ? 'is-parent' : '',
         task.is_critical && !isDone ? 'is-critical' : '',
         task.is_blocked ? 'is-blocked' : '',
         state.selectedId === task.id ? 'selected' : '',

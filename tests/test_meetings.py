@@ -320,13 +320,13 @@ class TestMeetingApi(ApiTestCase):
         self.assertEqual(self.admin.put(base + "2026-09-15", {"action": "move",
                                                               "moved_to": "2026-09-17"})[0], 200)
         occ = {o["date"]: o for o in self.listing()[0]["occurrences"]}
-        self.assertEqual(occ["2026-09-08"]["status"], "cancelled")
+        self.assertEqual(occ["2026-09-08"].get("status", "normal"), "cancelled")
         self.assertNotIn("2026-09-15", occ)
-        self.assertEqual(occ["2026-09-17"]["status"], "moved")
+        self.assertEqual(occ["2026-09-17"].get("status", "normal"), "moved")
         # 取り消すと決まりどおりに戻る
         self.assertEqual(self.admin.delete(base + "2026-09-15")[0], 200)
         occ = {o["date"]: o for o in self.listing()[0]["occurrences"]}
-        self.assertEqual(occ["2026-09-15"]["status"], "normal")
+        self.assertEqual(occ["2026-09-15"].get("status", "normal"), "normal")
         self.assertNotIn("2026-09-17", occ)
 
     def test_exception_checks(self):
@@ -341,6 +341,18 @@ class TestMeetingApi(ApiTestCase):
         self.assertEqual(self.admin.put(base + "2026-02-30", {"action": "cancel"})[0], 400)
         self.assertEqual(self.admin.put(base + "2026-09-08", {
             "action": "move", "moved_to": "2026-09-31"})[0], 400)
+
+    def test_occurrences_are_sent_compactly(self):
+        made = self.create(weekdays=[0], holiday_rule="next")
+        self.admin.put("/api/meetings/{}/exceptions/2026-09-14".format(made["id"]),
+                       {"action": "move", "moved_to": "2026-09-15", "note": "出張"})
+        occ = {o["date"]: o for o in self.listing()[0]["occurrences"]}
+        # 予定どおりの回は日付だけ
+        self.assertEqual(occ["2026-09-07"], {"date": "2026-09-07"})
+        # ずらした回・変えた回は、違うところだけ付く
+        self.assertEqual(occ["2026-09-24"], {"date": "2026-09-24", "shifted_from": "2026-09-21"})
+        self.assertEqual(occ["2026-09-15"], {"date": "2026-09-15", "planned": "2026-09-14",
+                                             "status": "moved", "note": "出張"})
 
     def test_range_checks(self):
         self.assertEqual(self.admin.get(
@@ -435,7 +447,7 @@ class TestMeetingApi(ApiTestCase):
         base = "/api/meetings/{}/exceptions/".format(made["id"])
         self.assertEqual(self.admin.put(base + "2026-09-10", {"action": "cancel"})[0], 200)
         self.assertEqual(self.admin.put(base + "2026-09-11", {"action": "cancel"})[0], 400)
-        self.assertEqual(self.listing()[0]["occurrences"][0]["status"], "cancelled")
+        self.assertEqual(self.listing()[0]["occurrences"][0].get("status", "normal"), "cancelled")
 
     def test_chosen_dates_validation(self):
         for dates in ([], ["2026-02-30"], ["abc"],

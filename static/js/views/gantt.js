@@ -94,6 +94,24 @@ const HEADING_BAND_OPACITY = { 1: 1, 2: 0.65, 3: 0.35 };
 // 定例会議の点の色。状態の色（灰・青・緑・赤）と紛れない紫にする
 const MEETING_COLOR = '#7c5cdb';
 const MEETING_FOLD_KEY = 'tm.gantt.meetingsFolded';
+// 定例の開催日を一度に数えてもらう期間の上限（サーバーの上限より少し短く）
+const MEETING_SPAN_DAYS = 1450;
+// 1 案件のガントで、期間が分かる前に先取りしておく今日の前後の日数
+const EARLY_DAYS = 365;
+
+/**
+ * サーバーは通信量を減らすため、開催日のうち既定どおりの項目を省いて返す
+ * （予定どおり・休日のずらし無し・メモ無し）。画面で使う形に戻す。
+ */
+function expandMeeting(meeting) {
+  return {
+    ...meeting,
+    occurrences: (meeting.occurrences || []).map((o) => ({
+      date: o.date, planned: o.planned || o.date, shifted_from: o.shifted_from || null,
+      status: o.status || 'normal', note: o.note || '',
+    })),
+  };
+}
 
 /* Slide presets: width/height in pixels at 96dpi, matching PowerPoint slide sizes. */
 const EXPORT_PRESETS = [
@@ -186,6 +204,18 @@ export async function render(container, route) {
     const ids = pickedIds();
     return api.get(`/api/gantt${ids ? `?project_ids=${ids.join(',')}` : ''}`);
   };
+  // 1 案件のガントでは、祝日と定例はタスクと同時に取りに行く（期間はまだ分からないので、
+  // 今日の前後 1 年を先に取っておく。たいていの案件はこれに収まり、取り直さずに済む）
+  const early = overview ? null : (() => {
+    const from = toISO(addDays(today(), -EARLY_DAYS));
+    const to = toISO(addDays(today(), EARLY_DAYS));
+    return {
+      from, to,
+      holidays: api.holidays({ from, to }).catch(() => null),
+      meetings: api.get(`/api/meetings?project_ids=${projectId}&from=${from}&to=${to}`)
+        .catch(() => null),
+    };
+  })();
   let data = await fetchData();
   const project = overview
     ? { id: null, name: '全プロジェクト' }
@@ -257,6 +287,8 @@ export async function render(container, route) {
     ? (data.projects || []).map((p) => p.id)
     : [projectId]);
 
+  let meetingPending = null;        // 問い合わせ中の { key, from, to }
+
   async function ensureMeetings(range) {
     const ids = meetingProjectIds();
     const key = ids.join(',');
@@ -265,16 +297,29 @@ export async function render(container, route) {
       meetingCache = { list: [], from: null, to: null, key };
       return had;
     }
-    const from = toISO(addDays(range.from, -40));
-    const to = toISO(addDays(range.to, 40));
-    if (meetingCache.key === key && meetingCache.from && meetingCache.from <= from
-      && meetingCache.to >= to) return false;
+    let from = addDays(range.from, -40);
+    let to = addDays(range.to, 40);
+    // サーバーは長すぎる期間を断るので、今日を中心に 4 年ほどに収める
+    if (daysBetween(from, to) > MEETING_SPAN_DAYS) {
+      if (from < addDays(today(), -700)) from = addDays(today(), -700);
+      if (daysBetween(from, to) > MEETING_SPAN_DAYS) to = addDays(from, MEETING_SPAN_DAYS);
+    }
+    from = toISO(from);
+    to = toISO(to);
+    const covers = (c) => c && c.key === key && c.from && c.from <= from && c.to >= to;
+    if (covers(meetingCache)) return false;
+    // 同じ期間を問い合わせ中なら、重ねて出さない（届いたときに描き直される）
+    if (covers(meetingPending)) return false;
+    const mine = { key, from, to };
+    meetingPending = mine;
     try {
       const result = await api.get(`/api/meetings?project_ids=${key}&from=${from}&to=${to}`);
-      meetingCache = { list: result.meetings || [], from, to, key };
+      meetingCache = { list: (result.meetings || []).map(expandMeeting), from, to, key };
       return true;
     } catch {
       return false;                 // 定例が取れなくても本体は描画する
+    } finally {
+      if (meetingPending === mine) meetingPending = null;
     }
   }
 
@@ -662,6 +707,26 @@ export async function render(container, route) {
   }
 
   /**
+   * 絞り込む前に中身があった見出し。ガントは絞り込んだタスクで並びを組むので、
+   * 「もともと空（足したばかり）」と「絞り込みで空になった」を、これで見分ける。
+   */
+  let filledOf = null;
+  let filledHeadings = new Set();
+  function filled() {
+    if (filledOf !== data.tasks) {
+      filledHeadings = new Set();
+      const { children } = buildTree(data.tasks);
+      for (const list of children.values()) {
+        for (const entry of sectionize(list, new Set())) {
+          if (entry.heading && entry.count > 0) filledHeadings.add(entry.task.id);
+        }
+      }
+      filledOf = data.tasks;
+    }
+    return filledHeadings;
+  }
+
+  /**
    * 見出しの行と、その区切りの先頭に置いた定例会議の行。
    * たたむ状態はタスク一覧と同じものを使う。
    */
@@ -699,7 +764,7 @@ export async function render(container, route) {
       if (overview) return roadmapByProject(tasks);
       // フェーズ＝トップレベルのタスク。節目は上のレーンにまとめるので行にはしない
       return sectionize((children.get(null) || []).filter((task) => !task.is_milestone),
-        collapsed, sectionKeep(tasks), pinnedHeadings())
+        collapsed, sectionKeep(tasks), pinnedHeadings(), filled())
         .flatMap((entry) => (entry.heading ? headingRows(entry, 0) : [{
           task: entry.task, depth: 0, outline: entry.outline,
           hasChildren: (children.get(entry.task.id) || []).some((k) => !k.is_heading),
@@ -714,7 +779,7 @@ export async function render(container, route) {
     const keep = sectionKeep(tasks);
     const walk = (parentId, depth, base = 0) => {
       for (const entry of sectionize(children.get(parentId) || [], collapsed, keep,
-        pinnedHeadings())) {
+        pinnedHeadings(), filled())) {
         if (entry.heading) {
           rows.push(...headingRows(entry, depth, { separator: rows.length > 0 }, base));
           continue;
@@ -724,8 +789,11 @@ export async function render(container, route) {
         const kids = sectionize(children.get(task.id) || [], new Set(), keep);
         const folded = collapsed.has(task.id);
         const under = meetingsUnder.get(task.id) || [];
+        // 子が見出しだけなら、まとめ役（細いバー）ではない。たためるようにだけしておく
+        const realKids = kids.some((k) => !k.heading);
         rows.push({
-          task, depth, outline, hasChildren: kids.length > 0, hasMeetings: under.length > 0,
+          task, depth, outline, hasChildren: realKids,
+          hasMeetings: under.length > 0 || (kids.length > 0 && !realKids),
           collapsed: folded,
           // たたんだ親の行に、隠れている各回を記号で並べる（週次の打ち合わせなど）
           marks: folded && state.showMarks ? occurrenceDates(task.id) : null,
@@ -776,7 +844,8 @@ export async function render(container, route) {
         separator: rows.length > 0, milestones: marks,
       });
       if (folded) continue;
-      for (const entry of sectionize(phases, collapsed, sectionKeep(items), pinnedHeadings())) {
+      for (const entry of sectionize(phases, collapsed, sectionKeep(items), pinnedHeadings(),
+        filled())) {
         if (entry.heading) {
           rows.push(...headingRows(entry, 0, { inGroup: true }));
           continue;
@@ -850,7 +919,7 @@ export async function render(container, route) {
     const keep = sectionKeep(tasks);
     const walk = (parentId, depth, base = 0) => {
       for (const entry of sectionize(children.get(parentId) || [], collapsed, keep,
-        pinnedHeadings())) {
+        pinnedHeadings(), filled())) {
         if (entry.heading) {
           out.push(...headingRows(entry, depth, { inGroup: true }, base));
           continue;
@@ -860,8 +929,10 @@ export async function render(container, route) {
         const kids = sectionize(children.get(task.id) || [], new Set(), keep);
         const folded = collapsed.has(task.id);
         const under = meetingsUnder.get(task.id) || [];
+        const realKids = kids.some((k) => !k.heading);
         out.push({
-          task, depth, outline, hasChildren: kids.length > 0, hasMeetings: under.length > 0,
+          task, depth, outline, hasChildren: realKids,
+          hasMeetings: under.length > 0 || (kids.length > 0 && !realKids),
           collapsed: folded, inGroup: true,
           marks: folded && state.showMarks ? occurrenceDates(task.id) : null,
         });
@@ -903,11 +974,18 @@ export async function render(container, route) {
   }
 
   /** そのタスクの配下にある「回」の期限。たたんだ行に並べる印に使う。 */
+  // 親 → 子の表。たたんだ親ごとに全タスクをなめ直すと、全体ガントでは
+  // 親の数 × タスクの数になって重いので、データが変わったときだけ作り直す。
+  let byParentOf = null;
+  let byParent = new Map();
   function occurrenceDates(taskId) {
-    const byParent = new Map();
-    for (const task of data.tasks) {
-      if (!byParent.has(task.parent_id)) byParent.set(task.parent_id, []);
-      byParent.get(task.parent_id).push(task);
+    if (byParentOf !== data.tasks) {
+      byParent = new Map();
+      for (const task of data.tasks) {
+        if (!byParent.has(task.parent_id)) byParent.set(task.parent_id, []);
+        byParent.get(task.parent_id).push(task);
+      }
+      byParentOf = data.tasks;
     }
     const out = [];
     const walk = (id) => {
@@ -993,10 +1071,15 @@ export async function render(container, route) {
   }
 
   /** 表示中の期間の祝日をまとめて取り、足りなければ引き直す。 */
+  let holidayPending = null;
+
   async function ensureHolidays(range) {
     const from = toISO(addDays(range.from, -40));
     const to = toISO(addDays(range.to, 40));
-    if (holidayRange && holidayRange.from <= from && holidayRange.to >= to) return false;
+    const covers = (c) => c && c.from <= from && c.to >= to;
+    if (covers(holidayRange) || covers(holidayPending)) return false;
+    const mine = { from, to };
+    holidayPending = mine;
     try {
       const data = await api.holidays({ from, to });
       holidayMap.clear();
@@ -1005,7 +1088,17 @@ export async function render(container, route) {
       return true;
     } catch {
       return false;                 // 祝日が取れなくても本体は描画する
+    } finally {
+      if (holidayPending === mine) holidayPending = null;
     }
+  }
+
+  /** 祝日と定例が別々に届いても、描き直しは 1 回にまとめる。 */
+  let drawQueued = false;
+  function scheduleDraw() {
+    if (drawQueued) return;
+    drawQueued = true;
+    requestAnimationFrame(() => { drawQueued = false; draw(); });
   }
 
   // 俯瞰は件数が多くなりがちなので、初めて開いたときは親をたたんでおく。
@@ -1044,8 +1137,8 @@ export async function render(container, route) {
     const milestones = milestoneRows();
     // 期間は、案件ごとの行に並べる節目も含めて決める
     const range = dateRange(rows, allMilestones());
-    ensureHolidays(range).then((changed) => { if (changed) draw(); });
-    ensureMeetings(range).then((changed) => { if (changed) draw(); });
+    ensureHolidays(range).then((changed) => { if (changed) scheduleDraw(); });
+    ensureMeetings(range).then((changed) => { if (changed) scheduleDraw(); });
     const roadmap = state.mode === 'roadmap';
     syncRangeInputs(range);
     const svg = buildGanttSvg({
@@ -1191,6 +1284,24 @@ export async function render(container, route) {
     toast('PNG を書き出しました', 'ok');
   }
 
+  // 最初の 1 回は、祝日と定例をそろえてから描く。届くたびに描き直すと、
+  // 全体ガントでは 1 回あたり数百ミリ秒かかるため。
+  {
+    if (early) {
+      const [holidays, meetings] = await Promise.all([early.holidays, early.meetings]);
+      if (holidays) {
+        for (const item of holidays.holidays || []) holidayMap.set(item.day, item.name);
+        holidayRange = { from: early.from, to: early.to };
+      }
+      if (meetings) {
+        meetingCache = { list: (meetings.meetings || []).map(expandMeeting),
+          from: early.from, to: early.to, key: String(projectId) };
+      }
+    }
+    // 先に取った分で足りなければ、ここで取り足す
+    const range = dateRange(taskRows(), allMilestones());
+    await Promise.all([ensureHolidays(range), ensureMeetings(range)]);
+  }
   draw();
 }
 
