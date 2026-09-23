@@ -8,7 +8,7 @@ import {
   confirmDialog, el, fill, formatDate, openModal, parseDate, toast, today, toISO,
 } from '../util.js';
 import { option } from './pickers.js';
-import { parentCandidates } from './recurrence.js';
+import { buildTree } from './tasks.js';
 
 const WEEKDAYS = ['月', '火', '水', '木', '金', '土', '日'];
 const WEEK_INTERVALS = [[1, '毎週'], [2, '隔週'], [3, '3週ごと'], [4, '4週ごと']];
@@ -26,6 +26,26 @@ const DEFAULT_HOLIDAY = { weekly: 'skip', monthly: 'next' };
 /** 「9/23(火)」 */
 export function dayLabel(iso) {
   return formatDate(iso, true);
+}
+
+/**
+ * ガントで置く場所の候補。タスクの木の並びのまま、見出しも含めて出す。
+ * 見出しを選ぶと、その区切りの先頭に並ぶ。マイルストーンは束ね役に向かないので外す。
+ */
+export function placementCandidates(tasks) {
+  const { children } = buildTree(tasks);
+  const out = [];
+  const walk = (parentId, depth) => {
+    for (const task of children.get(parentId) || []) {
+      if (!task.is_milestone) {
+        out.push({ id: task.id, depth, heading: Boolean(task.is_heading),
+          label: task.is_heading ? `☰ ${task.title}（見出し）` : task.title });
+      }
+      walk(task.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return out;
 }
 
 /** 月曜=0 の曜日番号。Date.getDay() は日曜=0 なので直す。 */
@@ -216,7 +236,7 @@ export async function openMeetingForm({ project, meeting = null, tasks = [] }) {
       // 置き場所。「開発フェーズの定例」のように、関係するタスクの下に並べられる
       f.parent = el('select', { class: 'select' },
         option('', '先頭の「定例」にまとめる', !meeting?.parent_id),
-        ...parentCandidates(tasks).map((t) => option(t.id, `${'　'.repeat(t.depth)}${t.title}`,
+        ...placementCandidates(tasks).map((t) => option(t.id, `${'　'.repeat(t.depth)}${t.label}`,
           t.id === meeting?.parent_id)));
       if (meeting?.parent_id && ![...f.parent.options].some((o) => Number(o.value) === meeting.parent_id)) {
         // 候補から外れるタスク（マイルストーンなど）に置いてあっても、黙って外さない
@@ -267,7 +287,8 @@ export async function openMeetingForm({ project, meeting = null, tasks = [] }) {
         el('div', { class: 'field' }, el('label', { text: '会議の名前 *' }), f.title),
         el('div', { class: 'field' }, el('label', { text: 'ガントで置く場所' }), f.parent,
           el('div', { class: 'hint',
-            text: 'タスクを選ぶと、その子として並びます（そのタスクをたたむと一緒に隠れます）。' })),
+            text: 'タスクを選ぶとその子として、見出しを選ぶとその区切りの先頭に並びます。'
+              + '選んだタスクや見出しをたたむと一緒に隠れます。' })),
         el('div', { class: 'field' }, el('label', { text: '繰り返し' }), f.freq),
         freqHost,
         el('div', { class: 'row' },

@@ -85,13 +85,26 @@ class TestHeadings(ApiTestCase):
         self.assertEqual(self.admin.post("/api/projects/{}/recurrences".format(self.pid), {
             "title": "定例", "freq": "weekly", "weekdays": [1], "next_on": "2026-10-06",
             "parent_id": hid})[0], 400)
-        self.assertEqual(self.admin.post("/api/projects/{}/meetings".format(self.pid), {
-            "title": "会議", "freq": "weekly", "weekdays": [1], "parent_id": hid})[0], 400)
         status, data = self.admin.post("/api/templates", {
             "name": "雛形", "scope": "tasks", "task_id": self.task["id"]})
         self.assertEqual(status, 201, data)
         self.assertEqual(self.admin.post("/api/templates/{}/apply".format(data["template"]["id"]), {
             "project_id": self.pid, "parent_id": hid})[0], 400)
+
+    def test_a_meeting_can_sit_in_a_heading_section(self):
+        # 定例会議はタスクではないので、見出しの区切りに置ける
+        status, data = self.admin.post("/api/projects/{}/meetings".format(self.pid), {
+            "title": "区切りの定例", "freq": "weekly", "weekdays": [1],
+            "parent_id": self.heading["id"]})
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["meeting"]["parent_id"], self.heading["id"])
+        # 見出しを消すと、定例は先頭の「定例」へ移り、戻すと元の区切りに戻る
+        result = self.admin.delete("/api/tasks/{}".format(self.heading["id"]))[1]
+        self.assertIsNone(db.scalar("SELECT parent_id AS p FROM meetings WHERE id=%s",
+                                    (data["meeting"]["id"],)))
+        self.admin.post("/api/trash/{}/restore".format(result["trash_id"]), {})
+        self.assertEqual(db.scalar("SELECT parent_id AS p FROM meetings WHERE id=%s",
+                                   (data["meeting"]["id"],)), self.heading["id"])
 
     def test_no_dependencies_and_no_links(self):
         hid = self.heading["id"]

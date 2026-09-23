@@ -52,7 +52,7 @@ export function buildTree(tasks) {
  * 絞り込んだときに、空の区切りだけが並ぶのを避けるため。
  * @returns {Array<{task, heading?: true, count?: number}>}
  */
-export function sectionize(list, collapsed, keep = null) {
+export function sectionize(list, collapsed, keep = null, pinned = null) {
   const sections = [{ heading: null, items: [] }];
   for (const task of list) {
     if (task.is_heading) sections.push({ heading: task, items: [] });
@@ -62,7 +62,8 @@ export function sectionize(list, collapsed, keep = null) {
   for (const { heading, items } of sections) {
     const shown = keep ? items.filter((t) => keep.has(t.id)) : items;
     if (heading) {
-      if (keep && !shown.length) continue;
+      // pinned は中身が空でも出す見出し（ガントで定例会議を置いてあるもの）
+      if (keep && !shown.length && !pinned?.has(heading.id)) continue;
       out.push({ task: heading, heading: true, count: shown.length });
       if (collapsed.has(heading.id)) continue;
     }

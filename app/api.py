@@ -5628,11 +5628,13 @@ def _meeting_body(body, current=None):
 
 
 def _check_meeting_parent(values, project_id):
-    """置き場所のタスクは同じプロジェクトのものに限る。"""
+    """置き場所のタスクは同じプロジェクトのものに限る。
+
+    見出しも選べる（その区切りの先頭に並ぶ）。定例会議はタスクではないので、
+    「見出しの下にはタスクを置かない」の決まりには当たらない。
+    """
     if values["parent_id"] and auth.task_project_id(values["parent_id"]) != project_id:
         raise bad_request("置き場所のタスクが同じプロジェクトにありません")
-    if is_heading(values["parent_id"]):
-        raise bad_request("見出しの下には置けません。すぐ下のタスクを選んでください")
 
 
 def meeting_out(row, can_edit=False):

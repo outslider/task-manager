@@ -656,13 +656,21 @@ export async function render(container, route) {
     return new Set(tasks.filter((t) => !t.is_heading).map((t) => t.id));
   }
 
-  /** 見出しの行。タスク一覧と同じ「たたむ」状態を使う。 */
-  function headingRow(entry, depth, extra = {}) {
-    return {
+  /**
+   * 見出しの行と、その区切りの先頭に置いた定例会議の行。
+   * たたむ状態はタスク一覧と同じものを使う。
+   */
+  function headingRows(entry, depth, extra = {}) {
+    const folded = collapsed.has(entry.task.id);
+    const under = meetingsUnder.get(entry.task.id) || [];
+    return [{
       heading: true, task: entry.task, depth, count: entry.count,
-      collapsed: collapsed.has(entry.task.id), separator: true, ...extra,
-    };
+      collapsed: folded, separator: true, ...extra,
+    }, ...(folded ? [] : meetingRowsUnder(entry.task.id, depth))];
   }
+
+  /** 定例会議を置いてある見出しは、絞り込みで中身が空になっても出す。 */
+  const pinnedHeadings = () => new Set(meetingsUnder.keys());
 
   function visibleRows() {
     const meetingsPart = meetingRows(placeMeetings(filteredTasks()));
@@ -683,8 +691,8 @@ export async function render(container, route) {
       if (overview) return roadmapByProject(tasks);
       // フェーズ＝トップレベルのタスク。節目は上のレーンにまとめるので行にはしない
       return sectionize((children.get(null) || []).filter((task) => !task.is_milestone),
-        collapsed, sectionKeep(tasks))
-        .flatMap((entry) => (entry.heading ? [headingRow(entry, 0)] : [{
+        collapsed, sectionKeep(tasks), pinnedHeadings())
+        .flatMap((entry) => (entry.heading ? headingRows(entry, 0) : [{
           task: entry.task, depth: 0,
           hasChildren: (children.get(entry.task.id) || []).some((k) => !k.is_heading),
         }, ...meetingRowsUnder(entry.task.id, 1)]));
@@ -697,9 +705,10 @@ export async function render(container, route) {
     const rows = [];
     const keep = sectionKeep(tasks);
     const walk = (parentId, depth) => {
-      for (const entry of sectionize(children.get(parentId) || [], collapsed, keep)) {
+      for (const entry of sectionize(children.get(parentId) || [], collapsed, keep,
+        pinnedHeadings())) {
         if (entry.heading) {
-          rows.push(headingRow(entry, depth, { separator: rows.length > 0 }));
+          rows.push(...headingRows(entry, depth, { separator: rows.length > 0 }));
           continue;
         }
         const { task } = entry;
@@ -758,9 +767,9 @@ export async function render(container, route) {
         separator: rows.length > 0, milestones: marks,
       });
       if (folded) continue;
-      for (const entry of sectionize(phases, collapsed, sectionKeep(items))) {
+      for (const entry of sectionize(phases, collapsed, sectionKeep(items), pinnedHeadings())) {
         if (entry.heading) {
-          rows.push(headingRow(entry, 1, { inGroup: true }));
+          rows.push(...headingRows(entry, 1, { inGroup: true }));
           continue;
         }
         const { task } = entry;
@@ -831,9 +840,10 @@ export async function render(container, route) {
     const out = [];
     const keep = sectionKeep(tasks);
     const walk = (parentId, depth) => {
-      for (const entry of sectionize(children.get(parentId) || [], collapsed, keep)) {
+      for (const entry of sectionize(children.get(parentId) || [], collapsed, keep,
+        pinnedHeadings())) {
         if (entry.heading) {
-          out.push(headingRow(entry, depth, { inGroup: true }));
+          out.push(...headingRows(entry, depth, { inGroup: true }));
           continue;
         }
         const { task } = entry;
