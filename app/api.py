@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import pymysql
 
-from . import (auth, db, graph, holidays, llm, meetings, mentions, nlp, notify, prefs,
+from . import (auth, db, graph, holidays, llm, logins, meetings, mentions, nlp, notify, prefs,
                recurrence, slack, taxonomy, templates, tickets, trash, workload)
 from .config import MAX_UPLOAD_BYTES, UPLOAD_DIR
 from .http_util import (HttpError, as_bool, as_date, as_datetime, as_int, bad_request,
@@ -289,9 +289,13 @@ def task_rows_with_rollup(rows):
 def login(ctx):
     email = require(ctx.body, "email", "メールアドレス")
     password = require(ctx.body, "password", "パスワード")
-    user = auth.authenticate(email, password)
-    if not user:
+    user, reason = auth.check_login(email, password)
+    if reason:
+        logins.record("failed", user, reason, ctx.ip, ctx.user_agent,
+                      label=None if user else logins.mask_email(email))
+        # どの理由でも同じ返事にする（アドレスの有無や停止中かどうかを教えない）
         raise HttpError(401, "メールアドレスまたはパスワードが違います")
+    logins.record("login", user, "", ctx.ip, ctx.user_agent)
     token = auth.create_session(user["id"])
     resp = json_response({"user": public_user(user)})
     resp.add_cookie(auth.SESSION_COOKIE, token,
@@ -302,6 +306,8 @@ def login(ctx):
 @route("POST", r"/api/auth/logout")
 def logout(ctx):
     if ctx.session_token:
+        if ctx.user:
+            logins.record("logout", ctx.user, "", ctx.ip, ctx.user_agent)
         auth.destroy_session(ctx.session_token)
     resp = json_response({"ok": True})
     resp.add_cookie(auth.SESSION_COOKIE, "", max_age=0, secure=ctx.secure_cookie)
@@ -337,6 +343,7 @@ def change_password(ctx):
                (auth.hash_password(new), user["id"]))
     db.execute("DELETE FROM sessions WHERE user_id=%s AND token<>%s",
                (user["id"], ctx.session_token or ""))
+    logins.record("password", user, "", ctx.ip, ctx.user_agent)
     return json_response({"ok": True})
 
 
@@ -391,7 +398,59 @@ def list_users(ctx):
     if not include_inactive:
         sql += " WHERE is_active=1"
     sql += " ORDER BY name"
-    return json_response({"users": [public_user(r) for r in db.query(sql)]})
+    users = [public_user(r) for r in db.query(sql)]
+    if auth.is_admin(ctx.user):
+        # 管理画面の一覧に、最後にログインした日時と、この 7 日の失敗回数を添える
+        last = {r["user_id"]: r["at"] for r in db.query(
+            "SELECT user_id, MAX(created_at) AS at FROM login_events "
+            "WHERE event='login' AND user_id IS NOT NULL GROUP BY user_id")}
+        failed = {r["user_id"]: r["n"] for r in db.query(
+            "SELECT user_id, COUNT(*) AS n FROM login_events WHERE event='failed' "
+            "AND user_id IS NOT NULL AND created_at >= %s GROUP BY user_id",
+            (db.now() - timedelta(days=7),))}
+        for user in users:
+            at = last.get(user["id"])
+            user["last_login_at"] = at.isoformat(sep=" ", timespec="seconds") if at else None
+            user["failed_7d"] = int(failed.get(user["id"], 0))
+    return json_response({"users": users})
+
+
+LOGIN_PAGE = 100
+
+
+@route("GET", r"/api/admin/logins")
+def list_login_events(ctx):
+    """ログイン履歴。新しい順に LOGIN_PAGE 件ずつ。before に最後の id を渡すと続きを返す。"""
+    admin_only(ctx)
+    where, params = ["created_at >= %s"], [
+        db.now() - timedelta(days=as_int(ctx.query.get("days"), 30, 1, logins.KEEP_DAYS))]
+    user_id = as_int(ctx.query.get("user_id"))
+    if user_id:
+        where.append("user_id=%s")
+        params.append(user_id)
+    kind = ctx.query.get("kind") or "all"
+    if kind == "failed":
+        where.append("event='failed'")
+    elif kind == "login":
+        where.append("event IN ('login','failed')")
+    elif kind != "all":
+        raise bad_request("kind は all / login / failed のどれかです")
+    before = as_int(ctx.query.get("before"))
+    page_where = where + (["id < %s"] if before else [])
+    rows = db.query(
+        "SELECT * FROM login_events WHERE " + " AND ".join(page_where)
+        + " ORDER BY id DESC LIMIT %s", tuple(params + ([before] if before else []) + [LOGIN_PAGE + 1]))
+    summary = db.query_one(
+        "SELECT SUM(event='login') AS logins, SUM(event='failed') AS failed, "
+        "COUNT(DISTINCT CASE WHEN event='login' THEN user_id END) AS people, "
+        "COUNT(DISTINCT CASE WHEN event='failed' THEN ip END) AS failed_ips "
+        "FROM login_events WHERE " + " AND ".join(where), tuple(params)) or {}
+    return json_response({
+        "events": [logins.row_out(r) for r in rows[:LOGIN_PAGE]],
+        "has_more": len(rows) > LOGIN_PAGE,
+        "summary": {k: int(summary.get(k) or 0) for k in ("logins", "failed", "people", "failed_ips")},
+        "keep_days": logins.KEEP_DAYS,
+    })
 
 
 @route("POST", r"/api/users")
@@ -479,6 +538,10 @@ def reset_password(ctx, user_id):
                   (auth.hash_password(password), user_id)) == 0:
         raise not_found("ユーザーが見つかりません")
     db.execute("DELETE FROM sessions WHERE user_id=%s", (user_id,))
+    target = db.query_one("SELECT id, name FROM users WHERE id=%s", (user_id,))
+    # 誰が再発行したかも分かるよう、名前の控えに操作した管理者を添える
+    logins.record("reset", target, "", ctx.ip, ctx.user_agent,
+                  label="{}（{} が再発行）".format(target["name"], ctx.user["name"]))
     return json_response({"ok": True, "password": password})
 
 

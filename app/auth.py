@@ -70,14 +70,34 @@ def purge_expired_sessions():
     db.execute("DELETE FROM sessions WHERE expires_at <= %s", (db.now(),))
 
 
-def authenticate(email: str, password: str):
+_DUMMY = []
+
+
+def _dummy_hash():
+    if not _DUMMY:
+        _DUMMY.append(hash_password(secrets.token_urlsafe(12)))
+    return _DUMMY[0]
+
+
+def check_login(email: str, password: str):
+    """(ユーザー, 失敗の理由) を返す。成功なら理由は空、失敗ならユーザーは
+    分かる範囲で返す（ログイン履歴に「誰のアカウントで失敗したか」を残すため）。"""
     row = db.query_one("SELECT * FROM users WHERE email=%s", (email.strip(),))
-    if not row or not row["is_active"]:
-        return None
-    if not verify_password(password, row["password_hash"]):
-        return None
-    row.pop("password_hash", None)
-    return row
+    if not row:
+        # 登録の有無で応答の速さが変わると、アドレスの存在を探られる。同じだけ計算しておく
+        verify_password(password, _dummy_hash())
+        return None, "unknown"
+    stored = row.pop("password_hash", None)
+    if not verify_password(password, stored or ""):
+        return row, "bad_password"
+    if not row["is_active"]:
+        return row, "inactive"
+    return row, ""
+
+
+def authenticate(email: str, password: str):
+    user, reason = check_login(email, password)
+    return None if reason else user
 
 
 # --------------------------------------------------------------------------

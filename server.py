@@ -49,6 +49,8 @@ class Context:
         self.user = user
         self.session_token = session_token
         self.secure_cookie = SECURE_COOKIE
+        self.ip = ""                 # 接続元（ログイン履歴に残す）
+        self.user_agent = ""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -154,7 +156,25 @@ class Handler(BaseHTTPRequestHandler):
         user = auth.user_for_token(token)
         query = {k: v[0] for k, v in parse_qs(raw_query).items()}
         ctx = Context(self.command, path.rstrip("/") or path, query, body, files, user, token)
+        ctx.ip = self._client_ip()
+        ctx.user_agent = self.headers.get("User-Agent", "")[:300]
         return api.dispatch(ctx)
+
+    def _client_ip(self):
+        """接続元の IP。同じマシンの中継（nginx など）を通ってきたときだけ、
+        中継が付けた X-Real-IP / X-Forwarded-For を信じる。外から直接来た要求の
+        これらの見出しは、送り手が好きに書けるので使わない。"""
+        peer = self.client_address[0] if self.client_address else ""
+        if peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            real = (self.headers.get("X-Real-IP") or "").strip()
+            if real:
+                return real[:64]
+            forwarded = [p.strip() for p in (self.headers.get("X-Forwarded-For") or "").split(",")
+                         if p.strip()]
+            if forwarded:
+                # いちばん右が、中継が自分で書き足した（＝信じてよい）値
+                return forwarded[-1][:64]
+        return peer
 
     def _handle_static(self, path):
         if path in ("/", "/index.html") or not posixpath.splitext(path)[1]:

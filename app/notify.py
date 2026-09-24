@@ -339,10 +339,11 @@ def run_daily_digest(force=False):
 
 def _run_daily_digest():
     today = db.today().isoformat()
-    from . import recurrence, trash   # 循環 import を避けるため遅延読み込み
+    from . import logins, recurrence, trash   # 循環 import を避けるため遅延読み込み
     recurring = recurrence.run()
     recurring_todos = recurrence.run_todos()
     purged = trash.purge_expired()   # 30 日を過ぎたゴミ箱の中身を本当に消す
+    logins.purge_expired()           # 残す日数を過ぎたログイン履歴を消す
     scanned = scan_due_tasks()
     slack_posts = slack_daily_summary()
     sent = 0

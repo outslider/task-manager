@@ -24,6 +24,7 @@ const NAV = [
 
 const ADMIN_NAV = [
   { id: 'users', icon: 'users', label: 'ユーザー', hash: '#/admin/users' },
+  { id: 'logins', icon: 'eye', label: 'ログイン履歴', hash: '#/admin/logins' },
   { id: 'groups', icon: 'tag', label: 'グループ', hash: '#/admin/groups' },
   { id: 'taxonomy', icon: 'palette', label: '状態とカテゴリ', hash: '#/admin/taxonomy' },
   { id: 'queues', icon: 'inbox', label: 'チケット窓口', hash: '#/admin/queues' },
@@ -297,6 +298,7 @@ const ROUTES = [
   [/^#\/trash$/, () => ({ view: 'trash' })],
   [/^#\/profile$/, () => ({ view: 'profile' })],
   [/^#\/admin\/users$/, () => ({ view: 'admin', tab: 'users' })],
+  [/^#\/admin\/logins$/, () => ({ view: 'admin', tab: 'logins' })],
   [/^#\/admin\/groups$/, () => ({ view: 'admin', tab: 'groups' })],
   [/^#\/admin\/taxonomy$/, () => ({ view: 'admin', tab: 'taxonomy' })],
   [/^#\/admin\/queues$/, () => ({ view: 'admin', tab: 'queues' })],

@@ -332,6 +332,22 @@ DDL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
+    CREATE TABLE IF NOT EXISTS login_events (
+        id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+        user_id    INT NULL,                           -- 登録のないアドレスでの失敗は NULL
+        user_label VARCHAR(200) NOT NULL DEFAULT '',   -- 名前の控え（ユーザーを消しても読める）
+        event      VARCHAR(20)  NOT NULL,              -- login | failed | logout | password | reset
+        reason     VARCHAR(20)  NOT NULL DEFAULT '',   -- 失敗の理由
+        ip         VARCHAR(64)  NOT NULL DEFAULT '',
+        user_agent VARCHAR(300) NOT NULL DEFAULT '',
+        created_at DATETIME     NOT NULL,
+        KEY idx_login_user (user_id, created_at),
+        KEY idx_login_time (created_at),
+        KEY idx_login_event (event, created_at),
+        CONSTRAINT fk_login_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
     CREATE TABLE IF NOT EXISTS notifications (
         id         INT AUTO_INCREMENT PRIMARY KEY,
         user_id    INT NOT NULL,

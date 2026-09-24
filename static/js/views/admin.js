@@ -2,7 +2,7 @@
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store } from '../store.js';
-import { avatar, clear, confirmDialog, el, fill, openModal, toast } from '../util.js';
+import { avatar, clear, confirmDialog, el, fill, formatDateTime, openModal, toast } from '../util.js';
 import { ACCENT_PRESETS, applyAccent } from '../theme.js';
 import { iconPicker } from './pickers.js';
 
@@ -15,16 +15,30 @@ export async function render(container, route) {
   }
   const tab = route.tab || 'users';
   const titles = {
-    users: 'ユーザー管理', groups: 'グループ管理', settings: 'システム設定',
+    users: 'ユーザー管理', logins: 'ログイン履歴', groups: 'グループ管理', settings: 'システム設定',
     taxonomy: '状態とカテゴリ',
     queues: 'チケット窓口',
   };
   setHeader(titles[tab]);
   if (tab === 'users') await renderUsers(container);
+  else if (tab === 'logins') await renderLogins(container);
   else if (tab === 'groups') await renderGroups(container);
   else if (tab === 'taxonomy') await renderTaxonomy(container);
   else if (tab === 'queues') await renderQueues(container);
   else await renderSettings(container);
+}
+
+/* ----------------------------------------------------------------- logins */
+
+async function renderLogins(container) {
+  const { loginHistory } = await import('./logins.js');
+  fill(container,
+    el('div', { class: 'page-head' },
+      el('div', { class: 'grow' },
+        el('div', { class: 'page-sub',
+          text: 'だれが・いつ・どこから入ったかの記録です。ログインの失敗、ログアウト、'
+            + 'パスワードの変更と再発行も残ります（1 年ぶん）。' }))),
+    el('div', { class: 'card' }, el('div', { class: 'card-body' }, loginHistory())));
 }
 
 /* ------------------------------------------------------------------ users */
@@ -42,7 +56,7 @@ async function renderUsers(container) {
         el('thead', {}, el('tr', {},
           el('th', { text: '名前' }), el('th', { text: 'メールアドレス' }),
           el('th', { text: '権限' }), el('th', { text: 'メール通知' }),
-          el('th', { text: '状態' }), el('th', {}))),
+          el('th', { text: '状態' }), el('th', { text: '最終ログイン' }), el('th', {}))),
         body))));
 
   async function load() {
@@ -62,7 +76,26 @@ async function renderUsers(container) {
         el('td', {}, user.is_active
           ? el('span', { class: 'badge done', text: '有効' })
           : el('span', { class: 'badge blocked', text: '停止中' })),
+        el('td', { class: 'nowrap' },
+          el('span', {
+            class: user.last_login_at ? '' : 'cell-mut',
+            title: user.last_login_at || 'ログイン履歴を残し始める前のログインは記録にありません',
+            text: user.last_login_at ? formatDateTime(user.last_login_at) : '記録なし',
+          }),
+          // この 7 日にパスワード違いなどで失敗していれば目立たせる
+          user.failed_7d
+            ? el('span', { class: 'login-fail-badge', title: 'この 7 日に失敗したログイン',
+              text: `失敗 ${user.failed_7d}` })
+            : null),
         el('td', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
+          el('button', {
+            class: 'btn btn-sm', title: 'この人のログイン履歴',
+            onClick: async () => {
+              const { openLoginHistory } = await import('./logins.js');
+              openLoginHistory(user);
+            },
+          }, '履歴'),
+          ' ',
           el('button', { class: 'btn btn-sm', onClick: () => editUser(user) }, '編集'),
           ' ',
           el('button', { class: 'btn btn-sm', onClick: () => resetPassword(user) }, 'PW再発行'),

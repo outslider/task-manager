@@ -1692,3 +1692,23 @@ input[type="color"].input {
 .date-chip .x { color: var(--text-muted); font-size: 13px; line-height: 1; }
 .date-chip:hover { border-color: var(--danger); }
 .date-chip:hover .x { color: var(--danger); }
+
+/* ---------- ログイン履歴（管理者） ---------- */
+.login-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px;
+  margin-bottom: 12px; }
+.login-stat { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
+.login-stat .l { font-size: 12px; color: var(--text-muted); }
+.login-stat .v { font-size: 20px; font-weight: 700; }
+.login-stat.warn .v { color: var(--danger); }
+.login-table td.nowrap, td.nowrap { white-space: nowrap; }
+.login-table td.mono { font-variant-numeric: tabular-nums; font-size: 12.5px; }
+.login-table tr.is-failed td { background: var(--danger-soft); }
+.login-badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px;
+  background: var(--surface-3); color: var(--text-muted); white-space: nowrap; }
+.login-badge.login { background: var(--accent-soft); color: var(--accent); }
+.login-badge.failed { background: var(--danger); color: #fff; }
+.login-reason { margin-left: 6px; font-size: 12px; color: var(--danger); }
+.login-more { display: flex; justify-content: center; padding-top: 10px; }
+.login-more:empty { display: none; }
+.login-fail-badge { margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 11px;
+  background: var(--danger-soft); color: var(--danger); white-space: nowrap; }
