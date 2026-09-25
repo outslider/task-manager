@@ -293,9 +293,18 @@ export async function render(container) {
       members.set(`${m.principal_type}:${m.id}`, m.role);
     }
     const listHost = el('div', {});
+    // 個人の行に「実際に効いている権限」を出す欄。権限を選び直すたびに書き直す
+    const notes = [];
+    const drawNotes = () => {
+      for (const { user, host } of notes) {
+        const note = effectiveNote(user, members, groupData.groups, detail.project.owner_id);
+        fill(host, note ? el('div', { class: `role-note${note.warn ? ' warn' : ''}`, text: note.text }) : null);
+      }
+    };
 
     const drawList = () => {
       clear(listHost);
+      notes.length = 0;
       const rows = [
         ...store.users.map((u) => ({
           type: 'user', id: u.id, name: u.name, obj: u, guest: u.role === 'guest',
@@ -321,10 +330,11 @@ export async function render(container) {
           }, r.label.split('（')[0])));
         select.addEventListener('change', () => {
           if (select.value) members.set(key, select.value); else members.delete(key);
+          drawNotes();
         });
         const isOwner = detail.project.owner_id === row.id && row.type === 'user';
         if (isOwner) select.disabled = true;
-        listHost.append(el('div', { class: 'att-item' },
+        listHost.append(el('div', { class: 'att-item member-row' },
           row.type === 'user'
             ? avatar(row.obj, 'sm')
             : el('span', { class: 'avatar sm', style: { background: '#98a2b3' } }, '👥'),
@@ -332,8 +342,15 @@ export async function render(container) {
             el('div', {}, row.name + (isOwner ? '（プロジェクト管理者）' : ''),
               row.guest ? el('span', { class: 'guest-badge', text: '社外' }) : null),
             el('div', { class: 'hint', text: row.sub })),
-          select));
+          select,
+          row.type === 'user' ? noteHost(row.obj) : null));
       }
+      drawNotes();
+    };
+    const noteHost = (user) => {
+      const host = el('div', { class: 'note-host' });
+      notes.push({ user, host });
+      return host;
     };
     drawList();
 
@@ -342,7 +359,8 @@ export async function render(container) {
       wide: true,
       build: () => el('div', {},
         el('p', { class: 'page-sub',
-          text: 'ユーザー個別、またはグループ単位で権限を設定できます。両方に該当する場合は強い方の権限が適用されます。'
+          text: 'ユーザー個別、またはグループ単位で権限を設定できます。両方に該当する場合は強い方の権限が適用されます'
+            + '（個別の設定で、グループの権限より下げることはできません。実際に効く権限は各ユーザーの名前の下に出ます）。'
             + '社外ユーザーは「コメント可」までで、担当になったタスクの進捗・状態は自分で更新できます。' }),
         listHost),
       footer: (close) => [
@@ -368,6 +386,43 @@ export async function render(container) {
   }
 
   draw();
+}
+
+const ROLE_RANK = { viewer: 1, commenter: 2, editor: 3, owner: 4 };
+const GUEST_MAX_ROLE = 'commenter';
+
+function roleName(role) {
+  const found = (store.meta.project_roles || []).find((r) => r.value === role);
+  return found ? found.label.split('（')[0] : roleLabel(role);
+}
+
+/* 選んでいる権限と、実際に効く権限が違うときの説明。サーバーの auth.project_role と同じ決め方：
+   管理者アカウントとプロジェクト管理者は常に最上位、それ以外は個人とグループのうち強い方、
+   社外ユーザーはコメント可まで。違いがなければ null。 */
+export function effectiveNote(user, members, groups, ownerId) {
+  if (user.id === ownerId) return null;
+  const direct = members.get(`user:${user.id}`) || '';
+  if (user.role === 'admin') {
+    return { text: '管理者アカウントなので、実際はどのプロジェクトでもプロジェクト管理者です' };
+  }
+  const via = [];
+  let best = direct;
+  for (const group of groups) {
+    const role = members.get(`group:${group.id}`);
+    if (!role || !group.members.some((m) => m.id === user.id)) continue;
+    via.push({ name: group.name, role });
+    if ((ROLE_RANK[role] || 0) > (ROLE_RANK[best] || 0)) best = role;
+  }
+  const strongest = via.filter((v) => v.role === best).map((v) => v.name).join('・');
+  if (user.role === 'guest' && (ROLE_RANK[best] || 0) > ROLE_RANK[GUEST_MAX_ROLE]) {
+    if (direct === GUEST_MAX_ROLE) return null;
+    const why = `社外ユーザーの上限。${strongest} では${roleName(best)}`;
+    if (!direct) return { text: `${strongest} 経由で${roleName(GUEST_MAX_ROLE)}（${why}）` };
+    return { text: `実際は${roleName(GUEST_MAX_ROLE)}です（${why}）`, warn: true };
+  }
+  if (best === direct) return null;
+  if (!direct) return { text: `${strongest} 経由で${roleName(best)}` };
+  return { text: `実際は${roleName(best)}です（${strongest} 経由。個別の設定より強いため）`, warn: true };
 }
 
 function roleLabel(role) {
