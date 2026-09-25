@@ -42,7 +42,8 @@ def may_receive(user_id, task_id=None, issue_id=None, ticket_id=None):
         return bool(project_id) and auth.has_project_access(user, project_id)
     if issue_id:
         project_id = db.scalar("SELECT project_id FROM issues WHERE id=%s", (issue_id,))
-        return bool(project_id) and auth.has_project_access(user, project_id)
+        return (bool(project_id) and auth.has_project_access(user, project_id)
+                and auth.guest_tab_open(user, project_id, "issues"))
     from . import tickets          # tickets は auth を読むので、ここで遅延読み込み
     queue = db.query_one(
         "SELECT q.visibility, q.project_id, t.organization_id FROM tickets t "

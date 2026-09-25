@@ -91,8 +91,11 @@ export async function render(container) {
         memberStrip(project, isOwner),
         el('div', { style: { display: 'flex', gap: '6px', marginTop: '12px', flexWrap: 'wrap' } },
           el('a', { class: 'btn btn-sm', href: `#/p/${project.id}/tasks` }, 'タスク'),
-          el('a', { class: 'btn btn-sm', href: `#/p/${project.id}/gantt` }, 'ガント'),
-          el('a', { class: 'btn btn-sm', href: `#/p/${project.id}/issues` }, '課題'),
+          // 使っていないタブ（社外ユーザーに見せていないタブ）への近道は出さない
+          (!project.tabs || project.tabs.includes('gantt'))
+            ? el('a', { class: 'btn btn-sm', href: `#/p/${project.id}/gantt` }, 'ガント') : null,
+          (!project.tabs || project.tabs.includes('issues'))
+            ? el('a', { class: 'btn btn-sm', href: `#/p/${project.id}/issues` }, '課題') : null,
           isOwner
             ? el('button', { class: 'btn btn-sm', onClick: () => manageMembers(project) }, 'メンバー')
             : null,
@@ -156,6 +159,34 @@ export async function render(container) {
     perProjectEvents.addEventListener('change', syncSlackEvents);
     notifyEnabled.addEventListener('change', syncSlackEvents);
     syncSlackEvents();
+    // タブの出し分け。「使う」は全員向け（画面をすっきりさせるため）、「社外にも見せる」は
+    // 社外ユーザー向け（見せないものはサーバーでも閉じる）。タスクはいつも出す
+    const TAB_CHOICES = [['gantt', 'ガント'], ['workload', '負荷'], ['bottlenecks', 'ボトルネック'],
+      ['issues', '課題'], ['tickets', 'チケット']];
+    const hiddenNow = new Set(project?.tabs_hidden || []);
+    const guestNow = new Set(project?.guest_tabs || ['tasks', 'gantt', 'issues', 'tickets']);
+    const tabRows = TAB_CHOICES.map(([key, label]) => {
+      const use = el('input', { type: 'checkbox', checked: hiddenNow.has(key) ? null : true });
+      const guest = el('input', {
+        type: 'checkbox', checked: guestNow.has(key) && key !== 'workload' ? true : null,
+        disabled: key === 'workload' ? true : null,
+      });
+      const sync = () => { guest.disabled = key === 'workload' || !use.checked; };
+      use.addEventListener('change', sync);
+      sync();
+      return { key, label, use, guest };
+    });
+    const tabTable = el('table', { class: 'tab-table' },
+      el('thead', {}, el('tr', {},
+        el('th', { text: 'タブ' }), el('th', { text: '使う' }), el('th', { text: '社外ユーザーにも見せる' }))),
+      el('tbody', {},
+        el('tr', {}, el('td', { text: 'タスク' }), el('td', { text: '常に' }), el('td', { text: '常に' })),
+        ...tabRows.map((row) => el('tr', {},
+          el('td', { text: row.label }),
+          el('td', {}, row.use),
+          el('td', {}, row.guest,
+            row.key === 'workload' ? el('span', { class: 'hint', text: ' 担当者の工数が並ぶため見せません' }) : null)))));
+
     // プロジェクト管理者は社内の人だけ（社外ユーザーはコメント可まで）
     const ownerSelect = el('select', { class: 'select' },
       ...store.users.filter((u) => u.role !== 'guest').map((u) => el('option', {
@@ -194,6 +225,14 @@ export async function render(container) {
           : null,
         project
           ? el('div', { class: 'field' },
+            el('label', { text: 'タブ' }), tabTable,
+            el('div', { class: 'hint',
+              text: '「使う」を外したタブは、このプロジェクトの画面から隠れます。'
+                + '社外ユーザーに見せないタブは、画面だけでなくデータも社外ユーザーには閉じます'
+                + '（ガントはタスク一覧と同じデータなので、隠れるのは画面だけです）。' }))
+          : null,
+        project
+          ? el('div', { class: 'field' },
             el('label', { class: 'check' }, archived,
               el('span', { text: 'アーカイブする（一覧から隠す）' })))
           : null),
@@ -226,7 +265,13 @@ export async function render(container) {
                 ? slackEventBoxes.filter(({ box }) => box.checked).map(({ event }) => event.value)
                 : [],
             };
-            if (project) payload.archived = archived.checked;
+            if (project) {
+              payload.archived = archived.checked;
+              payload.tabs_hidden = tabRows.filter((row) => !row.use.checked).map((row) => row.key);
+              payload.guest_tabs = ['tasks', ...tabRows
+                .filter((row) => row.use.checked && row.guest.checked && row.key !== 'workload')
+                .map((row) => row.key)];
+            }
             if (!payload.name) { toast('プロジェクト名を入力してください', 'error'); return; }
             try {
               if (project) await api.patch(`/api/projects/${project.id}`, payload);

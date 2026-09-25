@@ -526,13 +526,16 @@ function commentRow(comment, reload, people) {
 
 function attachmentRow(att, reload, canRemove = true) {
   const isFile = att.kind === 'file';
-  return el('div', { class: 'att-item' },
+  return el('div', { class: `att-item${att.is_internal ? ' internal' : ''}` },
     el('span', { text: isFile ? '📎' : '🔗' }),
     el('a', {
       class: 'name', href: isFile ? url(`/api/attachments/${att.id}/download`) : att.url,
       target: '_blank', rel: 'noopener noreferrer', text: att.name,
     }),
     isFile ? el('span', { class: 'size', text: formatBytes(att.size) }) : null,
+    att.is_internal
+      ? el('span', { class: 'internal-badge', title: '社外ユーザーには見えません', text: '社内のみ' })
+      : null,
     canRemove ? el('button', {
       class: 'icon-btn', title: '削除',
       onClick: async () => {
@@ -546,6 +549,8 @@ function attachmentRow(att, reload, canRemove = true) {
 
 function dropzone(ticket, reload) {
   const input = el('input', { type: 'file', multiple: true, hidden: true });
+  // 社内のみ：社外ユーザーには一覧にも出さず、開かせない（見積の原価表など）
+  const internalBox = store.isGuest() ? null : el('input', { type: 'checkbox' });
   const zone = el('div', { class: 'dropzone' },
     `クリックまたはドラッグ＆ドロップでファイルを添付（1ファイル ${store.meta?.max_upload_mb || 25}MB まで）`);
   const upload = async (files) => {
@@ -555,6 +560,7 @@ function dropzone(ticket, reload) {
       for (const file of files) {
         const form = new FormData();
         form.append('file', file, file.name);
+        if (internalBox?.checked) form.append('internal', '1');
         await api.post(`/api/tickets/${ticket.id}/attachments`, form);
       }
       toast('添付しました', 'ok');
@@ -576,22 +582,33 @@ function dropzone(ticket, reload) {
     zone.classList.remove('over');
     upload([...event.dataTransfer.files]);
   });
-  return el('div', {}, zone, input);
+  return el('div', {}, zone, input,
+    internalBox
+      ? el('label', { class: 'check', style: { marginTop: '6px' },
+        title: '社外ユーザーには、この添付が一覧にも出ず、開けません' },
+      internalBox, el('span', { text: '社内のみの添付にする（社外の人には見えません）' }))
+      : null);
 }
 
 async function addLink(ticket, reload) {
   const link = el('input', { class: 'input', placeholder: 'https://…' });
   const name = el('input', { class: 'input', placeholder: '表示名（省略可）' });
+  const internal = store.isGuest() ? null : el('input', { type: 'checkbox' });
   const result = await openModal({
     title: 'リンクを追加',
     build: () => el('div', {},
       el('div', { class: 'field' }, el('label', { text: 'URL *' }), link),
-      el('div', { class: 'field' }, el('label', { text: '表示名' }), name)),
+      el('div', { class: 'field' }, el('label', { text: '表示名' }), name),
+      internal
+        ? el('label', { class: 'check' }, internal,
+          el('span', { text: '社内のみ（社外の人には見えません）' }))
+        : null),
     footer: (close) => [
       el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
       el('button', {
         class: 'btn btn-primary',
-        onClick: () => close({ url: link.value.trim(), name: name.value.trim() }),
+        onClick: () => close({ url: link.value.trim(), name: name.value.trim(),
+          internal: Boolean(internal?.checked) }),
       }, '追加'),
     ],
   });

@@ -370,3 +370,107 @@ class TestGuestTickets(GuestTestCase):
         own_att = (data.get("attachments") or [data.get("attachment")])[0]["id"]
         self.assertEqual(self.g.delete("/api/attachments/{}".format(staff_att))[0], 403)
         self.assertEqual(self.g.delete("/api/attachments/{}".format(own_att))[0], 200)
+
+
+class TestProjectTabs(GuestTestCase):
+    """第 3 段階：プロジェクトごとのタブ。社外ユーザーに見せないタブは、サーバーでも閉じる。"""
+
+    def settle(self, **settings):
+        status, data = self.admin.patch("/api/projects/{}".format(self.project["id"]), settings)
+        self.assertEqual(status, 200, data)
+
+    def my_tabs(self, client):
+        return client.get("/api/projects/{}".format(self.project["id"]))[1]["project"]["tabs"]
+
+    def test_defaults(self):
+        self.assertEqual(self.my_tabs(self.g), ["tasks", "gantt", "issues", "tickets"])
+        self.assertEqual(self.my_tabs(self.admin),
+                         ["tasks", "gantt", "workload", "bottlenecks", "issues", "tickets"])
+        project = self.admin.get("/api/projects/{}".format(self.project["id"]))[1]["project"]
+        self.assertEqual(project["guest_tabs"], ["tasks", "gantt", "issues", "tickets"])
+        # 設定そのものはプロジェクト管理者にだけ
+        self.assertNotIn("guest_tabs", self.g.get("/api/projects/{}".format(self.project["id"]))[1]["project"])
+
+    def test_tasks_cannot_be_hidden_and_workload_never_goes_to_guests(self):
+        self.settle(tabs_hidden=["tasks", "workload"], guest_tabs=["workload", "gantt"])
+        self.assertIn("tasks", self.my_tabs(self.admin))
+        self.assertNotIn("workload", self.my_tabs(self.admin))
+        self.assertEqual(self.my_tabs(self.g), ["tasks", "gantt"])
+        self.assertEqual(self.admin.patch("/api/projects/{}".format(self.project["id"]),
+                                          {"guest_tabs": ["bogus"]})[0], 400)
+
+    def test_hidden_from_everyone_hides_from_guests_too(self):
+        self.settle(tabs_hidden=["issues"])
+        self.assertNotIn("issues", self.my_tabs(self.admin))
+        self.assertNotIn("issues", self.my_tabs(self.g))
+        # 社内の人に対しては画面から隠すだけ（データは閉じない）
+        self.assertEqual(self.admin.get("/api/projects/{}/issues".format(self.project["id"]))[0], 200)
+
+    def test_issues_closed_for_guests(self):
+        issue = self.make_issue(self.project["id"], title="社外に見せない課題KKX")
+        self.settle(guest_tabs=["tasks", "gantt", "tickets"])
+        self.assertEqual(self.g.get("/api/projects/{}/issues".format(self.project["id"]))[0], 403)
+        self.assertEqual(self.g.get("/api/issues/{}".format(issue["id"]))[0], 404)
+        self.assertEqual(self.g.get("/api/issues")[1]["issues"], [])
+        self.assertNotIn("KKX", json.dumps(self.g.get("/api/search?q=KKX")[1]["groups"],
+                                           ensure_ascii=False))
+        # 通知の関所でも止まる
+        self.admin.patch("/api/issues/{}".format(issue["id"]), {"owner_id": self.guest["id"]})
+        before = db.scalar("SELECT COUNT(*) AS c FROM notifications WHERE user_id=%s", (self.guest["id"],))
+        self.admin.post("/api/issues/{}/comments".format(issue["id"]), {"body": "進めます"})
+        self.assertEqual(db.scalar("SELECT COUNT(*) AS c FROM notifications WHERE user_id=%s",
+                                   (self.guest["id"],)), before)
+        # 戻せば見える
+        self.settle(guest_tabs=["tasks", "issues"])
+        self.assertEqual(self.g.get("/api/issues/{}".format(issue["id"]))[0], 200)
+
+    def test_bottlenecks_are_off_for_guests_by_default(self):
+        url = "/api/projects/{}/bottlenecks".format(self.project["id"])
+        self.assertEqual(self.g.get(url)[0], 403)
+        self.settle(guest_tabs=["tasks", "bottlenecks"])
+        self.assertEqual(self.g.get(url)[0], 200)
+
+    def test_tickets_closed_for_guests(self):
+        status, data = self.admin.post("/api/ticket-queues", {
+            "name": "PJ窓口{}".format(uuid.uuid4().hex[:4]), "project_id": self.project["id"]})
+        queue = data["queue"]
+        status, data = self.g.post("/api/tickets", {"queue_id": queue["id"], "title": "質問"})
+        self.assertEqual(status, 201, data)
+        self.settle(guest_tabs=["tasks", "gantt"])
+        self.assertEqual(self.g.get("/api/ticket-queues")[1]["queues"], [])
+        self.assertEqual(self.g.get("/api/tickets/{}".format(data["ticket"]["id"]))[0], 404)
+        self.assertEqual(self.g.get("/api/tickets")[1]["tickets"], [])
+
+    def test_gantt_closed_for_guests(self):
+        self.admin.post("/api/projects/{}/meetings".format(self.project["id"]),
+                        {"title": "定例", "freq": "weekly", "weekdays": [1]})
+        self.settle(guest_tabs=["tasks", "issues"])
+        self.assertEqual(self.g.get("/api/gantt")[1]["tasks"], [])
+        self.assertEqual(self.g.get("/api/meetings")[1]["meetings"], [])
+        self.assertEqual(len(self.admin.get("/api/meetings?project_ids={}".format(
+            self.project["id"]))[1]["meetings"]), 1)
+
+
+class TestInternalAttachments(GuestTestCase):
+    def test_internal_attachment_stays_inside(self):
+        status, data = self.admin.post("/api/ticket-queues", {
+            "name": "PJ窓口{}".format(uuid.uuid4().hex[:4]), "project_id": self.project["id"]})
+        status, data = self.g.post("/api/tickets", {"queue_id": data["queue"]["id"], "title": "見積の件"})
+        ticket_id = data["ticket"]["id"]
+        url = "/api/tickets/{}/attachments".format(ticket_id)
+        status, data = self.admin.post(url, {"url": "https://intra.example/cost", "name": "原価表",
+                                             "internal": True})
+        self.assertEqual(status, 201, data)
+        secret = data["attachments"][0]
+        self.assertEqual(secret["is_internal"], 1)
+        self.admin.post(url, {"url": "https://example.com/quote", "name": "見積書"})
+        seen = self.g.get("/api/tickets/{}".format(ticket_id))[1]
+        self.assertEqual([a["name"] for a in seen["attachments"]], ["見積書"])
+        self.assertEqual(seen["ticket"]["attachment_count"], 1)
+        self.assertEqual(self.g.delete("/api/attachments/{}".format(secret["id"]))[0], 404)
+        self.assertEqual(self.g.get("/api/attachments/{}/download".format(secret["id"]))[0], 404)
+        staff = self.admin.get("/api/tickets/{}".format(ticket_id))[1]
+        self.assertEqual(len(staff["attachments"]), 2)
+        # 社外ユーザーは「社内のみ」にできない
+        status, data = self.g.post(url, {"url": "https://partner.example/a", "name": "先方", "internal": True})
+        self.assertEqual(data["attachments"][0]["is_internal"], 0)

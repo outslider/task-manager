@@ -1758,3 +1758,11 @@ input[type="color"].input {
 }
 :root[data-theme="dark"] .comment.internal .comment-body { background: #33291a; }
 :root[data-theme="dark"] .internal-badge { background: #4a3a1c; color: #f3c877; }
+
+/* プロジェクト設定：タブの出し分け */
+.tab-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tab-table th, .tab-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+.tab-table th { color: var(--text-muted); font-weight: 600; font-size: 12px; }
+.att-item.internal { background: #fff8e6; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .att-item.internal { background: #33291a; } }
+:root[data-theme="dark"] .att-item.internal { background: #33291a; }

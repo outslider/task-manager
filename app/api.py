@@ -207,7 +207,33 @@ def project_or_404(user, project_id, minimum="viewer"):
     if auth.ROLE_ORDER[role] < auth.ROLE_ORDER[minimum]:
         raise forbidden("この操作には {} 以上の権限が必要です".format(minimum))
     project["my_role"] = role
+    project_tabs_out(project, user)
     return hide_project_secrets(project, role)
+
+
+def require_tab(user, project_id, key):
+    """社外ユーザーに見せていないタブのデータは返さない（社内の人は通す）。"""
+    if not auth.guest_tab_open(user, project_id, key):
+        raise forbidden("このプロジェクトでは、社外の方にこの画面を公開していません")
+
+
+def project_tabs_out(project, user):
+    """画面に出すタブ。社内の人は「使わない」にしたもの以外、社外ユーザーは見せると
+    決めたものだけ。設定そのもの（tabs_hidden / guest_tabs）はプロジェクト管理者にだけ返す。"""
+    hidden = auth.parse_tabs(project.get("tabs_hidden"))
+    guest_tabs = auth.parse_tabs(project.get("guest_tabs"))
+    if auth.is_guest(user):
+        project["tabs"] = [t for t in auth.PROJECT_TABS
+                           if auth.tab_open_for(user, t, hidden, guest_tabs)]
+    else:
+        project["tabs"] = [t for t in auth.PROJECT_TABS if t == "tasks" or t not in hidden]
+    if project.get("my_role") == "owner":
+        project["tabs_hidden"] = sorted(hidden)
+        project["guest_tabs"] = [t for t in auth.PROJECT_TABS if t in guest_tabs]
+    else:
+        project.pop("tabs_hidden", None)
+        project.pop("guest_tabs", None)
+    return project
 
 
 def hide_project_secrets(project, role):
@@ -1014,6 +1040,7 @@ def list_projects(ctx):
         p["stats"] = stats.get(p["id"], EMPTY_STATS)
         p["my_role"] = roles.get(p["id"])
         p["members"] = members.get(p["id"], [])
+        project_tabs_out(p, user)
         hide_project_secrets(p, p["my_role"])
         if auth.is_guest(user):
             # 未完了チケットの数は、自分の会社のものだけで数える
@@ -1076,6 +1103,19 @@ def update_project(ctx, project_id):
     if "slack_events" in ctx.body:
         fields.append("slack_events=%s")
         params.append(prefs.format_events(ctx.body["slack_events"], prefs.SLACK_EVENT_KEYS))
+    for key in ("tabs_hidden", "guest_tabs"):
+        if key in ctx.body:
+            wanted = ctx.body[key]
+            if not isinstance(wanted, list) or any(t not in auth.PROJECT_TABS for t in wanted):
+                raise bad_request("タブの指定が正しくありません")
+            # タスクはプロジェクトの入口なので隠せない。負荷は社外ユーザーには見せない
+            chosen = [t for t in auth.PROJECT_TABS if t in wanted
+                      and not (key == "tabs_hidden" and t == "tasks")
+                      and not (key == "guest_tabs" and t in auth.GUEST_TABS_NEVER)]
+            if key == "guest_tabs" and "tasks" not in chosen:
+                chosen.insert(0, "tasks")
+            fields.append(key + "=%s")
+            params.append(",".join(chosen))
     if "owner_id" in ctx.body:
         owner = as_int(ctx.body["owner_id"])
         if owner and db.scalar("SELECT role AS r FROM users WHERE id=%s", (owner,)) == "guest":
@@ -1190,7 +1230,7 @@ GANTT_SELECT = """
 def gantt_overview(ctx):
     """参加しているプロジェクトをまとめて 1 枚のガントにするためのデータ。"""
     user = me(ctx)
-    ids = auth.visible_project_ids(user)
+    ids = auth.tab_project_ids(user, "gantt")
     wanted = ctx.query.get("project_ids")
     if wanted:
         chosen = {as_int(v) for v in str(wanted).split(",") if as_int(v)}
@@ -1242,6 +1282,7 @@ def project_bottlenecks(ctx, project_id):
     """Which unfinished tasks are holding up the most work, and why."""
     user = me(ctx)
     project_or_404(user, project_id)
+    require_tab(user, project_id, "bottlenecks")
     rows = db.query(
         "SELECT t.*, u.name AS assignee_name FROM tasks t "
         "LEFT JOIN users u ON u.id = t.assignee_id WHERE t.project_id=%s AND " + NOT_HEADING,
@@ -1963,6 +2004,9 @@ def add_attachment(ctx, task_id):
 def _store_attachments(ctx, user, target):
     """Save uploaded files, or register a link, against a task, issue or ticket."""
     column, owner_id = next(iter(target.items()))
+    # チケットの添付は「社内のみ」にできる（社外ユーザーには一覧にも出さず、開かせない）
+    internal = 1 if (column == "ticket_id" and as_bool(ctx.body.get("internal"))
+                     and not auth.is_guest(user)) else 0
     if ctx.files:
         created = []
         for upload in ctx.files.values():
@@ -1980,8 +2024,9 @@ def _store_attachments(ctx, user, target):
                     or "application/octet-stream")
             created.append(db.insert(
                 "INSERT INTO attachments({}, kind, name, stored_name, size, mime, "
-                "uploaded_by, created_at) VALUES(%s,'file',%s,%s,%s,%s,%s,%s)".format(column),
-                (owner_id, original, stored, upload.size, mime, user["id"], db.now())))
+                "uploaded_by, is_internal, created_at) VALUES(%s,'file',%s,%s,%s,%s,%s,%s,%s)"
+                .format(column),
+                (owner_id, original, stored, upload.size, mime, user["id"], internal, db.now())))
         if not created:
             raise bad_request("ファイルが選択されていません")
         rows = db.query("SELECT * FROM attachments WHERE id IN %s", (tuple(created),))
@@ -1992,9 +2037,9 @@ def _store_attachments(ctx, user, target):
         raise bad_request("URL は http(s):// などで始めてください")
     name = (ctx.body.get("name") or url)[:300]
     att_id = db.insert(
-        "INSERT INTO attachments({}, kind, name, url, uploaded_by, created_at) "
-        "VALUES(%s,'link',%s,%s,%s,%s)".format(column),
-        (owner_id, name, url, user["id"], db.now()))
+        "INSERT INTO attachments({}, kind, name, url, uploaded_by, is_internal, created_at) "
+        "VALUES(%s,'link',%s,%s,%s,%s,%s)".format(column),
+        (owner_id, name, url, user["id"], internal, db.now()))
     return json_response(
         {"attachments": [db.query_one("SELECT * FROM attachments WHERE id=%s", (att_id,))]}, 201)
 
@@ -2009,6 +2054,8 @@ def attachment_or_404(user, attachment_id, minimum="viewer"):
         issue_or_404(user, att["issue_id"], minimum)
     elif att["ticket_id"]:
         ticket_or_404(user, att["ticket_id"])
+        if att.get("is_internal") and auth.is_guest(user):
+            raise not_found("添付が見つかりません")      # 社内のみの添付は、あることも伏せる
     else:
         raise not_found("添付が見つかりません")
     return att
@@ -2141,6 +2188,8 @@ def search(ctx):
     like = "%{}%".format(keyword)
     project_ids = auth.visible_project_ids(user)
     scope = tuple(project_ids) or (0,)
+    # 課題は、社外ユーザーに見せていないプロジェクトのものを除く
+    issue_scope = tuple(auth.tab_project_ids(user, "issues")) or (0,)
 
     tasks = db.query(
         "SELECT t.id, t.title, t.status, t.due_date, t.is_milestone, t.marker, "
@@ -2158,7 +2207,7 @@ def search(ctx):
         " WHERE i.project_id IN %s AND (i.title LIKE %s OR i.description LIKE %s "
         "       OR i.resolution LIKE %s) "
         " ORDER BY i.severity DESC, i.seq DESC LIMIT %s",
-        (scope, like, like, like, limit))
+        (issue_scope, like, like, like, limit))
     # チケットへのコメントも、「メンバーだけ」の窓口のものは出さない（社外ユーザーは自社のものだけ）
     q_seen, q_seen_params = visible_ticket_clause(user, t="tk")
     comments = db.query(
@@ -2179,7 +2228,7 @@ def search(ctx):
         "   AND (t.project_id IN %s OR i.project_id IN %s OR "
         "        (c.ticket_id IS NOT NULL" + (" AND " + q_seen if q_seen else "") + ")) "
         " ORDER BY c.created_at DESC LIMIT %s",
-        (like, scope, scope) + q_seen_params + (limit,))
+        (like, scope, issue_scope) + q_seen_params + (limit,))
     projects = db.query(
         "SELECT id, name, description, color FROM projects "
         " WHERE id IN %s AND (name LIKE %s OR description LIKE %s) ORDER BY archived, name "
@@ -3493,7 +3542,8 @@ def daily(ctx):
         "SELECT * FROM checkins WHERE user_id=%s AND checkin_date=%s", (user["id"], today))
     issue_where = ("i.owner_id=%s AND i.status IN %s AND p.archived=0 "
                    "AND i.project_id IN %s")
-    issue_params = (user["id"], OPEN_ISSUE_STATUSES, visible)
+    issue_params = (user["id"], OPEN_ISSUE_STATUSES,
+                    tuple(auth.tab_project_ids(user, "issues")) or (0,))
     issues = db.query(
         "SELECT i.id, i.seq, i.title, i.status, i.severity, i.due_date, p.name AS project_name "
         "FROM issues i JOIN projects p ON p.id = i.project_id WHERE " + issue_where
@@ -3743,6 +3793,8 @@ def issue_or_404(user, issue_id, minimum="viewer"):
     if not issue:
         raise not_found("課題が見つかりません")
     project_or_404(user, issue["project_id"], minimum)
+    if not auth.guest_tab_open(user, issue["project_id"], "issues"):
+        raise not_found("課題が見つかりません")
     return issue
 
 
@@ -3795,6 +3847,7 @@ def issue_comment(issue_id, user_id, text, kind="system"):
 def list_project_issues(ctx, project_id):
     user = me(ctx)
     project = project_or_404(user, project_id)
+    require_tab(user, project_id, "issues")
     where = ["i.project_id = %s"]
     params = [project_id]
     _apply_issue_filters(ctx, where, params)
@@ -3814,7 +3867,7 @@ def list_project_issues(ctx, project_id):
 def search_issues(ctx):
     """Issues across every project the user can see."""
     user = me(ctx)
-    ids = auth.visible_project_ids(user)
+    ids = auth.tab_project_ids(user, "issues")
     if not ids:
         return json_response({"issues": [], "summary": issue_summary([])})
     # 1 つのプロジェクトに絞りたいときのため。見える範囲の中でしか絞れない。
@@ -4188,8 +4241,9 @@ def visible_queue_clause(user, alias="q"):
     if auth.is_admin(user):
         return "", ()
     if auth.is_guest(user):
-        # 社外ユーザーは、参加しているプロジェクトにひもづいた窓口だけ（公開範囲の設定によらない）
-        ids = auth.visible_project_ids(user)
+        # 社外ユーザーは、参加しているプロジェクトにひもづいた窓口だけ（公開範囲の設定によらない）。
+        # そのプロジェクトで社外ユーザーにチケットを見せていなければ、それも除く
+        ids = auth.tab_project_ids(user, "tickets")
         if not ids:
             return "1=0", ()
         return "{a}.project_id IN %s".format(a=alias), (tuple(ids),)
@@ -4257,8 +4311,9 @@ def attach_counts(rows, user=None):
             + " GROUP BY ticket_id", (scope,)):
         by_id[item["id"]]["comment_count"] = int(item["n"])
     for item in db.query(
-            "SELECT ticket_id AS id, COUNT(*) AS n FROM attachments "
-            "WHERE ticket_id IN %s GROUP BY ticket_id", (scope,)):
+            "SELECT ticket_id AS id, COUNT(*) AS n FROM attachments WHERE ticket_id IN %s"
+            + (" AND is_internal=0" if auth.is_guest(user) else "")
+            + " GROUP BY ticket_id", (scope,)):
         by_id[item["id"]]["attachment_count"] = int(item["n"])
     return rows
 
@@ -4427,6 +4482,7 @@ def guest_queue_counts(user, rows):
 
 def guest_open_tickets(user, project_ids):
     """社外ユーザーのプロジェクト一覧に出す未完了チケット数（自分の会社のものだけ）。"""
+    project_ids = [i for i in project_ids if i in set(auth.tab_project_ids(user, "tickets"))]
     if not project_ids or not user.get("organization_id"):
         return {}
     return {r["project_id"]: int(r["c"]) for r in db.query(
@@ -5077,7 +5133,8 @@ def get_ticket(ctx, ticket_id):
         "ORDER BY c.created_at, c.id", (ticket_id,))
     attachments = db.query(
         "SELECT a.*, u.name AS uploaded_by_name FROM attachments a "
-        "LEFT JOIN users u ON u.id = a.uploaded_by WHERE a.ticket_id=%s ORDER BY a.created_at",
+        "LEFT JOIN users u ON u.id = a.uploaded_by WHERE a.ticket_id=%s "
+        + ("AND a.is_internal=0 " if guest else "") + "ORDER BY a.created_at",
         (ticket_id,))
     if guest:
         # かかった時間は社内の工数なので、社外ユーザーには見せない
@@ -6164,6 +6221,10 @@ def list_meetings(ctx):
     wanted = [as_int(v) for v in (ctx.query.get("project_ids") or "").split(",") if v.strip()]
     wanted = [v for v in wanted if v]
     ids = wanted or auth.visible_project_ids(user)
+    if auth.is_guest(user):
+        # 定例会議はガントに並ぶもの。ガントを見せていないプロジェクトのものは出さない
+        allowed = set(auth.tab_project_ids(user, "gantt"))
+        ids = [i for i in ids if i in allowed]
     roles = auth.project_roles(user, ids)
     if not roles:
         return json_response({"meetings": []})

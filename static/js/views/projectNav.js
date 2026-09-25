@@ -19,9 +19,12 @@ export function projectTabs(projectId, active) {
   };
   // このプロジェクト専用の窓口があるときだけ、チケットへの入口を出す
   const openTickets = project?.stats?.open_tickets || 0;
-  // 負荷は担当者ごとの工数が並ぶので、社外ユーザーには出さない（サーバーでも閉じている）
-  const base = store.isGuest() ? TABS.filter((tab) => tab.key !== 'workload') : TABS;
-  const tabs = openTickets
+  // プロジェクトごとに選んだタブだけ出す（サーバーが、この人に見せてよいものを返す）。
+  // 社外ユーザーの負荷は、設定によらず出ない
+  const allowed = new Set(project?.tabs
+    || TABS.map((tab) => tab.key).filter((key) => !(store.isGuest() && key === 'workload')));
+  const base = TABS.filter((tab) => allowed.has(tab.key));
+  const tabs = openTickets && (!project?.tabs || allowed.has('tickets'))
     ? [...base, { key: 'tickets', label: 'チケット', icon: 'ticket',
       href: `#/tickets?project=${projectId}`, count: openTickets }]
     : base;
@@ -35,4 +38,10 @@ export function projectTabs(projectId, active) {
     (tab.count ?? counts[tab.key])
       ? el('span', { class: 'count', text: String(tab.count ?? counts[tab.key]) })
       : null)));
+}
+
+/** このプロジェクトで、この画面を出してよいか（使っていないタブを URL で開いたとき用）。 */
+export function tabAllowed(projectId, key) {
+  const project = store.project(projectId);
+  return !project?.tabs || key === 'tasks' || project.tabs.includes(key);
 }

@@ -123,6 +123,56 @@ def is_guest(user) -> bool:
     return bool(user) and user.get("role") == "guest"
 
 
+# プロジェクトの中のタブ。タスクはプロジェクトの入口なので、いつも出す。
+PROJECT_TABS = ("tasks", "gantt", "workload", "bottlenecks", "issues", "tickets")
+TAB_LABEL = {"tasks": "タスク", "gantt": "ガント", "workload": "負荷",
+             "bottlenecks": "ボトルネック", "issues": "課題", "tickets": "チケット"}
+# 社外ユーザーに見せるタブの初期値。「見せるものを並べる」形なので、あとからタブを
+# 足しても社外ユーザーには勝手に見えない。負荷（担当者ごとの工数）はどうしても見せない。
+GUEST_TABS_DEFAULT = "tasks,gantt,issues,tickets"
+GUEST_TABS_NEVER = frozenset({"workload"})
+
+
+def parse_tabs(value):
+    return {t for t in str(value or "").split(",") if t in PROJECT_TABS}
+
+
+def tab_settings(project_ids):
+    """{project_id: (隠すタブ, 社外ユーザーに見せるタブ)}。"""
+    ids = [i for i in project_ids if i]
+    if not ids:
+        return {}
+    return {r["id"]: (parse_tabs(r["tabs_hidden"]), parse_tabs(r["guest_tabs"]))
+            for r in db.query("SELECT id, tabs_hidden, guest_tabs FROM projects WHERE id IN %s",
+                              (tuple(ids),))}
+
+
+def tab_open_for(user, key, hidden, guest_tabs):
+    """このタブを、この人に開いてよいか（社外ユーザー向けの判定）。
+
+    社内の人に対する「隠す」は画面をすっきりさせるためのもので、データは閉じない。
+    社外ユーザーに対しては、ここで閉じたものはサーバーでも閉じる。"""
+    if key == "tasks" or not is_guest(user):
+        return True
+    return key not in hidden and key in guest_tabs and key not in GUEST_TABS_NEVER
+
+
+def guest_tab_open(user, project_id, key):
+    if not is_guest(user) or key == "tasks":
+        return True
+    hidden, guest_tabs = tab_settings([project_id]).get(project_id, (set(), set()))
+    return tab_open_for(user, key, hidden, guest_tabs)
+
+
+def tab_project_ids(user, key):
+    """このタブを開いてよいプロジェクト（社外ユーザーは設定で絞る。社内の人はそのまま）。"""
+    ids = visible_project_ids(user)
+    if not is_guest(user):
+        return ids
+    settings = tab_settings(ids)
+    return [i for i in ids if tab_open_for(user, key, *settings.get(i, (set(), set())))]
+
+
 def _cap(user, role):
     """社外ユーザーは、どんな付け方をされても GUEST_MAX_ROLE までにする。
     グループ経由で編集者になっていても、ここで抑える。"""

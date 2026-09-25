@@ -61,7 +61,8 @@ export async function render(container, route) {
     class: 'select', style: { maxWidth: '190px' },
     onChange: (event) => { state.project_id = event.target.value; load(); },
   }, option('', 'プロジェクト: すべて'),
-  ...store.projects.filter((p) => !p.archived)
+  // 課題のタブを使っていない（社外ユーザーに見せていない）プロジェクトは選択肢に出さない
+  ...store.projects.filter((p) => !p.archived && (!p.tabs || p.tabs.includes('issues')))
     .map((p) => option(p.id, p.name)));
 
   const severityFilter = el('select', {

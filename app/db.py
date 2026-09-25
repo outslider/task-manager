@@ -74,6 +74,8 @@ DDL = [
         slack_webhook_url VARCHAR(300) NOT NULL DEFAULT '',  -- 空なら全体設定を使う
         notify_enabled TINYINT(1)  NOT NULL DEFAULT 1,       -- 0 ならこのプロジェクトの通知を止める
         slack_events VARCHAR(120)  NOT NULL DEFAULT '',      -- 空なら全体設定を使う
+        tabs_hidden VARCHAR(120)   NOT NULL DEFAULT '',      -- 使わないタブ（全員に隠す）
+        guest_tabs  VARCHAR(120)   NOT NULL DEFAULT 'tasks,gantt,issues,tickets', -- 社外ユーザーに見せるタブ
         created_at  DATETIME      NOT NULL,
         CONSTRAINT fk_proj_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -322,6 +324,7 @@ DDL = [
         size        BIGINT       NOT NULL DEFAULT 0,
         mime        VARCHAR(150) NOT NULL DEFAULT '',
         uploaded_by INT NULL,
+        is_internal TINYINT(1)   NOT NULL DEFAULT 0,     -- 社内のみ（チケットで社外ユーザーに見せない）
         created_at  DATETIME     NOT NULL,
         KEY idx_attachments_task (task_id),
         KEY idx_attachments_issue (issue_id),
@@ -754,6 +757,13 @@ MIGRATIONS = [
      "ALTER TABLE todos ADD COLUMN recurrence_id INT NULL AFTER sort_order"),
     ("meetings", "parent_id",
      "ALTER TABLE meetings ADD COLUMN parent_id INT NULL AFTER project_id"),
+    ("projects", "tabs_hidden",
+     "ALTER TABLE projects ADD COLUMN tabs_hidden VARCHAR(120) NOT NULL DEFAULT ''"),
+    ("projects", "guest_tabs",
+     "ALTER TABLE projects ADD COLUMN guest_tabs VARCHAR(120) NOT NULL DEFAULT "
+     "'tasks,gantt,issues,tickets'"),
+    ("attachments", "is_internal",
+     "ALTER TABLE attachments ADD COLUMN is_internal TINYINT(1) NOT NULL DEFAULT 0"),
     ("tickets", "organization_id",
      "ALTER TABLE tickets ADD COLUMN organization_id INT NULL AFTER on_behalf_of"),
     ("comments", "is_internal",

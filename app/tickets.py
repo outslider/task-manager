@@ -108,7 +108,8 @@ def queue_visible_to(user, visibility, project_id):
     """
     # 社外ユーザーは、参加しているプロジェクトにひもづいた窓口だけ（公開範囲の設定によらない）
     if auth.is_guest(user):
-        return bool(project_id) and auth.has_project_access(user, project_id)
+        return (bool(project_id) and auth.has_project_access(user, project_id)
+                and auth.guest_tab_open(user, project_id, "tickets"))
     if (visibility or "all") != "project":
         return True
     if auth.is_admin(user):

@@ -380,6 +380,16 @@ async function renderRoute() {
     return;
   }
 
+  // プロジェクトで使っていないタブ（社外ユーザーに見せていないタブを含む）を URL で
+  // 開いたときは、タスク一覧へ回す。前に開いていたタブを覚えている場合もここに来る
+  if (route.projectId && route.view !== 'tasks') {
+    const { tabAllowed } = await import('./views/projectNav.js');
+    if (!tabAllowed(route.projectId, route.view)) {
+      location.replace(`#/p/${route.projectId}/tasks`);
+      return;
+    }
+  }
+
   const loader = LOADERS[route.view];
   if (!loader) {
     setHeader('ページが見つかりません');
