@@ -39,7 +39,7 @@ export function placementCandidates(tasks) {
     for (const task of children.get(parentId) || []) {
       if (!task.is_milestone) {
         out.push({ id: task.id, depth, heading: Boolean(task.is_heading),
-          label: task.is_heading ? `☰ ${task.title}（見出し）` : task.title });
+          label: task.is_heading ? `【見出し】${task.title}` : task.title });
       }
       walk(task.id, depth + 1);
     }

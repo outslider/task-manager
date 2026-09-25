@@ -769,7 +769,7 @@ export async function render(container, route) {
     popupMenu(anchor, (menuItem) => [
     menuItem('👁 詳細を開く', () => openTaskDetail(task.id, { onChange: reload })),
     menuItem('＋ 子タスクを追加', () => addTask(task.id)),
-    menuItem('☰ この下に見出しを追加', () => addHeading(task)),
+    menuItem('🔖 この下に見出しを追加', () => addHeading(task)),
     ...hierarchyMenuItems(task, menuItem),
     menuItem('✏️ 編集', async () => {
       const saved = await openTaskForm({

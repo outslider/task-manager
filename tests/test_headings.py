@@ -234,6 +234,61 @@ class TestHeadings(ApiTestCase):
         mine = next(p for p in projects if p["id"] == made["project"]["id"])
         self.assertEqual(mine["stats"]["total"], 1)
 
+    def order(self, parent_id=None):
+        return [r["title"] for r in db.query(
+            "SELECT title FROM tasks WHERE project_id=%s AND parent_id <=> %s "
+            "ORDER BY sort_order, id", (self.pid, parent_id))]
+
+    def test_adding_a_task_into_a_heading_section(self):
+        # 並び: ふつうの作業XYZ, [大]見出し, A, [中]小区切り, B, [大]次の見出し, C
+        self.make_task(self.pid, title="A")
+        sub = self.make_heading("小区切り", heading_level=2)
+        self.make_task(self.pid, title="B")
+        nxt = self.make_heading("次の見出し")
+        self.make_task(self.pid, title="C")
+        # 大見出しを選ぶと、中の小区切りも含めた区切りの最後（次の大見出しの前）に入る
+        status, data = self.admin.post("/api/tasks", {
+            "project_id": self.pid, "title": "新1", "section_id": self.heading["id"]})
+        self.assertEqual(status, 201, data)
+        self.assertIsNone(data["task"]["parent_id"])
+        self.assertEqual(self.order(), ["ふつうの作業XYZ", HEAD, "A", "小区切り", "B", "新1",
+                                        "次の見出し", "C"])
+        # 中見出しを選ぶと、その区切りの最後（次の見出しの前）
+        self.admin.post("/api/tasks", {"project_id": self.pid, "title": "新2",
+                                       "section_id": sub["id"]})
+        self.assertEqual(self.order()[4:7], ["B", "新1", "新2"])
+        # 最後の見出しなら末尾
+        self.admin.post("/api/tasks", {"project_id": self.pid, "title": "新3",
+                                       "section_id": nxt["id"]})
+        self.assertEqual(self.order()[-1], "新3")
+
+    def test_section_inside_a_parent(self):
+        parent = self.make_task(self.pid, title="親")
+        self.make_task(self.pid, title="子1", parent_id=parent["id"])
+        inner = self.make_heading("子の見出し", parent_id=parent["id"])
+        status, data = self.admin.post("/api/tasks", {
+            "project_id": self.pid, "title": "子2", "section_id": inner["id"],
+            "parent_id": 99999})  # 見出しを選べば、送られた parent_id より見出しの親が勝つ
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["task"]["parent_id"], parent["id"])
+        self.assertEqual(self.order(parent["id"]), ["子1", "子の見出し", "子2"])
+
+    def test_moving_an_existing_task_into_a_section(self):
+        other = self.make_heading("別の見出し")
+        self.make_task(self.pid, title="Z")
+        status, data = self.admin.patch("/api/tasks/{}".format(self.task["id"]),
+                                        {"section_id": other["id"]})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(self.order(), [HEAD, "別の見出し", "Z", "ふつうの作業XYZ"])
+        # 別のプロジェクトの見出しや、見出しでないものは選べない
+        stranger = self.make_project("よそ")
+        status, data = self.admin.post("/api/tasks", {
+            "project_id": stranger["id"], "title": "x", "is_heading": True})
+        self.assertEqual(self.admin.patch("/api/tasks/{}".format(self.task["id"]),
+                                          {"section_id": data["task"]["id"]})[0], 400)
+        self.assertEqual(self.admin.post("/api/tasks", {
+            "project_id": self.pid, "title": "y", "section_id": self.task["id"]})[0], 400)
+
     def test_duplicate_and_templates_keep_headings(self):
         parent = self.make_task(self.pid, title="まとまり")
         self.make_heading("まとまりの見出し", parent_id=parent["id"], heading_level=2)

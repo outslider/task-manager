@@ -159,7 +159,7 @@ def task_or_404(user, task_id, minimum="viewer"):
 # タスクを数えたり並べたりする問い合わせには、この条件を付ける。
 NOT_HEADING = "t.is_heading=0"
 # 見出しで変えてよい項目。状態や日付を持たせると「作業」として扱われだすため
-HEADING_EDITABLE = {"title", "parent_id", "sort_order", "heading_level"}
+HEADING_EDITABLE = {"title", "parent_id", "sort_order", "heading_level", "section_id"}
 # 見出しの段。1 が大見出しで、次の同じ段以上の見出しまでが区切りの範囲になる
 HEADING_LEVELS = (1, 2, 3)
 
@@ -176,6 +176,41 @@ def heading_level(value, current=1):
 def is_heading(task_id):
     return bool(task_id) and bool(db.scalar(
         "SELECT is_heading AS h FROM tasks WHERE id=%s", (task_id,), default=0))
+
+
+def section_heading(section_id, project_id):
+    """「この見出しの区切りに入れる」の見出し。同じプロジェクトの見出しに限る。"""
+    heading = db.query_one(
+        "SELECT id, project_id, parent_id, heading_level FROM tasks WHERE id=%s AND is_heading=1",
+        (section_id,))
+    if not heading or heading["project_id"] != project_id:
+        raise bad_request("入れる先の見出しが同じプロジェクトにありません")
+    return heading
+
+
+def place_in_section(task_id, heading):
+    """task を、見出しの区切りの末尾（次の、同じ段以上の見出しの直前）へ並べ直す。
+
+    見出しは子を持てないので、「見出しに入れる」は「見出しと同じ親の下で、
+    その区切りの最後に置く」ことになる。兄弟の並び順は 10 刻みで振り直す。
+    """
+    siblings = [r for r in db.query(
+        "SELECT id, is_heading, heading_level FROM tasks WHERE project_id=%s AND parent_id <=> %s "
+        "ORDER BY sort_order, id", (heading["project_id"], heading["parent_id"]))
+        if r["id"] != task_id]
+    at = next((i for i, r in enumerate(siblings) if r["id"] == heading["id"]), None)
+    if at is None:
+        return
+    level = heading["heading_level"] or 1
+    end = at + 1
+    while end < len(siblings) and not (
+            siblings[end]["is_heading"] and (siblings[end]["heading_level"] or 1) <= level):
+        end += 1
+    order = [r["id"] for r in siblings]
+    order.insert(end, task_id)
+    now = db.now()
+    db.executemany("UPDATE tasks SET sort_order=%s, updated_at=%s WHERE id=%s",
+                   [((i + 1) * 10, now, tid) for i, tid in enumerate(order)])
 
 
 def reject_heading_parent(parent_id):
@@ -1203,6 +1238,11 @@ def _create_task(user, body):
     project_or_404(user, project_id, "editor")
     title = require(ctx.body, "title", "タスク名")
     parent_id = as_int(ctx.body.get("parent_id"))
+    # 見出しを選んだときは、その見出しと同じ親の下に置き、あとで区切りの末尾へ並べる
+    section = None
+    if as_int(ctx.body.get("section_id")):
+        section = section_heading(as_int(ctx.body.get("section_id")), project_id)
+        parent_id = section["parent_id"]
     if parent_id is not None:
         parent = db.query_one("SELECT project_id FROM tasks WHERE id=%s", (parent_id,))
         if not parent or parent["project_id"] != project_id:
@@ -1244,6 +1284,8 @@ def _create_task(user, body):
          progress, as_hours(ctx.body.get("estimate_hours")), is_milestone, heading, level,
          normalize_marker(ctx.body.get("marker")), sort_order,
          user["id"], now, now, now if status == "done" else None))
+    if section:
+        place_in_section(task_id, section)
     if "depends_on" in ctx.body:
         set_task_deps(task_id, project_id, ctx.body["depends_on"])
     if assignee_id and assignee_id != user["id"]:
@@ -1421,6 +1463,13 @@ def update_task(ctx, task_id):
             fields.append(key + "=%s")
             params.append(value)
 
+    section = None
+    if as_int(body.get("section_id")):
+        section = section_heading(as_int(body["section_id"]), current["project_id"])
+        if section["id"] == task_id:
+            raise bad_request("自分自身の区切りには入れられません")
+        # 見出しと同じ親の下へ移り、並び順は下で区切りの末尾に振り直す
+        body = dict(body, parent_id=section["parent_id"], sort_order=None)
     if "parent_id" in body:
         parent_id = as_int(body["parent_id"])
         _validate_parent(task_id, parent_id, current["project_id"])
@@ -1436,7 +1485,7 @@ def update_task(ctx, task_id):
     if "marker" in body:
         fields.append("marker=%s")
         params.append(normalize_marker(body["marker"]))
-    if "sort_order" in body:
+    if "sort_order" in body and not section:
         fields.append("sort_order=%s")
         params.append(as_int(body["sort_order"], 0))
 
@@ -1463,6 +1512,8 @@ def update_task(ctx, task_id):
     else:
         touch_task(task_id)
 
+    if section:
+        place_in_section(task_id, section)
     if notes:
         system_comment(task_id, user["id"], " / ".join(notes))
     if new_assignee and new_assignee != current["assignee_id"] and new_assignee != user["id"]:

@@ -26,17 +26,22 @@ export function openTaskForm({
   const editing = Boolean(task);
   const fields = {};
 
-  // 見出しは区切りの線なので、親にも先行タスクにもできない
-  const parentOptions = tasks
-    .filter((t) => !t.is_heading)
+  // 置き場所の候補。タスクの木の並びどおりに、見出しも混ぜて出す。
+  // 見出しは子を持てないので、見出しを選ぶと「その見出しの区切りの最後」に入る
+  // （値は h123 の形で区別し、保存するときに section_id として送る）。
+  const initialPlace = task ? currentPlace(tasks, task) : (parentId ? String(parentId) : '');
+  const parentOptions = treeOrder(tasks)
     .filter((t) => !task || (t.id !== task.id && !isDescendant(tasks, t.id, task.id)))
     .map((t) => {
+      const indent = '　'.repeat(depthOf(tasks, t.id));
+      if (t.is_heading) {
+        return option(`h${t.id}`, `${indent}【見出し】${t.title}`, initialPlace === `h${t.id}`);
+      }
       // 同じ名前のタスクが他にもあるときは、どこにあるものか添えて見分けられるようにする
       const twin = tasks.some((o) => o.id !== t.id && o.title === t.title);
       const path = twin ? parentPath(tasks, t.id) : '';
-      return option(t.id,
-        `${'　'.repeat(depthOf(tasks, t.id))}${t.title}${path ? `（${path}）` : ''}`,
-        Number(task ? task.parent_id : parentId) === t.id);
+      return option(t.id, `${indent}${t.title}${path ? `（${path}）` : ''}`,
+        initialPlace === String(t.id));
     });
 
   const depCandidates = tasks.filter((t) => !t.is_heading && (!task || t.id !== task.id));
@@ -84,7 +89,7 @@ export function openTaskForm({
         ...(store.meta?.markers || [{ value: '', label: '◆ ひし形（既定）' }]).map((m) =>
           option(m.value, m.label, (task?.marker || '') === m.value)));
       fields.parent = el('select', { class: 'select' },
-        option('', '（トップレベル）', !(task ? task.parent_id : parentId)),
+        option('', '（トップレベル）', initialPlace === ''),
         ...parentOptions);
 
       return el('div', {},
@@ -103,7 +108,9 @@ export function openTaskForm({
         el('div', { class: 'field' },
           el('label', { text: '先行タスク（これが終わるまで着手できない）' }),
           depPicker.node),
-        el('div', { class: 'field' }, el('label', { text: '親タスク' }), fields.parent),
+        el('div', { class: 'field' }, el('label', { text: '親タスク・見出し' }), fields.parent,
+          el('div', { class: 'hint',
+            text: 'タスクを選ぶとその子に、【見出し】を選ぶとその区切りの最後に入ります。' })),
         el('div', { class: 'row' },
           el('div', { class: 'field' },
             el('label', { class: 'check' }, fields.milestone,
@@ -132,7 +139,7 @@ export function openTaskForm({
             is_milestone: fields.milestone.checked,
             marker: fields.marker.value,
             estimate_hours: fields.estimate.value === '' ? null : Number(fields.estimate.value),
-            parent_id: fields.parent.value ? Number(fields.parent.value) : null,
+            ...placeFor(fields.parent.value, task, initialPlace),
             depends_on: depPicker.ids(),
           };
           if (!task?.child_count) payload.progress = Number(fields.progress.value || 0);
@@ -152,6 +159,53 @@ export function openTaskForm({
       }, editing ? '保存' : '追加'),
     ],
   });
+}
+
+/**
+ * 選んだ置き場所を、送る形にする。見出しなら section_id、タスクなら parent_id。
+ * 編集で置き場所を変えていなければ、今の親をそのまま送る（並び順を動かさない）。
+ */
+function placeFor(value, task, initialPlace) {
+  if (task && value === initialPlace) return { parent_id: task.parent_id ?? null };
+  if (value.startsWith('h')) return { section_id: Number(value.slice(1)) };
+  return { parent_id: value ? Number(value) : null };
+}
+
+/** 木の並び（親の直後に子、兄弟は並び順）。 */
+function treeOrder(tasks) {
+  const ids = new Set(tasks.map((t) => t.id));
+  const children = new Map();
+  for (const t of tasks) {
+    const key = ids.has(t.parent_id) ? t.parent_id : null;
+    if (!children.has(key)) children.set(key, []);
+    children.get(key).push(t);
+  }
+  for (const list of children.values()) {
+    list.sort((a, b) => (a.sort_order - b.sort_order) || (a.id - b.id));
+  }
+  const out = [];
+  const walk = (parentId) => {
+    for (const t of children.get(parentId) || []) {
+      out.push(t);
+      walk(t.id);
+    }
+  };
+  walk(null);
+  return out;
+}
+
+/**
+ * 今いる場所。同じ親の兄弟のうち、すぐ前にある見出しの区切りの中なら、その見出し。
+ * いちばん近い見出しが、いちばん内側の区切り（段がいくつあっても）。
+ */
+function currentPlace(tasks, task) {
+  const siblings = tasks
+    .filter((t) => (t.parent_id ?? null) === (task.parent_id ?? null))
+    .sort((a, b) => (a.sort_order - b.sort_order) || (a.id - b.id));
+  for (let i = siblings.findIndex((t) => t.id === task.id) - 1; i >= 0; i -= 1) {
+    if (siblings[i].is_heading) return `h${siblings[i].id}`;
+  }
+  return task.parent_id ? String(task.parent_id) : '';
 }
 
 /** 上位をたどった道のり。トップレベルなら「トップレベル」。 */
