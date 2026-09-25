@@ -1,7 +1,7 @@
 /* Cross-project task list with filters. */
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
-import { store, STATUS_LABEL, CATEGORIES, markerChar } from '../store.js';
+import { store, STATUS_LABEL, CATEGORIES, markerChar, taskProgress } from '../store.js';
 import {
   addDays, avatar, clear, debounce, dueClass, dueLabel, el, fill, formatDate, parseDate,
   skeleton, today, toISO,
@@ -269,10 +269,10 @@ export async function render(container) {
       dueLabel(task.due_date, task.status)
         ? el('div', { style: { fontSize: '11px' }, text: dueLabel(task.due_date, task.status) })
         : null),
-    el('div', { class: 'cell-hide-sm' },
-      el('div', { class: `progress${task.progress >= 100 ? ' done' : ''}` },
-        el('i', { style: { width: `${task.progress}%` } })),
-      el('div', { class: 'cell-mut', style: { fontSize: '11px' }, text: `${task.progress}%` })),
+    el('div', { class: 'cell-hide-sm', title: task.child_count ? '子タスクから自動で集計' : null },
+      el('div', { class: `progress${taskProgress(task) >= 100 ? ' done' : ''}` },
+        el('i', { style: { width: `${taskProgress(task)}%` } })),
+      el('div', { class: 'cell-mut', style: { fontSize: '11px' }, text: `${taskProgress(task)}%` })),
     el('div', { class: 'cell-hide-sm' },
       task.category ? categoryChip(task.category, { small: true })
         : el('span', { class: 'cell-mut', text: '—' })),
@@ -286,7 +286,7 @@ export async function render(container) {
         ? el('span', { class: `cell-due ${dueClass(task.due_date, task.status)}`,
           text: `📅 ${formatDate(task.due_date)}` })
         : null,
-      el('span', { text: `${task.progress}%` })));
+      el('span', { text: `${taskProgress(task)}%` })));
   }
 
   syncScopeClass();

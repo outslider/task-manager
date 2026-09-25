@@ -1712,3 +1712,7 @@ input[type="color"].input {
 .login-more:empty { display: none; }
 .login-fail-badge { margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 11px;
   background: var(--danger-soft); color: var(--danger); white-space: nowrap; }
+
+/* 今日の確認：子タスクから集計する親タスクは、進捗のボタンの代わりにこれを出す */
+.qrollup { font-size: 12px; color: var(--text-muted); padding: 4px 8px; border-radius: 8px;
+  background: var(--surface-2); white-space: nowrap; }

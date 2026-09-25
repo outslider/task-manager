@@ -185,6 +185,19 @@ export function category(value) {
  * マイルストーンの記号。ガントは輪郭を描くが、一覧や検索では文字で出す。
  * 同じタスクがどこでも同じ形に見えるよう、出どころをここに 1 つだけ持つ。
  */
+/**
+ * 画面に出す進捗。子タスクのあるタスクは、子から集計した値（サーバーが付けて返す）。
+ * 親そのものに保存した値は、子がある間は使わない。
+ */
+export function taskProgress(task) {
+  return task?.child_count ? (task.rollup_progress ?? task.progress ?? 0) : (task?.progress ?? 0);
+}
+
+/** 子から集計した値か（入力させず、そう添えるため）。 */
+export function progressIsRolledUp(task) {
+  return Boolean(task?.child_count);
+}
+
 export function markerChar(task) {
   const markers = store.meta?.markers || [];
   const found = markers.find((m) => m.value === (task?.marker || ''));

@@ -2,6 +2,7 @@
 import { api, url } from '../api.js';
 import {
   store, STATUS_LABEL, IMPORTANCE_LABEL, ISSUE_STATUS_LABEL, SEVERITY_LABEL, markerChar,
+  taskProgress,
 } from '../store.js';
 import {
   avatar, confirmDialog, dueClass, dueLabel, el, fill,
@@ -107,13 +108,23 @@ async function renderDetail(instance, taskId, onChange) {
   }, ...Object.entries(STATUS_LABEL).map(([value, label]) =>
     el('option', { value, selected: task.status === value ? true : null }, label)));
 
-  const progressValue = el('strong', { text: `${task.progress}%` });
-  const progressInput = el('input', {
-    type: 'range', class: 'range', min: 0, max: 100, step: 5, value: task.progress,
-    disabled: !canEdit, style: { width: '100%' },
-    onInput: (event) => { progressValue.textContent = `${event.target.value}%`; },
-    onChange: (event) => patch({ progress: Number(event.target.value) }),
-  });
+  const rolledUp = Boolean(task.child_count);
+  const progressValue = el('strong', { text: `${taskProgress(task)}%` });
+  // 子タスクがあれば、進捗は子から集計した値。動かせるスライダーは出さず、そう書き添える
+  const progressInput = rolledUp
+    ? el('div', {},
+      el('div', { class: `progress${taskProgress(task) >= 100 ? ' done' : ''}`,
+        style: { height: '8px', marginTop: '6px' } },
+      el('i', { style: { width: `${taskProgress(task)}%` } })),
+      el('div', { class: 'hint', style: { marginTop: '4px' },
+        text: `子タスク ${task.leaf_total} 件から自動で集計しています（完了 ${task.leaf_done}/${task.leaf_total}）。`
+          + '子タスクの進捗を更新すると、ここに反映されます。' }))
+    : el('input', {
+      type: 'range', class: 'range', min: 0, max: 100, step: 5, value: task.progress,
+      disabled: !canEdit, style: { width: '100%' },
+      onInput: (event) => { progressValue.textContent = `${event.target.value}%`; },
+      onChange: (event) => patch({ progress: Number(event.target.value) }),
+    });
 
   const assignee = userSelect(task.assignee_id, { people: members });
   assignee.disabled = !canEdit;
@@ -214,7 +225,8 @@ async function renderDetail(instance, taskId, onChange) {
     },
     el('span', { class: `badge ${child.status}`, text: STATUS_LABEL[child.status] }),
     el('span', { class: 'name', text: child.title }),
-    el('span', { class: 'size', text: `${child.progress}%` }),
+    el('span', { class: 'size', title: child.child_count ? '子タスクから自動で集計' : null,
+      text: `${taskProgress(child)}%` }),
     child.due_date
       ? el('span', {
         class: `size cell-due ${dueClass(child.due_date, child.status)}`,

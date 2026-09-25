@@ -1,7 +1,9 @@
 /* Daily check-in: review everything due and update it in a couple of clicks. */
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
-import { store, category, STATUS_LABEL, ISSUE_STATUS_LABEL, SEVERITY_LABEL } from '../store.js';
+import {
+  store, category, STATUS_LABEL, ISSUE_STATUS_LABEL, SEVERITY_LABEL, taskProgress,
+} from '../store.js';
 import { clear, dueClass, el, fill, formatDate, formatDateTime, toast } from '../util.js';
 import { openTaskDetail } from './taskDetail.js';
 import { openIssueDetail } from './issueDetail.js';
@@ -376,7 +378,11 @@ export async function render(container) {
       updateSaveBar();
     };
 
-    const quick = [0, 25, 50, 75, 100].map((value) => el('button', {
+    // 子タスクのあるタスクは、進捗を子から集計するので押させない（状態は変えられる）
+    const quick = task.child_count ? [el('span', {
+      class: 'qrollup', title: '子タスクから自動で集計しています',
+      text: `子タスクから集計 ${taskProgress(task)}%`,
+    })] : [0, 25, 50, 75, 100].map((value) => el('button', {
       class: `qbtn${(change.progress ?? task.progress) === value ? ' active' : ''}`,
       onClick: () => {
         const entry = pending.get(task.id) || {};
@@ -384,7 +390,7 @@ export async function render(container) {
         if (value === 100) entry.status = 'done';
         else if ((entry.status || task.status) === 'done') entry.status = 'doing';
         pending.set(task.id, entry);
-        [...quick].forEach((b, i) => b.classList.toggle('active', [0, 25, 50, 75, 100][i] === value));
+        quick.forEach((b, i) => b.classList.toggle('active', [0, 25, 50, 75, 100][i] === value));
         statusSelect.value = entry.status || task.status;
         markChanged();
       },

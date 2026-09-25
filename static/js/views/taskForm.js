@@ -71,10 +71,12 @@ export function openTaskForm({
         class: 'input', type: 'number', min: 0, step: 0.5, placeholder: '任意',
       });
       fields.estimate.value = task?.estimate_hours ?? '';
-      fields.progress = el('input', {
-        class: 'input', type: 'number', min: 0, max: 100, step: 5,
-      });
-      fields.progress.value = String(task?.progress ?? 0);
+      // 子タスクのあるタスクの進捗は、子から集計するので入力させない
+      fields.progress = task?.child_count
+        ? el('div', { class: 'hint', style: { paddingTop: '8px' },
+          text: `子タスクから自動で集計（いま ${task.rollup_progress ?? task.progress}%）` })
+        : el('input', { class: 'input', type: 'number', min: 0, max: 100, step: 5 });
+      if (!task?.child_count) fields.progress.value = String(task?.progress ?? 0);
       fields.milestone = el('input', { type: 'checkbox' });
       fields.milestone.checked = Boolean(task?.is_milestone);
       // ガント上の記号。マイルストーンと、まとめ行に並ぶ各回の印に使う
@@ -127,13 +129,13 @@ export function openTaskForm({
             priority: Number(fields.priority.value),
             start_date: fields.start.value || null,
             due_date: fields.due.value || null,
-            progress: Number(fields.progress.value || 0),
             is_milestone: fields.milestone.checked,
             marker: fields.marker.value,
             estimate_hours: fields.estimate.value === '' ? null : Number(fields.estimate.value),
             parent_id: fields.parent.value ? Number(fields.parent.value) : null,
             depends_on: depPicker.ids(),
           };
+          if (!task?.child_count) payload.progress = Number(fields.progress.value || 0);
           if (!payload.title) { toast('タスク名を入力してください', 'error'); return; }
           button.disabled = true;
           try {

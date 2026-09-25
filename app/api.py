@@ -281,6 +281,38 @@ def task_rows_with_rollup(rows):
     return rows
 
 
+ROLLUP_FIELDS = ("child_count", "rollup_progress", "leaf_done", "leaf_total")
+
+
+def attach_rollups(rows):
+    """一覧の行に、子から集計した進捗と子の数を付ける。
+
+    親タスクの進捗は子から決まる（親そのものに保存した値は使わない）。
+    タスク一覧やガントはプロジェクトまるごとを読むので集計できるが、
+    検索・マイタスク・今日の確認・タスク詳細は一部の行しか読まないため、
+    その行が属するプロジェクトの木を別に引いて集計する。
+    """
+    project_ids = {r["project_id"] for r in rows if r.get("project_id")}
+    if not project_ids:
+        return rows
+    tree = db.query(
+        "SELECT id, parent_id, progress, status, start_date, due_date, is_heading "
+        "FROM tasks WHERE project_id IN %s", (tuple(project_ids),))
+    task_rows_with_rollup(tree)
+    by_id = {t["id"]: t for t in tree}
+    for row in rows:
+        node = by_id.get(row["id"])
+        if node:
+            row.update({k: node[k] for k in ROLLUP_FIELDS})
+    return rows
+
+
+def has_children(task_id):
+    """見出しでない子を持つか（＝進捗が子から集計される親か）。"""
+    return bool(db.scalar("SELECT 1 AS x FROM tasks WHERE parent_id=%s AND is_heading=0 LIMIT 1",
+                          (task_id,), default=0))
+
+
 # --------------------------------------------------------------------------
 # auth
 # --------------------------------------------------------------------------
@@ -1060,7 +1092,7 @@ def search_tasks(ctx):
     sql = (TASK_SELECT + " WHERE " + " AND ".join(where)
            + " ORDER BY (t.due_date IS NULL), t.due_date, t.priority DESC, t.id LIMIT %s")
     params.append(limit)
-    rows = db.query(sql, params)
+    rows = attach_rollups(db.query(sql, params))
     return json_response({"tasks": rows, "matched": matched,
                           "truncated": matched > len(rows)})
 
@@ -1252,6 +1284,7 @@ def get_task(ctx, task_id):
     children = db.query(
         TASK_SELECT + " WHERE t.parent_id=%s AND " + NOT_HEADING + " ORDER BY t.sort_order, t.id",
         (task_id,))
+    attach_rollups([task, *children])
     comments = db.query(
         "SELECT c.*, u.name AS user_name, u.avatar_color FROM comments c "
         "LEFT JOIN users u ON u.id = c.user_id WHERE c.task_id=%s ORDER BY c.created_at, c.id",
@@ -1351,6 +1384,8 @@ def update_task(ctx, task_id):
             fields.append(key + "=%s")
             params.append(hours if key == "estimate_hours" else (hours or 0))
 
+    if "progress" in body and has_children(task_id):
+        raise bad_request("子タスクのあるタスクの進捗は、子タスクから自動で集計されます")
     if "status" in body or "progress" in body:
         status, progress = _apply_status_progress(body, current)
         if status != current["status"]:
@@ -3188,7 +3223,8 @@ def daily(ctx):
                     "AND t.project_id IN %s")
     recent_params = (user["id"], db.now() - timedelta(days=7), visible)
     recent = db.query(
-        "SELECT t.id, t.title, t.status, t.progress, t.due_date, p.name AS project_name "
+        "SELECT t.id, t.title, t.status, t.progress, t.due_date, t.project_id, "
+        "p.name AS project_name "
         "FROM tasks t JOIN projects p ON p.id = t.project_id WHERE " + recent_where
         + " ORDER BY t.completed_at DESC LIMIT %s", recent_params + (DAILY_LIST,))
     totals["recently_done"] = _daily_total(
@@ -3200,11 +3236,14 @@ def daily(ctx):
                    "AND (t.start_date IS NULL OR t.start_date <= %s)")
     stale_params = (user["id"], OPEN_STATUSES, db.now() - timedelta(days=7), visible, today)
     stale = db.query(
-        "SELECT t.id, t.title, t.status, t.progress, t.due_date, p.name AS project_name, "
+        "SELECT t.id, t.title, t.status, t.progress, t.due_date, t.project_id, "
+        "p.name AS project_name, "
         "t.updated_at FROM tasks t JOIN projects p ON p.id = t.project_id WHERE "
         + stale_where + " ORDER BY t.updated_at LIMIT %s", stale_params + (DAILY_LIST,))
     totals["stale"] = _daily_total(
         "tasks t JOIN projects p ON p.id = t.project_id", stale_where, stale_params, stale)
+    # 親タスクの進捗は子から集計した値を出す（まとめて 1 回で集計する）
+    attach_rollups([*(t for rows in buckets.values() for t in rows), *recent, *stale])
     checkin = db.query_one(
         "SELECT * FROM checkins WHERE user_id=%s AND checkin_date=%s", (user["id"], today))
     issue_where = ("i.owner_id=%s AND i.status IN %s AND p.archived=0 "
@@ -3286,7 +3325,8 @@ def daily_update(ctx):
             continue
         current = task_or_404(user, task_id, "editor")
         patch = {}
-        if "progress" in item:
+        # 親タスクの進捗は子から集計するので、ここでは変えない（状態や期限は変えられる）
+        if "progress" in item and not has_children(task_id):
             patch["progress"] = as_int(item["progress"], current["progress"], 0, 100)
         if item.get("status") in STATUSES:
             patch["status"] = item["status"]
@@ -5366,6 +5406,10 @@ def project_review(ctx, project_id):
         "t.project_id, u.name AS assignee_name "
         "FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id WHERE t.project_id=%s AND "
         + NOT_HEADING, (project_id,))
+    # 親タスクは子から集計した進捗で見てもらう（保存値は使われていない古い値のことがある）
+    for task in attach_rollups(tasks):
+        if task.get("child_count"):
+            task["progress"] = task["rollup_progress"]
     if not tasks:
         raise bad_request("タスクがまだないので、見てもらえることがありません")
     if not llm.available():
