@@ -9,7 +9,12 @@ export function el(tag, props = {}, ...children) {
     else if (key === 'text') node.textContent = value;
     else if (key === 'html') node.innerHTML = value;
     else if (key === 'dataset') Object.assign(node.dataset, value);
-    else if (key === 'style') Object.assign(node.style, value);
+    else if (key === 'style') {
+      for (const [name, v] of Object.entries(value)) {
+        if (name.startsWith('--')) node.style.setProperty(name, v);
+        else node.style[name] = v;
+      }
+    }
     else if (key.startsWith('on') && typeof value === 'function') {
       node.addEventListener(key.slice(2).toLowerCase(), value);
     } else if (value === true) node.setAttribute(key, '');
@@ -408,4 +413,32 @@ export function downloadBlob(blob, filename) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+/** ⋯ から開く小さなメニュー。build には項目を作る関数 item(label, action, danger) が渡る。 */
+export function popupMenu(anchor, build) {
+  const menu = el('div', {
+    class: 'card popup-menu',
+    style: {
+      position: 'absolute', zIndex: '120', minWidth: '190px', padding: '5px',
+      boxShadow: 'var(--shadow-lg)',
+    },
+  });
+  const menuItem = (label, action, danger = false) => el('button', {
+    class: 'nav-item',
+    style: danger ? { color: 'var(--danger)' } : null,
+    onClick: () => { menu.remove(); action(); },
+  }, label);
+  append(menu, build(menuItem));
+  const rect = anchor.getBoundingClientRect();
+  menu.style.top = `${window.scrollY + rect.bottom + 4}px`;
+  menu.style.left = `${Math.max(8, window.scrollX + rect.right - 190)}px`;
+  document.body.appendChild(menu);
+  const dismiss = (event) => {
+    if (menu.contains(event.target)) return;
+    menu.remove();
+    document.removeEventListener('mousedown', dismiss);
+  };
+  setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
+  return menu;
 }

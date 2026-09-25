@@ -8,7 +8,7 @@ import { el, fill, formatDateTime, openModal, skeleton, toast } from '../util.js
 import { option } from './pickers.js';
 
 const PERIODS = [[7, '7日'], [30, '30日'], [90, '90日'], [365, '1年']];
-const KINDS = [['all', 'すべて'], ['login', 'ログインのみ'], ['failed', '失敗のみ']];
+const KINDS = [['all', 'すべて'], ['login', 'ログインのみ'], ['failed', '失敗のみ'], ['security', 'パスワード・2FA']];
 
 /** 「2026/09/25 10:31」。何分前かは吹き出しで出す。 */
 function stamp(value) {

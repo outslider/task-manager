@@ -6,7 +6,7 @@ import {
   store, STATUS_LABEL, IMPORTANCE_LABEL, CATEGORIES, category, markerChar,
 } from '../store.js';
 import {
-  avatar, clear, confirmDialog, debounce, dueClass, dueLabel, el, fill, formatDate, toast,
+  avatar, clear, confirmDialog, debounce, dueClass, dueLabel, el, fill, formatDate, popupMenu, toast,
 } from '../util.js';
 import { iconLabel } from '../icons.js';
 import { HEADING_LEVEL_LABEL, headingLevel, sectionize } from '../outline.js';
@@ -226,8 +226,7 @@ export async function render(container, route) {
   fill(container,
     projectTabs(projectId, 'tasks'),
     el('div', { class: 'page-head' },
-      el('div', { class: 'grow' },
-        el('div', { class: 'page-sub' }, project.description || '　'), summary)),
+      el('div', { class: 'grow' }, summary)),
     alerts, filterNotice,
     el('div', { class: 'card' }, toolbar, bulkBar, head,
       el('div', { class: 'card-body tight' }, rowsHost)));
@@ -810,36 +809,6 @@ export async function render(container, route) {
         reload();
       });
     }, true)]);
-  }
-
-  /** ⋯ から開く小さなメニュー。build には項目を作る関数が渡る。 */
-  function popupMenu(anchor, build) {
-    const menu = el('div', {
-      class: 'card',
-      style: {
-        position: 'absolute', zIndex: '120', minWidth: '190px', padding: '5px',
-        boxShadow: 'var(--shadow-lg)',
-      },
-    }, ...build(menuItem));
-
-    const rect = anchor.getBoundingClientRect();
-    menu.style.top = `${window.scrollY + rect.bottom + 4}px`;
-    menu.style.left = `${Math.max(8, window.scrollX + rect.right - 190)}px`;
-    document.body.appendChild(menu);
-    const dismiss = (event) => {
-      if (menu.contains(event.target)) return;
-      menu.remove();
-      document.removeEventListener('mousedown', dismiss);
-    };
-    setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
-
-    function menuItem(label, action, danger = false) {
-      return el('button', {
-        class: 'nav-item',
-        style: danger ? { color: 'var(--danger)' } : null,
-        onClick: () => { menu.remove(); action(); },
-      }, label);
-    }
   }
 
   /* ---- まとめて編集 ---- */

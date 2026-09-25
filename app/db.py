@@ -43,6 +43,7 @@ DDL = [
         ui_theme      VARCHAR(10)  NOT NULL DEFAULT 'auto',   -- auto|light|dark
         ui_accent     VARCHAR(20)  NOT NULL DEFAULT '',       -- 空なら組織の既定色
         nav_order     VARCHAR(300) NOT NULL DEFAULT '',       -- 左メニューの並び（本人ごと）
+        ui_project_tint TINYINT(1) NOT NULL DEFAULT 1,        -- プロジェクトの画面をその色で染める
         created_at    DATETIME     NOT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
@@ -76,6 +77,8 @@ DDL = [
         slack_events VARCHAR(120)  NOT NULL DEFAULT '',      -- 空なら全体設定を使う
         tabs_hidden VARCHAR(120)   NOT NULL DEFAULT '',      -- 使わないタブ（全員に隠す）
         guest_tabs  VARCHAR(120)   NOT NULL DEFAULT 'tasks,gantt,issues,tickets', -- 社外ユーザーに見せるタブ
+        theme       VARCHAR(20)   NOT NULL DEFAULT 'aurora',  -- 見出しの帯の模様
+        icon        VARCHAR(16)   NOT NULL DEFAULT '',        -- 絵文字 1 つ。空なら名前の頭文字
         created_at  DATETIME      NOT NULL,
         CONSTRAINT fk_proj_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -362,6 +365,39 @@ DDL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
+    CREATE TABLE IF NOT EXISTS user_mfa (
+        user_id    INT PRIMARY KEY,
+        secret     VARCHAR(64) NOT NULL,                -- 認証アプリと共有する鍵（base32）。画面には一度しか出さない
+        enabled_at DATETIME NULL,                       -- NULL の間は設定の途中（コードを確かめる前）
+        last_step  BIGINT NOT NULL DEFAULT 0,           -- 最後に通したコードの時刻の区切り。同じコードを二度通さない
+        created_at DATETIME NOT NULL,
+        CONSTRAINT fk_mfa_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+        id         INT AUTO_INCREMENT PRIMARY KEY,
+        user_id    INT NOT NULL,
+        code_hash  CHAR(64) NOT NULL,                   -- 予備コードはハッシュだけを持つ
+        used_at    DATETIME NULL,
+        KEY idx_recovery_user (user_id),
+        CONSTRAINT fk_recovery_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS auth_challenges (
+        token_hash CHAR(64) PRIMARY KEY,                -- 渡した合言葉のハッシュ。合言葉そのものは持たない
+        user_id    INT NOT NULL,
+        purpose    VARCHAR(10) NOT NULL,                -- mfa（パスワードの次の確認コード待ち） | reset（パスワード再設定）
+        attempts   INT NOT NULL DEFAULT 0,
+        created_at DATETIME NOT NULL,
+        expires_at DATETIME NOT NULL,
+        used_at    DATETIME NULL,
+        KEY idx_challenge_user (user_id, purpose, created_at),
+        CONSTRAINT fk_challenge_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
     CREATE TABLE IF NOT EXISTS notifications (
         id         INT AUTO_INCREMENT PRIMARY KEY,
         user_id    INT NOT NULL,
@@ -603,6 +639,7 @@ DEFAULT_SETTINGS = {
     "use_holidays": "1",
     "work_hours_per_day": "8",
     "app_name": "タスク管理",
+    "mfa_required": "off",          # off | admin（管理者だけ必須） | all（全員必須）
 }
 
 
@@ -802,6 +839,12 @@ MIGRATIONS = [
      "ALTER TABLE projects ADD COLUMN notify_enabled TINYINT(1) NOT NULL DEFAULT 1"),
     ("projects", "slack_events",
      "ALTER TABLE projects ADD COLUMN slack_events VARCHAR(120) NOT NULL DEFAULT ''"),
+    ("projects", "theme",
+     "ALTER TABLE projects ADD COLUMN theme VARCHAR(20) NOT NULL DEFAULT 'aurora'"),
+    ("projects", "icon",
+     "ALTER TABLE projects ADD COLUMN icon VARCHAR(16) NOT NULL DEFAULT ''"),
+    ("users", "ui_project_tint",
+     "ALTER TABLE users ADD COLUMN ui_project_tint TINYINT(1) NOT NULL DEFAULT 1"),
     ("attachments", "issue_id",
      "ALTER TABLE attachments ADD COLUMN issue_id INT NULL AFTER task_id"),
     # チケットはあとから足した機能なので、既存 DB にも列を足す

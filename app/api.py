@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 import pymysql
 
-from . import (auth, db, graph, holidays, llm, logins, meetings, mentions, nlp, notify, prefs,
+from . import (auth, db, graph, holidays, llm, logins, meetings, mentions, mfa, nlp, notify, prefs,
                recurrence, slack, taxonomy, templates, tickets, trash, workload)
 from .config import MAX_UPLOAD_BYTES, UPLOAD_DIR
 from .http_util import (HttpError, as_bool, as_date, as_datetime, as_int, bad_request,
@@ -93,6 +93,8 @@ def route(method, pattern):
 GUEST_ALLOWED = [(method, re.compile("^" + pattern + "$")) for method, pattern in (
     ("POST", r"/api/auth/login"), ("POST", r"/api/auth/logout"), ("GET", r"/api/auth/me"),
     ("POST", r"/api/auth/password"), ("PATCH", r"/api/auth/profile"),
+    ("GET", r"/api/auth/mfa"), ("POST", r"/api/auth/mfa/(setup|enable|disable|recovery-codes)"),
+    ("GET", r"/api/auth/logins"),
     ("GET", r"/api/meta"), ("GET", r"/api/holidays"),
     ("GET", r"/api/me/notification-settings"), ("PUT", r"/api/me/notification-settings"),
     ("GET", r"/api/notifications"), ("POST", r"/api/notifications/read"),
@@ -126,6 +128,13 @@ def guest_may(method, path):
     return any(m == method and regex.match(path) for m, regex in GUEST_ALLOWED)
 
 
+# 多要素認証が必須なのに未設定の人が使えるのは、設定の画面に要るものだけ
+MFA_SETUP_ALLOWED = [(method, re.compile("^" + pattern + "$")) for method, pattern in (
+    ("GET", r"/api/auth/me"), ("POST", r"/api/auth/logout"), ("GET", r"/api/auth/mfa"),
+    ("POST", r"/api/auth/mfa/(setup|enable)"),
+)]
+
+
 def _strip_emails(value, own_id):
     """社外ユーザーへの返事から、メールアドレスを取り除く（本人のものは残す）。
 
@@ -151,6 +160,10 @@ def dispatch(ctx):
         if method != ctx.method:
             allowed.add(method)
             continue
+        if ctx.user and not ctx.user.get("mfa_on") and mfa.required_for(ctx.user) \
+                and not any(m == method and r.match(ctx.path) for m, r in MFA_SETUP_ALLOWED):
+            # 必須なのにまだ設定していない人は、設定を済ませるまで他のことはできない
+            raise HttpError(403, "多要素認証の設定が必要です", {"mfa_setup_required": True})
         guest = auth.is_guest(ctx.user)
         if guest and not guest_may(method, ctx.path):
             raise forbidden("社外ユーザーの方は使えない機能です")
@@ -193,6 +206,7 @@ def public_user(row):
         "avatar_color": row.get("avatar_color", "#4f8cff"),
         "ui_theme": row.get("ui_theme", "auto"),
         "ui_accent": row.get("ui_accent", ""),
+        "ui_project_tint": bool(row.get("ui_project_tint", 1)),
         "nav_order": [k for k in (row.get("nav_order") or "").split(",") if k],
     }
 
@@ -480,12 +494,211 @@ def login(ctx):
                       label=None if user else logins.mask_email(email))
         # どの理由でも同じ返事にする（アドレスの有無や停止中かどうかを教えない）
         raise HttpError(401, "メールアドレスまたはパスワードが違います")
-    logins.record("login", user, "", ctx.ip, ctx.user_agent)
+    if mfa.status(user["id"]):
+        # パスワードは合った。次は認証アプリのコード。まだ入れる状態にはしない
+        return json_response({"mfa_required": True,
+                              "challenge": mfa.issue(user["id"], "mfa")})
+    return _start_session(ctx, user, "")
+
+
+def _start_session(ctx, user, reason, extra=None):
+    logins.record("login", user, reason, ctx.ip, ctx.user_agent)
     token = auth.create_session(user["id"])
-    resp = json_response({"user": public_user(user)})
+    user = dict(user, mfa_on=mfa.status(user["id"]))
+    resp = json_response(dict({"user": own_user(user)}, **(extra or {})))
     resp.add_cookie(auth.SESSION_COOKIE, token,
                     max_age=auth.SESSION_DAYS * 86400, secure=ctx.secure_cookie)
     return resp
+
+
+def _account_usable(user_id):
+    """停止中・期限切れでない利用者の行（パスワードのハッシュは除く）。"""
+    row = db.query_one(
+        "SELECT * FROM users WHERE id=%s AND is_active=1 "
+        "AND (expires_on IS NULL OR expires_on >= %s)", (user_id, db.today()))
+    if row:
+        row.pop("password_hash", None)
+    return row
+
+
+@route("POST", r"/api/auth/mfa/verify")
+def verify_mfa(ctx):
+    """ログインの 2 段目。パスワードのあとに、認証アプリのコードか予備コードを確かめる。"""
+    challenge = mfa.lookup(ctx.body.get("challenge"), "mfa")
+    if not challenge:
+        raise HttpError(401, "時間が経ったため、ログインをやり直してください",
+                        {"restart": True})
+    user = _account_usable(challenge["user_id"])
+    if not user:
+        raise HttpError(401, "ログインをやり直してください", {"restart": True})
+    how = mfa.verify(user["id"], ctx.body.get("code"))
+    if not how:
+        left = mfa.fail(challenge)
+        logins.record("failed", user, "bad_mfa", ctx.ip, ctx.user_agent)
+        if left == 0:
+            raise HttpError(401, "確認コードの入力が続けて違ったため、ログインをやり直してください",
+                            {"restart": True})
+        raise HttpError(401, "確認コードが違います（あと {} 回）".format(left))
+    if not mfa.consume(challenge):
+        raise HttpError(401, "ログインをやり直してください", {"restart": True})
+    extra = {}
+    if how == "recovery":
+        extra["recovery_left"] = mfa.remaining_codes(user["id"])
+    return _start_session(ctx, user, "mfa" if how == "totp" else "recovery_code", extra)
+
+
+@route("GET", r"/api/auth/mfa")
+def mfa_status(ctx):
+    user = me(ctx)
+    enabled = mfa.status(user["id"])
+    return json_response({
+        "enabled": enabled,
+        "required": mfa.required_for(user),
+        "recovery_left": mfa.remaining_codes(user["id"]) if enabled else 0,
+    })
+
+
+@route("POST", r"/api/auth/mfa/setup")
+def mfa_setup(ctx):
+    """認証アプリに登録する鍵を作る。QR コードと、手で入れる場合の鍵を返す。"""
+    user = me(ctx)
+    secret = mfa.start_setup(user["id"])
+    if not secret:
+        raise bad_request("多要素認証はすでに設定済みです")
+    issuer = db.get_setting("app_name", "タスク管理") or "タスク管理"
+    uri = mfa.otpauth_uri(secret, user["email"], issuer)
+    return json_response({"secret": secret, "uri": uri, "qr_svg": mfa.qr_svg(uri)})
+
+
+@route("POST", r"/api/auth/mfa/enable")
+def mfa_enable(ctx):
+    user = me(ctx)
+    codes = mfa.confirm_setup(user["id"], ctx.body.get("code"))
+    if not codes:
+        raise bad_request("確認コードが違います。認証アプリに表示されている 6 桁を入れてください")
+    logins.record("mfa_on", user, "", ctx.ip, ctx.user_agent)
+    return json_response({"ok": True, "recovery_codes": codes})
+
+
+def _check_own_password(ctx, user):
+    stored = db.scalar("SELECT password_hash FROM users WHERE id=%s", (user["id"],))
+    if not auth.verify_password(str(ctx.body.get("password") or ""), stored or ""):
+        raise bad_request("パスワードが違います")
+
+
+@route("POST", r"/api/auth/mfa/disable")
+def mfa_disable(ctx):
+    user = me(ctx)
+    _check_own_password(ctx, user)
+    if not mfa.status(user["id"]):
+        raise bad_request("多要素認証は設定されていません")
+    mfa.disable(user["id"])
+    logins.record("mfa_off", user, "", ctx.ip, ctx.user_agent)
+    # 必須の人は、このあと設定し直すまで他の画面を使えない
+    return json_response({"ok": True, "required": mfa.required_for(user)})
+
+
+@route("POST", r"/api/auth/mfa/recovery-codes")
+def mfa_recovery_codes(ctx):
+    user = me(ctx)
+    _check_own_password(ctx, user)
+    if not mfa.status(user["id"]):
+        raise bad_request("多要素認証は設定されていません")
+    codes = mfa.new_recovery_codes(user["id"])
+    logins.record("mfa_codes", user, "", ctx.ip, ctx.user_agent)
+    return json_response({"recovery_codes": codes})
+
+
+# パスワード再設定の依頼は、同じ人に 1 時間 3 回まで、同じ接続元から 1 時間 10 回まで
+RECOVERY_PER_USER = 3
+RECOVERY_PER_IP = 10
+RECOVERY_DONE = ("登録されているメールアドレスなら、パスワード再設定の案内を送りました。"
+                 "メールが届かないときは、迷惑メールのフォルダも確かめてください。")
+RECOVERY_TO_ADMIN = ("管理者にパスワード再設定の依頼を送りました。"
+                     "管理者から新しいパスワードを受け取ってください。")
+
+
+@route("POST", r"/api/auth/recovery")
+def request_recovery(ctx):
+    """パスワードを忘れたとき。メールが使えれば再設定のリンクを、使えなければ管理者へ依頼を送る。
+
+    登録のないアドレスでも同じ返事をする（アドレスの有無を探られないため）。
+    """
+    email = require(ctx.body, "email", "メールアドレス").strip()
+    by_mail = notify.email_configured()
+    answer = json_response({"ok": True, "via": "mail" if by_mail else "admin",
+                            "message": RECOVERY_DONE if by_mail else RECOVERY_TO_ADMIN})
+    from_ip = db.scalar("SELECT COUNT(*) AS c FROM login_events WHERE event='recovery' "
+                        "AND ip=%s AND created_at >= %s",
+                        (str(ctx.ip or "")[:64], db.now() - timedelta(hours=1)), default=0)
+    row = db.query_one("SELECT id FROM users WHERE email=%s", (email,))
+    user = _account_usable(row["id"]) if row else None
+    if from_ip >= RECOVERY_PER_IP or (user and mfa.recent_count(user["id"], "reset")
+                                      >= RECOVERY_PER_USER):
+        logins.record("recovery", user, "limited", ctx.ip, ctx.user_agent,
+                      label=None if user else logins.mask_email(email))
+        return answer
+    if not user:
+        logins.record("recovery", None, "unknown", ctx.ip, ctx.user_agent,
+                      label=logins.mask_email(email) if not row else "（停止中・期限切れのアカウント）")
+        return answer
+    # 回数を数えるため、管理者へ依頼するときも合言葉の記録だけは作る
+    token = mfa.issue(user["id"], "reset")
+    if by_mail:
+        base = db.get_setting("app_base_url", "").rstrip("/")
+        name = db.get_setting("app_name", "タスク管理") or "タスク管理"
+        notify.send_email_async(
+            user["email"], "[{}] パスワードの再設定".format(name),
+            "{} さん\n\nパスワード再設定の依頼を受け付けました。\n"
+            "次のリンクから、60 分以内に新しいパスワードを設定してください。\n\n{}/#/reset/{}\n\n"
+            "心当たりがない場合は、このメールは破棄してください。パスワードは変わりません。"
+            .format(user["name"], base, token), user["name"])
+        logins.record("recovery", user, "mail", ctx.ip, ctx.user_agent)
+    else:
+        mfa.consume(mfa.lookup(token, "reset"))   # リンクは送らないので、すぐ使えなくする
+        for admin in db.query("SELECT id FROM users WHERE role='admin' AND is_active=1"):
+            notify.create(admin["id"], "account", "パスワード再設定の依頼：{}".format(user["name"]),
+                          "{}（{}）さんから、パスワードを忘れたと依頼がありました。\n"
+                          "本人に確かめたうえで、「管理 > ユーザー」から再発行してください。"
+                          .format(user["name"], user["email"]),
+                          dedupe_key="recovery:{}:{}".format(user["id"], db.today()))
+        logins.record("recovery", user, "admin", ctx.ip, ctx.user_agent)
+    return answer
+
+
+@route("GET", r"/api/auth/reset/([A-Za-z0-9_-]+)")
+def check_reset(ctx, token):
+    row = mfa.lookup(token, "reset")
+    return json_response({"ok": bool(row and _account_usable(row["user_id"]))})
+
+
+@route("POST", r"/api/auth/reset")
+def finish_reset(ctx):
+    """メールのリンクから、新しいパスワードを決める。多要素認証はそのまま残る。"""
+    row = mfa.lookup(ctx.body.get("token"), "reset")
+    user = _account_usable(row["user_id"]) if row else None
+    if not user:
+        raise bad_request("リンクの期限が切れているか、すでに使われています。もう一度依頼してください")
+    password = str(ctx.body.get("password") or "")
+    if len(password) < 8:
+        raise bad_request("パスワードは 8 文字以上にしてください")
+    if not mfa.consume(row):
+        raise bad_request("リンクはすでに使われています")
+    db.execute("UPDATE users SET password_hash=%s WHERE id=%s",
+               (auth.hash_password(password), user["id"]))
+    db.execute("DELETE FROM sessions WHERE user_id=%s", (user["id"],))
+    mfa.forget_resets(user["id"])
+    logins.record("recovered", user, "mail", ctx.ip, ctx.user_agent)
+    return json_response({"ok": True})
+
+
+@route("GET", r"/api/auth/logins")
+def my_logins(ctx):
+    """自分のアカウントの最近の履歴。覚えのないログインに気づけるように。"""
+    user = me(ctx)
+    rows = db.query("SELECT * FROM login_events WHERE user_id=%s AND created_at >= %s "
+                    "ORDER BY id DESC LIMIT 50", (user["id"], db.now() - timedelta(days=90)))
+    return json_response({"events": [logins.row_out(r) for r in rows]})
 
 
 @route("POST", r"/api/auth/logout")
@@ -508,10 +721,18 @@ def whoami(ctx):
     if not ctx.user:
         return json_response({"user": None, "ui": ui})
     return json_response({
-        "user": public_user(ctx.user),
+        "user": own_user(ctx.user),
         "unread": notify.unread_count(ctx.user["id"]),
         "ui": ui,
     })
+
+
+def own_user(row):
+    """本人に返す自分の情報。多要素認証の状態も添える。"""
+    out = public_user(row)
+    out["mfa_enabled"] = bool(row.get("mfa_on"))
+    out["mfa_setup_required"] = not out["mfa_enabled"] and mfa.required_for(row)
+    return out
 
 
 @route("POST", r"/api/auth/password")
@@ -528,6 +749,7 @@ def change_password(ctx):
                (auth.hash_password(new), user["id"]))
     db.execute("DELETE FROM sessions WHERE user_id=%s AND token<>%s",
                (user["id"], ctx.session_token or ""))
+    mfa.forget_resets(user["id"])
     logins.record("password", user, "", ctx.ip, ctx.user_agent)
     return json_response({"ok": True})
 
@@ -551,6 +773,9 @@ def update_profile(ctx):
     if "ui_accent" in ctx.body:
         fields.append("ui_accent=%s")
         params.append(normalize_color(ctx.body["ui_accent"]))
+    if "ui_project_tint" in ctx.body:
+        fields.append("ui_project_tint=%s")
+        params.append(1 if as_bool(ctx.body["ui_project_tint"]) else 0)
     if "nav_order" in ctx.body:
         # 並びは本人の好み。中身の妥当性は画面側が持つので、形だけ整えて預かる。
         wanted = ctx.body["nav_order"] or []
@@ -568,7 +793,7 @@ def update_profile(ctx):
         params.append(user["id"])
         db.execute("UPDATE users SET {} WHERE id=%s".format(", ".join(fields)), params)
     row = db.query_one("SELECT * FROM users WHERE id=%s", (user["id"],))
-    return json_response({"user": public_user(row)})
+    return json_response({"user": own_user(dict(row, mfa_on=user.get("mfa_on")))})
 
 
 # --------------------------------------------------------------------------
@@ -602,10 +827,13 @@ def list_users(ctx):
             "SELECT user_id, COUNT(*) AS n FROM login_events WHERE event='failed' "
             "AND user_id IS NOT NULL AND created_at >= %s GROUP BY user_id",
             (db.now() - timedelta(days=7),))}
+        with_mfa = {r["user_id"] for r in db.query(
+            "SELECT user_id FROM user_mfa WHERE enabled_at IS NOT NULL")}
         for user in users:
             at = last.get(user["id"])
             user["last_login_at"] = at.isoformat(sep=" ", timespec="seconds") if at else None
             user["failed_7d"] = int(failed.get(user["id"], 0))
+            user["mfa_enabled"] = user["id"] in with_mfa
     result = {"users": users}
     if auth.is_admin(viewer):
         result["organizations"] = sorted(orgs.values())
@@ -687,8 +915,11 @@ def list_login_events(ctx):
         where.append("event='failed'")
     elif kind == "login":
         where.append("event IN ('login','failed')")
+    elif kind == "security":
+        where.append("event IN %s")
+        params.append(logins.SECURITY_EVENTS)
     elif kind != "all":
-        raise bad_request("kind は all / login / failed のどれかです")
+        raise bad_request("kind は all / login / failed / security のどれかです")
     before = as_int(ctx.query.get("before"))
     page_where = where + (["id < %s"] if before else [])
     rows = db.query(
@@ -799,11 +1030,29 @@ def reset_password(ctx, user_id):
                   (auth.hash_password(password), user_id)) == 0:
         raise not_found("ユーザーが見つかりません")
     db.execute("DELETE FROM sessions WHERE user_id=%s", (user_id,))
+    mfa.forget_resets(user_id)
     target = db.query_one("SELECT id, name FROM users WHERE id=%s", (user_id,))
     # 誰が再発行したかも分かるよう、名前の控えに操作した管理者を添える
     logins.record("reset", target, "", ctx.ip, ctx.user_agent,
                   label="{}（{} が再発行）".format(target["name"], ctx.user["name"]))
     return json_response({"ok": True, "password": password})
+
+
+@route("DELETE", r"/api/users/(\d+)/mfa")
+def reset_user_mfa(ctx, user_id):
+    """スマホをなくした人のために、管理者が多要素認証を外す。次のログインはパスワードだけになる
+    （必須の設定なら、ログインしたあと設定し直すまで他の画面は使えない）。"""
+    admin_only(ctx)
+    target = db.query_one("SELECT id, name FROM users WHERE id=%s", (user_id,))
+    if not target:
+        raise not_found("ユーザーが見つかりません")
+    if not mfa.status(user_id):
+        raise bad_request("このユーザーは多要素認証を設定していません")
+    mfa.disable(user_id)
+    db.execute("DELETE FROM sessions WHERE user_id=%s", (user_id,))
+    logins.record("mfa_reset", target, "", ctx.ip, ctx.user_agent,
+                  label="{}（{} がリセット）".format(target["name"], ctx.user["name"]))
+    return json_response({"ok": True})
 
 
 @route("DELETE", r"/api/users/(\d+)")
@@ -1048,15 +1297,47 @@ def list_projects(ctx):
     return json_response({"projects": projects})
 
 
+# プロジェクトの見た目。帯の模様と、色を選ばなかったときに順に割り当てる色
+PROJECT_THEMES = ("aurora", "mesh", "lines", "dots", "waves", "plain")
+PROJECT_COLORS = ("#4f6bff", "#0ea5a4", "#f97316", "#8b5cf6", "#e11d48", "#16a34a",
+                  "#0284c7", "#d97706", "#db2777", "#475569")
+
+
+def project_look(body):
+    """色・模様・絵文字のうち、渡されたものだけを整えて返す。"""
+    out = {}
+    if "color" in body:
+        out["color"] = normalize_color(body["color"], "#4f6bff")
+    if "theme" in body:
+        if body["theme"] not in PROJECT_THEMES:
+            raise bad_request("模様の指定が正しくありません")
+        out["theme"] = body["theme"]
+    if "icon" in body:
+        icon = str(body["icon"] or "").strip()
+        # 絵文字 1 つ（肌の色や結合文字を含めて 16 バイトまで）。文字列は受け付けない
+        if len(icon.encode("utf-8")) > 16 or any(ch.isalnum() and ord(ch) < 0x2000 for ch in icon):
+            raise bad_request("アイコンは絵文字 1 つにしてください")
+        out["icon"] = icon
+    return out
+
+
+def next_project_color():
+    """使われている数が少ない色から選ぶ。並べたときに見分けやすいように。"""
+    used = {r["color"]: r["n"] for r in db.query(
+        "SELECT LOWER(color) AS color, COUNT(*) AS n FROM projects WHERE archived=0 GROUP BY LOWER(color)")}
+    return min(PROJECT_COLORS, key=lambda c: (used.get(c, 0), PROJECT_COLORS.index(c)))
+
+
 @route("POST", r"/api/projects")
 def create_project(ctx):
     user = me(ctx)
     name = require(ctx.body, "name", "プロジェクト名")
+    look = project_look(ctx.body)
     project_id = db.insert(
-        "INSERT INTO projects(name, description, color, owner_id, created_at) "
-        "VALUES(%s,%s,%s,%s,%s)",
-        (name, ctx.body.get("description", ""), ctx.body.get("color", "#4f8cff"),
-         user["id"], db.now()))
+        "INSERT INTO projects(name, description, color, theme, icon, owner_id, created_at) "
+        "VALUES(%s,%s,%s,%s,%s,%s,%s)",
+        (name, ctx.body.get("description", ""), look.get("color") or next_project_color(),
+         look.get("theme", "aurora"), look.get("icon", ""), user["id"], db.now()))
     db.execute(
         "INSERT INTO project_members(project_id, principal_type, principal_id, role) "
         "VALUES(%s,'user',%s,'owner')", (project_id, user["id"]))
@@ -1085,15 +1366,17 @@ def update_project(ctx, project_id):
     fields, params = [], []
     if "slack_webhook_url" in ctx.body:
         url = str(ctx.body["slack_webhook_url"] or "").strip()
-        if url and not url.startswith("https://hooks.slack.com/"):
+        if url and not url.startswith(SLACK_URL_PREFIX):
             raise bad_request("Slack の Webhook URL は https://hooks.slack.com/ で始まります")
         fields.append("slack_webhook_url=%s")
         params.append(url[:300])
-    for key, column in (("name", "name"), ("description", "description"),
-                        ("color", "color")):
+    for key, column in (("name", "name"), ("description", "description")):
         if key in ctx.body:
             fields.append(column + "=%s")
             params.append(ctx.body[key])
+    for key, value in project_look(ctx.body).items():
+        fields.append(key + "=%s")
+        params.append(value)
     if "archived" in ctx.body:
         fields.append("archived=%s")
         params.append(1 if as_bool(ctx.body["archived"]) else 0)
@@ -1651,6 +1934,7 @@ def update_task(ctx, task_id):
 
     if "progress" in body and has_children(task_id):
         raise bad_request("子タスクのあるタスクの進捗は、子タスクから自動で集計されます")
+    became_done = False
     if "status" in body or "progress" in body:
         status, progress = _apply_status_progress(body, current)
         if status != current["status"]:
@@ -1658,6 +1942,7 @@ def update_task(ctx, task_id):
                 status_label(current["status"]), status_label(status)))
             fields.append("completed_at=%s")
             params.append(db.now() if status == "done" else None)
+            became_done = status == "done"
         if progress != current["progress"]:
             notes.append("進捗: {}% → {}%".format(current["progress"], progress))
         fields += ["status=%s", "progress=%s"]
@@ -1741,7 +2026,27 @@ def update_task(ctx, task_id):
         system_comment(task_id, user["id"], " / ".join(notes))
     if new_assignee and new_assignee != current["assignee_id"] and new_assignee != user["id"]:
         _notify_assignment(task_id, current["title"], new_assignee, user)
+    if became_done:
+        slack_tasks_done(current["project_id"], [(task_id, current["title"])], user)
     return json_response({"task": db.query_one(TASK_SELECT + " WHERE t.id=%s", (task_id,))})
+
+
+def slack_tasks_done(project_id, done, actor):
+    """タスクの完了を Slack に流す（「タスクの完了」を選んだプロジェクトだけ）。done は (id, 件名)。"""
+    if not done:
+        return
+    base = db.get_setting("app_base_url", "").rstrip("/")
+    if len(done) == 1:
+        task_id, title = done[0]
+        text = "✅ タスクが完了しました\n*{}*\n完了: {}{}".format(
+            title, actor["name"], "\n{}/#/task/{}".format(base, task_id) if base else "")
+    else:
+        lines = ["• {}".format(title) for _, title in done[:8]]
+        if len(done) > 8:
+            lines.append("…ほか {} 件".format(len(done) - 8))
+        text = "✅ タスクが {} 件完了しました\n{}\n完了: {}".format(
+            len(done), "\n".join(lines), actor["name"])
+    slack.post_async(text, project_id=project_id, event="done")
 
 
 def ensure_member(user_id, project_id, role_label="担当者"):
@@ -2864,6 +3169,13 @@ def bulk_update_tasks(ctx):
     note = "一括更新 — " + " / ".join(notes)
     for task in tasks:
         system_comment(task["id"], user["id"], note)
+    if body.get("status") == "done":
+        by_project = {}
+        for task in tasks:
+            if task.get("status") != "done":
+                by_project.setdefault(task["project_id"], []).append((task["id"], task["title"]))
+        for project_id, done in by_project.items():
+            slack_tasks_done(project_id, done, user)
     if "assignee_id" in body and as_int(body["assignee_id"]):
         new_assignee = as_int(body["assignee_id"])
         for task in tasks:
@@ -3614,6 +3926,7 @@ def daily_update(ctx):
     if not isinstance(updates, list):
         raise bad_request("updates は配列で指定してください")
     applied = []
+    finished = {}
     for item in updates:
         task_id = as_int(item.get("task_id"))
         if task_id is None:
@@ -3640,6 +3953,9 @@ def daily_update(ctx):
                     status_label(current["status"]), status_label(status)))
                 fields.append("completed_at=%s")
                 params.append(db.now() if status == "done" else None)
+                if status == "done":
+                    finished.setdefault(current["project_id"], []).append(
+                        (task_id, current["title"]))
             if progress != current["progress"]:
                 notes.append("進捗: {}% → {}%".format(current["progress"], progress))
             if "due_date" in patch:
@@ -3671,6 +3987,8 @@ def daily_update(ctx):
     db.execute(
         "INSERT INTO checkins(user_id, checkin_date, note, created_at) VALUES(%s,%s,%s,%s) "
         "ON DUPLICATE KEY UPDATE note=VALUES(note)", (user["id"], today, note, db.now()))
+    for project_id, done in finished.items():
+        slack_tasks_done(project_id, done, user)
     return json_response({"ok": True, "updated": applied, "streak": _checkin_streak(user["id"])})
 
 
@@ -3679,6 +3997,7 @@ def daily_update(ctx):
 # --------------------------------------------------------------------------
 
 SECRET_SETTINGS = ("smtp_password", "llm_api_key")
+SLACK_URL_PREFIX = "https://hooks.slack.com/"
 
 
 @route("GET", r"/api/settings")
@@ -3708,6 +4027,8 @@ def put_settings(ctx):
             continue
         if key in SECRET_SETTINGS and value == "********":
             continue
+        if key == "mfa_required" and value not in mfa.REQUIRED_LABEL:
+            raise bad_request("多要素認証の必須の範囲が正しくありません")
         if key == "slack_events":
             value = prefs.format_events(
                 value if isinstance(value, list) else str(value or "").split(","),
@@ -3761,7 +4082,10 @@ def meta(ctx):
         "slack_events": [{"value": k, "label": label, "help": help_text}
                          for k, label, help_text in prefs.SLACK_EVENTS],
         "slack_enabled": db.get_setting("slack_enabled", "0") == "1",
+        "slack_has_default": bool(db.get_setting("slack_webhook_url", "").strip()),
         "markers": [{"value": v, "char": ch, "label": label} for v, ch, label in MARKERS],
+        "project_themes": list(PROJECT_THEMES),
+        "project_colors": list(PROJECT_COLORS),
         "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
         "max_depth": MAX_TASK_DEPTH,
     })
@@ -5101,6 +5425,13 @@ def create_ticket(ctx):
          as_hours(ctx.body.get("spent_hours")), now, now))
     if assignee_id and assignee_id != user["id"]:
         _notify_ticket_assignee(ticket_id, title, assignee_id, user)
+    base = db.get_setting("app_base_url", "").rstrip("/")
+    company = organization_names().get(organization_id, "") if organization_id else ""
+    slack.post_async(
+        "🎫 チケットが起票されました（{}）\n*{}*\n起票: {}{}{}".format(
+            queue["name"], title, user["name"], "（{}）".format(company) if company else "",
+            "\n{}/#/ticket/{}".format(base, ticket_id) if base else ""),
+        project_id=queue.get("project_id"), event="ticket")
     return json_response({"ticket": ticket_or_404(user, ticket_id)}, 201)
 
 
@@ -6363,10 +6694,20 @@ def run_recurrences(ctx):
 
 @route("POST", r"/api/settings/test-slack")
 def test_slack(ctx):
-    admin_only(ctx)
+    """テスト送信。管理者は全体の宛先を、プロジェクト管理者は自分のプロジェクトの宛先を試せる。"""
+    user = me(ctx)
     project_id = as_int(ctx.body.get("project_id"))
     url = (ctx.body.get("webhook_url") or "").strip()
+    if project_id:
+        project_or_404(user, project_id, "owner")
+    elif not auth.is_admin(user):
+        raise forbidden("管理者のみ実行できます")
+    if url and not auth.is_admin(user) and not url.startswith(SLACK_URL_PREFIX):
+        # 管理者以外が任意の宛先へ送れないよう、Slack の Webhook だけにする
+        raise bad_request("Slack の Webhook URL は https://hooks.slack.com/ で始まります")
     if not url and project_id:
-        url = slack.webhook_for(project_id)
+        url = slack.webhook_for(project_id, ignore_switch=True)
     ok, message = slack.check(url or None)
+    if ok and not slack.enabled():
+        message += "（管理者設定で Slack 通知がオフのため、ふだんの通知はまだ送られません）"
     return json_response({"ok": ok, "message": message})

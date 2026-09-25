@@ -72,11 +72,15 @@ export function isDarkMode() {
   return window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
 
-/** Derive and install the accent shades as CSS custom properties. */
-export function applyAccent(hex) {
+/** Derive and install the accent shades as CSS custom properties.
+    persist=false はプロジェクトの色を一時的に当てるとき（本人の色として覚えない）。 */
+export function applyAccent(hex, { persist = true } = {}) {
   const rgb = hexToRgb(hex);
   if (!rgb) return;
-  currentAccent = hex;
+  if (persist) {
+    currentAccent = hex;
+    userAccent = hex;
+  }
   const [h, s, l] = rgbToHsl(rgb);
   const dark = isDarkMode();
   const root = document.documentElement.style;
@@ -101,7 +105,61 @@ export function applyAccent(hex) {
   root.setProperty('--accent-contrast', luminance(rgb) > 0.55 ? '#1b2028' : '#ffffff');
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', hex);
-  try { localStorage.setItem(ACCENT_KEY, hex); } catch { /* private mode */ }
+  if (persist) {
+    try { localStorage.setItem(ACCENT_KEY, hex); } catch { /* private mode */ }
+  }
+}
+
+/* ---------------- project theme ---------------- */
+
+let userAccent = DEFAULT_ACCENT;
+let activeProject = null;
+const PROJECT_VARS = ['--proj', '--proj-2', '--proj-deep', '--proj-soft', '--proj-bg', '--proj-ink',
+  '--proj-line'];
+
+/** プロジェクトの色から、帯・背景・線に使う色一式を作る。 */
+export function projectColors(hex, dark = isDarkMode()) {
+  const rgb = hexToRgb(hex) || hexToRgb('#4f6bff');
+  const [h, s, l] = rgbToHsl(rgb);
+  const sat = Math.max(s, 38);
+  if (dark) {
+    return {
+      '--proj': hsl(h, Math.min(sat, 80), Math.min(Math.max(l, 42), 52)),
+      '--proj-2': hsl((h + 34) % 360, Math.min(sat, 78), 40),
+      '--proj-deep': hsl(h, Math.min(sat, 70), 22),
+      '--proj-soft': hsl(h, Math.min(sat, 50) * 0.6, 17),
+      '--proj-bg': hsl(h, Math.min(sat, 40) * 0.35, 8.5),
+      '--proj-ink': '#ffffff',
+      '--proj-line': hsl(h, Math.min(sat, 60), 60),
+    };
+  }
+  const base = Math.min(Math.max(l, 40), 56);
+  const light = luminance(rgb) > 0.5;
+  return {
+    '--proj': hsl(h, sat, base),
+    '--proj-2': hsl((h + 34) % 360, Math.min(sat + 6, 94), Math.min(base + 6, 62)),
+    '--proj-deep': hsl(h, Math.min(sat, 80), Math.max(base - 18, 24)),
+    '--proj-soft': hsl(h, Math.min(sat, 85), 95),
+    '--proj-bg': hsl(h, Math.min(sat, 60) * 0.5, 97.2),
+    '--proj-ink': light ? '#141922' : '#ffffff',
+    '--proj-line': hsl(h, sat, base),
+  };
+}
+
+/** プロジェクトの画面に入ったら、その色で染める。null で本人の色に戻す。 */
+export function applyProjectTheme(project, { tint = true } = {}) {
+  const root = document.documentElement;
+  const next = project && tint ? project : null;
+  activeProject = next;
+  if (!next) {
+    root.removeAttribute('data-project');
+    for (const name of PROJECT_VARS) root.style.removeProperty(name);
+    applyAccent(userAccent, { persist: false });
+    return;
+  }
+  root.setAttribute('data-project', next.theme || 'aurora');
+  for (const [name, value] of Object.entries(projectColors(next.color))) root.style.setProperty(name, value);
+  applyAccent(next.color, { persist: false });
 }
 
 export function applyTheme(value) {
@@ -110,6 +168,7 @@ export function applyTheme(value) {
   else root.setAttribute('data-theme', value);
   try { localStorage.setItem(THEME_KEY, value || 'auto'); } catch { /* private mode */ }
   applyAccent(currentAccent);   // shades depend on light/dark
+  if (activeProject) applyProjectTheme(activeProject);
 }
 
 export function savedTheme() {
@@ -128,7 +187,9 @@ export function initTheme({ theme, accent } = {}) {
 
 // Follow the OS when the user has not made an explicit choice.
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-  if (!document.documentElement.getAttribute('data-theme')) applyAccent(currentAccent);
+  if (document.documentElement.getAttribute('data-theme')) return;
+  applyAccent(currentAccent);
+  if (activeProject) applyProjectTheme(activeProject);
 });
 
 // Apply the cached values immediately so there is no flash of the default colour.

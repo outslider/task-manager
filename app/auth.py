@@ -57,13 +57,15 @@ def user_for_token(token: str):
     if not token:
         return None
     row = db.query_one(
-        "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id "
+        "SELECT u.*, (SELECT m.enabled_at IS NOT NULL FROM user_mfa m WHERE m.user_id = u.id) "
+        "AS mfa_on FROM sessions s JOIN users u ON u.id = s.user_id "
         "WHERE s.token=%s AND s.expires_at > %s AND u.is_active = 1 "
         "AND (u.expires_on IS NULL OR u.expires_on >= %s)",
         (token, db.now(), db.today()),
     )
     if row:
         row.pop("password_hash", None)
+        row["mfa_on"] = bool(row.get("mfa_on"))
     return row
 
 

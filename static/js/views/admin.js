@@ -2,7 +2,7 @@
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store } from '../store.js';
-import { avatar, clear, confirmDialog, el, fill, formatDateTime, openModal, toast } from '../util.js';
+import { avatar, clear, confirmDialog, el, fill, formatDateTime, openModal, popupMenu, toast } from '../util.js';
 import { ACCENT_PRESETS, applyAccent } from '../theme.js';
 import { iconPicker } from './pickers.js';
 
@@ -56,7 +56,8 @@ async function renderUsers(container) {
         el('thead', {}, el('tr', {},
           el('th', { text: '名前' }), el('th', { text: 'メールアドレス' }),
           el('th', { text: '種類' }), el('th', { text: 'メール通知' }),
-          el('th', { text: '状態' }), el('th', { text: '最終ログイン' }), el('th', {}))),
+          el('th', { text: '状態' }), el('th', { text: '最終ログイン' }),
+          el('th', { text: '2FA', title: '多要素認証' }), el('th', {}))),
         body))));
 
   let organizations = [];
@@ -67,7 +68,7 @@ async function renderUsers(container) {
     clear(body);
     for (const user of data.users) {
       body.append(el('tr', {},
-        el('td', {}, el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
+        el('td', {}, el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', whiteSpace: 'nowrap' } },
           avatar(user, 'sm'), el('span', { text: user.name }))),
         el('td', { text: user.email }),
         el('td', {},
@@ -97,6 +98,9 @@ async function renderUsers(container) {
             ? el('span', { class: 'login-fail-badge', title: 'この 7 日に失敗したログイン',
               text: `失敗 ${user.failed_7d}` })
             : null),
+        el('td', {}, user.mfa_enabled
+          ? el('span', { class: 'badge done', title: '多要素認証を使っています', text: '設定済み' })
+          : el('span', { class: 'cell-mut', text: '—' })),
         el('td', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
           el('button', {
             class: 'btn btn-sm', title: 'この人のログイン履歴',
@@ -108,21 +112,14 @@ async function renderUsers(container) {
           ' ',
           el('button', { class: 'btn btn-sm', onClick: () => editUser(user) }, '編集'),
           ' ',
-          el('button', { class: 'btn btn-sm', onClick: () => resetPassword(user) }, 'PW再発行'),
-          ' ',
           el('button', {
-            class: 'btn btn-sm btn-quiet-danger',
-            onClick: async () => {
-              if (!await confirmDialog(
-                `「${user.name}」を削除します。\n担当タスクは「未割当」になります。`,
-                { danger: true, okLabel: '削除する' })) return;
-              try {
-                await api.del(`/api/users/${user.id}`);
-                toast('削除しました', 'ok');
-                load();
-              } catch (error) { toast(error.message, 'error'); }
-            },
-          }, '削除'))));
+            class: 'btn btn-sm', title: 'パスワード再発行・2FA解除・削除',
+            onClick: (event) => popupMenu(event.currentTarget, (item) => [
+              item('パスワードを再発行', () => resetPassword(user)),
+              user.mfa_enabled ? item('多要素認証を解除', () => resetMfa(user)) : null,
+              item('削除', () => removeUser(user), true),
+            ]),
+          }, '⋯'))));
     }
   }
 
@@ -207,6 +204,29 @@ async function renderUsers(container) {
       ],
     });
     if (result) load();
+  }
+
+  async function resetMfa(user) {
+    if (!await confirmDialog(
+      `「${user.name}」の多要素認証を解除しますか？\n本人に確かめてから行ってください。`
+      + '次のログインはパスワードだけになります（必須の設定なら、ログイン後に設定し直す画面になります）。',
+      { danger: true, okLabel: '解除する' })) return;
+    try {
+      await api.del(`/api/users/${user.id}/mfa`);
+      toast('多要素認証を解除しました', 'ok');
+      load();
+    } catch (error) { toast(error.message, 'error'); }
+  }
+
+  async function removeUser(user) {
+    if (!await confirmDialog(
+      `「${user.name}」を削除します。\n担当タスクは「未割当」になります。`,
+      { danger: true, okLabel: '削除する' })) return;
+    try {
+      await api.del(`/api/users/${user.id}`);
+      toast('削除しました', 'ok');
+      load();
+    } catch (error) { toast(error.message, 'error'); }
   }
 
   async function resetPassword(user) {
@@ -420,6 +440,13 @@ async function renderSettings(container) {
   };
 
   const testTo = el('input', { class: 'input', placeholder: store.user.email });
+  const mfaRequiredField = () => {
+    const node = el('select', { class: 'select', style: { maxWidth: '260px' } },
+      ...[['off', '必須にしない（各自で設定できる）'], ['admin', '管理者だけ必須'], ['all', '全員必須（社外ユーザーも）']]
+        .map(([value, label]) => el('option', { value, selected: s.mfa_required === value ? true : null }, label)));
+    fields.mfa_required = () => node.value;
+    return el('div', { class: 'field' }, el('label', { text: '多要素認証（認証アプリのコード）' }), node);
+  };
 
   fill(container, 
     el('div', { class: 'grid cols-2' },
@@ -493,7 +520,8 @@ async function renderSettings(container) {
           eventPicker('slack_events', 'Slack に流す内容', data.slack_events,
             'プロジェクト設定で個別に上書きできます。'),
           el('div', { class: 'hint',
-            text: 'プロジェクトごとに別のチャンネルへ送りたい場合も、プロジェクト設定で指定できます。' }),
+            text: 'プロジェクトごとに別のチャンネルへ送りたい場合は、プロジェクト設定の「通知」で指定できます'
+              + '（プロジェクト管理者が設定・テスト送信できます）。全体の URL が空でも、プロジェクト個別の宛先には送られます。' }),
           el('button', {
             class: 'btn', style: { marginTop: '10px' },
             onClick: async (event) => {
@@ -518,6 +546,18 @@ async function renderSettings(container) {
             'ガントで網掛けし、負荷計算ではその週に使える時間を減らします。'
             + '春分・秋分、振替休日、国民の休日も自動で計算します。'),
           holidayEditor()))),
+    el('div', { class: 'card', style: { marginTop: '14px' } },
+      el('div', { class: 'card-head' }, el('h2', {}, 'ログインとセキュリティ')),
+      el('div', { class: 'card-body' },
+        mfaRequiredField(),
+        el('div', { class: 'hint',
+          text: '必須にすると、まだ設定していない人は次の操作から設定の画面になり、済ませるまで他の画面を使えません。'
+            + 'スマホをなくした人は「ユーザー管理」の「2FA解除」で外せます。' }),
+        el('div', { class: 'hint', style: { marginTop: '6px' },
+          text: data.email_ready
+            ? 'パスワードを忘れた人には、再設定のリンクをメールで送ります（60 分有効）。'
+            : 'メール送信が無効なため、パスワードを忘れた人からの依頼は管理者の通知に届きます。'
+              + 'メールを有効にすると、本人がメールのリンクから再設定できるようになります。' }))),
     el('div', { class: 'card', style: { marginTop: '14px' } },
       el('div', { class: 'card-head' }, el('h2', {}, 'Claude 連携（任意）'),
         el('span', {

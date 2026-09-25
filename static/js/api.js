@@ -52,6 +52,10 @@ async function request(method, path, { body, query, raw } = {}) {
     try { data = JSON.parse(text); } catch { data = { error: text.slice(0, 200) }; }
   }
   if (!response.ok) {
+    if (data?.detail?.mfa_setup_required) {
+      // 使っている途中で多要素認証が必須になった。設定の画面に切り替える
+      window.location.reload();
+    }
     const reason = data?.error || data?.message || `エラー (${response.status})`;
     throw new ApiError(response.status, reason, data?.detail);
   }

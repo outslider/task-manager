@@ -4,6 +4,7 @@ import { defaultNavOrder, navChoices, setHeader } from '../app.js';
 import { store } from '../store.js';
 import { el, fill, toast } from '../util.js';
 import { ACCENT_PRESETS, applyAccent, applyTheme } from '../theme.js';
+import { securityCard } from './security.js';
 
 export async function render(container) {
   setHeader('プロフィール設定');
@@ -26,6 +27,7 @@ export async function render(container) {
   themeSelect.value = user.ui_theme || 'auto';
   themeSelect.addEventListener('change', () => applyTheme(themeSelect.value));
 
+  const tint = el('input', { type: 'checkbox', checked: user.ui_project_tint !== false ? true : null });
   const accentState = { value: store.accent() };
   const swatches = el('div', { class: 'swatches' });
   const customInput = el('input', {
@@ -72,6 +74,11 @@ export async function render(container) {
           el('div', { class: 'hint',
             text: '選ぶとすぐ画面に反映されます。「保存」で次回以降も引き継がれます。' })),
         el('div', { class: 'field' },
+          el('label', { class: 'check' }, tint,
+            el('span', { text: 'プロジェクトの画面を、そのプロジェクトの色で染める' })),
+          el('div', { class: 'hint',
+            text: '見出しの帯・ボタン・背景がプロジェクトの色になり、どのプロジェクトを見ているか一目で分かります。' })),
+        el('div', { class: 'field' },
           el('label', { text: 'ブラウザ通知（期限アラーム）' }),
           browserNotifyControl()),
         el('button', {
@@ -85,6 +92,7 @@ export async function render(container) {
                 avatar_color: color.value,
                 ui_theme: themeSelect.value,
                 ui_accent: accentState.value,
+                ui_project_tint: tint.checked,
               });
               store.user = result.user;
               store.emit();
@@ -119,7 +127,7 @@ export async function render(container) {
           },
         }, 'パスワードを変更'))));
 
-  fill(container, grid, navOrderCard(), notificationCard(notifySettings));
+  fill(container, grid, securityCard(), navOrderCard(), notificationCard(notifySettings));
 }
 
 

@@ -9,7 +9,7 @@ from email.utils import formataddr
 
 import pymysql
 
-from . import auth, db, prefs, slack, taxonomy
+from . import auth, db, mfa, prefs, slack, taxonomy
 
 log = logging.getLogger("tm.notify")
 
@@ -346,6 +346,7 @@ def _run_daily_digest():
     recurring_todos = recurrence.run_todos()
     purged = trash.purge_expired()   # 30 日を過ぎたゴミ箱の中身を本当に消す
     logins.purge_expired()           # 残す日数を過ぎたログイン履歴を消す
+    mfa.purge_expired()              # 期限を過ぎたログイン待ち・再設定リンクの記録を消す
     scanned = scan_due_tasks()
     slack_posts = slack_daily_summary()
     sent = 0
@@ -365,7 +366,8 @@ def _run_daily_digest():
 
 
 def slack_daily_summary():
-    """プロジェクトごとの状況を Slack に流す。宛先がなければ何もしない。"""
+    """プロジェクトごとの状況を Slack に流す。宛先がなければ何もしない。
+    個別の宛先があるプロジェクトはそこへ、無いものは全体の宛先へまとめて 1 通。"""
     if not slack.available():
         return 0
     today = db.today()
@@ -401,7 +403,7 @@ def slack_daily_summary():
             posted += 1 if ok else 0
         else:
             combined.append(line + ("\n{}".format(link) if link else ""))
-    if combined:
+    if combined and slack.settings()["webhook_url"]:
         ok, _ = slack.post("📋 本日の状況\n" + "\n".join(combined))
         posted += 1 if ok else 0
     return posted

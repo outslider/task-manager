@@ -4,7 +4,7 @@ import { store } from './store.js';
 import { icon } from './icons.js';
 import { initPresenting, togglePresenting } from './present.js';
 import { clear, closeAllOverlays, el, fill, skeleton, toast } from './util.js';
-import { initTheme } from './theme.js';
+import { applyProjectTheme, initTheme } from './theme.js';
 import { brandLockup } from './brand.js';
 
 const root = document.getElementById('app');
@@ -89,7 +89,24 @@ function buildShell() {
   import('./views/search.js').then((m) => m.attachSearch(searchInput));
   renderSidebar();
   renderMobileNav();
-  store.on(() => { renderSidebar(); renderMobileNav(); updateBell(); });
+  store.on(() => { renderSidebar(); renderMobileNav(); updateBell(); tintForRoute(); });
+}
+
+/** プロジェクトの画面ではその色で染め、ほかの画面では本人の色に戻す。 */
+function tintForRoute() {
+  const id = currentRoute?.projectId;
+  applyProjectTheme(id ? store.project(id) : null, { tint: store.user?.ui_project_tint !== false });
+}
+
+/** プロジェクトの頭文字か絵文字を、プロジェクトの色の角丸に載せた小さな札。 */
+export function projectTile(project, size = 'sm') {
+  const mark = project.icon || Array.from((project.name || '?').trim())[0] || '?';
+  return el('span', {
+    class: `proj-tile ${size}${project.icon ? ' emoji' : ''}`,
+    style: { '--tile': project.color || '#4f6bff' },
+    'aria-hidden': 'true',
+    text: mark,
+  });
 }
 
 function toggleSidebar(force) {
@@ -111,6 +128,11 @@ function navItem(item, active) {
   if (item.dot) {
     node.insertBefore(el('span', { class: 'nav-dot', style: { background: item.dot } }),
       node.firstChild.nextSibling);
+  }
+  if (item.project) {
+    node.classList.add('nav-project');
+    node.style.setProperty('--tile', item.project.color || '#4f6bff');
+    node.replaceChild(projectTile(item.project), node.firstChild);
   }
   return node;
 }
@@ -162,7 +184,7 @@ function renderSidebar() {
       el('div', { class: 'sidebar-title', text: 'プロジェクト' }),
       ...projects.map((p) => navItem({
         // プロジェクトを切り替えても、いま見ていた画面のまま移りたい
-        icon: '', label: p.name, hash: `#/p/${p.id}/${lastProjectTab()}`, dot: p.color,
+        icon: '', label: p.name, hash: `#/p/${p.id}/${lastProjectTab()}`, project: p,
       }, active.startsWith(`#/p/${p.id}`))),
       projects.length === 0
         ? el('div', { class: 'hint', style: { padding: '4px 10px' },
@@ -345,6 +367,7 @@ async function renderRoute() {
   closeAllOverlays();
   renderSidebar();
   renderMobileNav();
+  tintForRoute();
   shell.content.className = 'content';
 
   if (route.view === 'task') {
@@ -458,11 +481,24 @@ async function boot() {
     /* offline or server error — fall through to the login screen */
   }
   initTheme({ theme: store.user?.ui_theme, accent: store.accent() });
+  const reset = location.hash.match(/^#\/reset\/([A-Za-z0-9_-]+)$/);
+  if (!store.user && reset) {
+    const { renderReset } = await import('./views/login.js');
+    renderReset(root, reset[1], boot);
+    return;
+  }
   if (!store.user) {
     const { renderLogin } = await import('./views/login.js');
     renderLogin(root, boot);
     return;
   }
+  if (store.user.mfa_setup_required) {
+    // 多要素認証が必須なのに未設定。済ませるまで他の画面には進めない（サーバーでも止めている）
+    const { renderForcedSetup } = await import('./views/security.js');
+    renderForcedSetup(root, () => location.reload());
+    return;
+  }
+  if (reset) location.hash = '#/';
   buildShell();
   await store.loadBase();
   updateBell();
@@ -478,6 +514,11 @@ async function boot() {
     else if (!store.isGuest()) openQuickAddDialog();
   });
   await renderRoute();
+  const recoveryLeft = sessionStorage.getItem('tm.recoveryWarn');
+  if (recoveryLeft !== null) {
+    sessionStorage.removeItem('tm.recoveryWarn');
+    toast(`予備コードでログインしました。残りは ${recoveryLeft} 個です。プロフィール設定で作り直せます`, 'error');
+  }
   primeNotifiedCursor();
   setInterval(pollNotifications, 120000);
 }

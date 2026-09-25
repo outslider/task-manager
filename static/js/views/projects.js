@@ -1,9 +1,10 @@
 /* Project list, creation, settings and member/permission management. */
 import { api } from '../api.js';
-import { setHeader } from '../app.js';
+import { projectTile, setHeader } from '../app.js';
 import { store } from '../store.js';
 import { avatar, clear, confirmDialog, el, fill, openModal, toast } from '../util.js';
 import { iconLabel } from '../icons.js';
+import { projectColors } from '../theme.js';
 
 export async function render(container) {
   let projects = await store.refreshProjects();
@@ -60,15 +61,19 @@ export async function render(container) {
       || { total: 0, done: 0, overdue: 0, milestones: 0, blocked: 0, open_issues: 0 };
     const percent = stats.total ? Math.round((stats.done / stats.total) * 100) : 0;
     const isOwner = project.my_role === 'owner';
-    return el('div', { class: 'card' },
-      el('div', { class: 'card-head' },
-        el('span', {
-          class: 'nav-dot',
-          style: { background: project.color, width: '10px', height: '10px' },
-        }),
-        el('h2', {}, el('a', { href: `#/p/${project.id}/tasks`, text: project.name })),
-        project.archived ? el('span', { class: 'badge', text: 'アーカイブ' }) : null,
-        el('span', { class: 'badge', text: roleLabel(project.my_role) })),
+    return el('div', {
+      class: `card proj-card${project.archived ? ' archived' : ''}`,
+      style: projectColors(project.color),
+    },
+      el('a', {
+        class: 'proj-banner', href: `#/p/${project.id}/tasks`,
+        dataset: { pattern: project.theme || 'aurora' },
+      },
+        projectTile(project, 'md'),
+        el('span', { class: 'proj-banner-name', text: project.name }),
+        el('span', { class: 'proj-banner-badges' },
+          project.archived ? el('span', { class: 'hero-chip', text: 'アーカイブ' }) : null,
+          el('span', { class: 'hero-chip', text: roleLabel(project.my_role) }))),
       el('div', { class: 'card-body' },
         el('div', { class: 'page-sub', style: { minHeight: '20px' },
           text: project.description || '（説明なし）' }),
@@ -193,23 +198,114 @@ export async function render(container) {
         value: u.id, selected: (project?.owner_id ?? store.user.id) === u.id ? true : null,
       }, u.name)));
 
-    const result = await openModal({
-      title: project ? 'プロジェクト設定' : '新規プロジェクト',
-      build: () => el('div', {},
+    // ---- 見た目：色・帯の模様・アイコン。選ぶとその場で見本が変わる ----
+    const look = {
+      color: project?.color || (store.meta?.project_colors || ['#4f6bff'])[
+        store.projects.length % (store.meta?.project_colors?.length || 1)],
+      theme: project?.theme || 'aurora',
+      icon: project?.icon || '',
+    };
+    color.value = look.color;
+    const preview = el('div', { class: 'look-preview' });
+    const drawPreview = () => {
+      const sample = { name: name.value.trim() || 'プロジェクト名', color: look.color, icon: look.icon };
+      fill(preview, el('div', {
+        class: 'proj-head mini', dataset: { pattern: look.theme }, style: projectColors(look.color),
+      },
+      el('div', { class: 'proj-hero' },
+        projectTile(sample, 'lg'),
+        el('div', { class: 'proj-hero-text' },
+          el('div', { class: 'proj-hero-name', text: sample.name }),
+          el('div', { class: 'proj-hero-desc', text: description.value.split('\n')[0] || '説明がここに出ます' }))),
+      el('div', { class: 'proj-tabs' },
+        el('span', { class: 'proj-tab active' }, 'タスク'),
+        el('span', { class: 'proj-tab' }, 'ガント'),
+        el('span', { class: 'proj-tab' }, '課題'))));
+      for (const [key, value] of Object.entries(projectColors(look.color))) patternHost.style.setProperty(key, value);
+      for (const node of swatchHost.children) node.classList.toggle('active', node.dataset.value === look.color);
+      for (const node of patternHost.children) node.classList.toggle('active', node.dataset.value === look.theme);
+      for (const node of iconHost.children) node.classList.toggle('active', node.dataset.value === look.icon);
+    };
+    const swatchHost = el('div', { class: 'swatches' },
+      ...(store.meta?.project_colors || []).map((value) => el('button', {
+        type: 'button', class: 'swatch', dataset: { value }, style: { background: value },
+        title: value, onClick: () => { look.color = value; color.value = value; drawPreview(); },
+      })));
+    color.addEventListener('input', () => { look.color = color.value; drawPreview(); });
+    const PATTERN_LABEL = {
+      aurora: 'オーロラ', mesh: 'メッシュ', lines: 'ストライプ', dots: 'ドット', waves: 'ウェーブ', plain: '無地',
+    };
+    const patternHost = el('div', { class: 'pattern-picks' },
+      ...(store.meta?.project_themes || Object.keys(PATTERN_LABEL)).map((value) => el('button', {
+        type: 'button', class: 'pattern-pick', dataset: { value },
+        onClick: () => { look.theme = value; drawPreview(); },
+      },
+      el('span', { class: 'pattern-sample proj-head', dataset: { pattern: value } }),
+      el('span', { text: PATTERN_LABEL[value] || value }))));
+    const ICONS = ['', '🚀', '📦', '🏗️', '💻', '🖥️', '🗄️', '🔧', '📈', '🎯', '📣', '🧪', '🛒', '🏢', '🌏',
+      '🔒', '📱', '🎨', '📚', '🤝', '⚡', '🌱', '🏭', '🚚', '💡'];
+    const iconHost = el('div', { class: 'icon-picks' },
+      ...ICONS.map((value) => el('button', {
+        type: 'button', class: 'icon-pick', dataset: { value },
+        title: value ? value : '名前の頭文字',
+        onClick: () => { look.icon = value; drawPreview(); },
+      }, value || (Array.from(name.value.trim() || '頭')[0]))));
+    name.addEventListener('input', drawPreview);
+    description.addEventListener('input', drawPreview);
+    drawPreview();
+
+    const slackTest = el('button', {
+      class: 'btn btn-sm', type: 'button',
+      onClick: async () => {
+        slackTest.disabled = true;
+        try {
+          const result = project
+            ? await api.post('/api/settings/test-slack', {
+              project_id: project.id, webhook_url: slack.value.trim(),
+            })
+            : { ok: false, message: 'プロジェクトを作ったあとで試せます' };
+          toast(result.message, result.ok ? 'ok' : 'error');
+        } catch (error) { toast(error.message, 'error'); }
+        slackTest.disabled = false;
+      },
+    }, 'テスト送信');
+    const slackNote = !store.meta?.slack_enabled
+      ? el('div', { class: 'warn-box', style: { marginTop: '8px' },
+        text: '管理者設定で Slack 通知がオフになっているため、いまは送られません（テスト送信はできます）。' })
+      : null;
+
+    const panes = {
+      basic: el('div', {},
         el('div', { class: 'field' }, el('label', { text: 'プロジェクト名 *' }), name),
         el('div', { class: 'field' }, el('label', { text: '説明' }), description),
-        el('div', { class: 'row' },
-          el('div', { class: 'field' }, el('label', { text: '色' }), color),
-          el('div', { class: 'field' }, el('label', { text: 'プロジェクト管理者' }), ownerSelect)),
+        el('div', { class: 'field' }, el('label', { text: 'プロジェクト管理者' }), ownerSelect),
+        project
+          ? el('div', { class: 'field' },
+            el('label', { class: 'check' }, archived,
+              el('span', { text: 'アーカイブする（一覧から隠す）' })))
+          : null),
+      look: el('div', {},
+        preview,
+        el('div', { class: 'field' }, el('label', { text: '色' }),
+          el('div', { class: 'swatch-row' }, swatchHost, el('label', { class: 'swatch-custom', title: '好きな色' }, color))),
+        el('div', { class: 'field' }, el('label', { text: '帯の模様' }), patternHost),
+        el('div', { class: 'field' }, el('label', { text: 'アイコン' }), iconHost),
+        el('div', { class: 'hint',
+          text: 'プロジェクトの画面では、見出しの帯・ボタン・背景がこの色になります（各自のプロフィール設定で止められます）。' })),
+      notify: el('div', {},
         el('div', { class: 'field' },
           el('label', { class: 'check' }, notifyEnabled,
             el('span', { text: 'このプロジェクトの通知を送る' })),
           el('div', { class: 'hint',
             text: 'オフにすると、メールも Slack も一切送りません（画面の通知も止まります）。' })),
         el('div', { class: 'field' },
-          el('label', { text: 'Slack の通知先' }), slack,
+          el('label', { text: 'Slack の通知先（このプロジェクト用のチャンネル）' }),
+          el('div', { class: 'input-with-btn' }, slack, slackTest),
           el('div', { class: 'hint',
-            text: '空欄なら全体設定のチャンネルに送られます。' })),
+            text: store.meta?.slack_has_default
+              ? '空欄なら、管理者設定の全体のチャンネルに送られます。'
+              : '空欄なら送りません（全体のチャンネルは設定されていません）。' }),
+          slackNote),
         slackEventBoxes.length
           ? el('div', { class: 'field' },
             el('label', { class: 'check' }, perProjectEvents,
@@ -222,20 +318,33 @@ export async function render(container) {
                   el('span', { class: 'hint', text: event.help }))))),
             el('div', { class: 'hint',
               text: 'チェックしない場合は管理者設定の選択に従います。' }))
-          : null,
-        project
-          ? el('div', { class: 'field' },
-            el('label', { text: 'タブ' }), tabTable,
-            el('div', { class: 'hint',
-              text: '「使う」を外したタブは、このプロジェクトの画面から隠れます。'
-                + '社外ユーザーに見せないタブは、画面だけでなくデータも社外ユーザーには閉じます'
-                + '（ガントはタスク一覧と同じデータなので、隠れるのは画面だけです）。' }))
-          : null,
-        project
-          ? el('div', { class: 'field' },
-            el('label', { class: 'check' }, archived,
-              el('span', { text: 'アーカイブする（一覧から隠す）' })))
           : null),
+      tabs: project
+        ? el('div', {},
+          tabTable,
+          el('div', { class: 'hint',
+            text: '「使う」を外したタブは、このプロジェクトの画面から隠れます。'
+              + '社外ユーザーに見せないタブは、画面だけでなくデータも社外ユーザーには閉じます'
+              + '（ガントはタスク一覧と同じデータなので、隠れるのは画面だけです）。' }))
+        : null,
+    };
+    const PANE_LABEL = { basic: '基本', look: '見た目', notify: '通知', tabs: 'タブ' };
+    const paneHost = el('div', { class: 'pane-host' });
+    const paneTabs = el('div', { class: 'seg pane-tabs' });
+    const showPane = (key) => {
+      fill(paneHost, panes[key]);
+      for (const node of paneTabs.children) node.classList.toggle('active', node.dataset.key === key);
+    };
+    for (const key of Object.keys(panes)) {
+      if (!panes[key]) continue;
+      paneTabs.append(el('button', { type: 'button', dataset: { key }, onClick: () => showPane(key) }, PANE_LABEL[key]));
+    }
+    showPane('basic');
+
+    const result = await openModal({
+      title: project ? 'プロジェクト設定' : '新規プロジェクト',
+      wide: true,
+      build: () => el('div', {}, paneTabs, paneHost),
       footer: (close) => [
         project
           ? el('button', {
@@ -257,7 +366,9 @@ export async function render(container) {
             const payload = {
               name: name.value.trim(),
               description: description.value,
-              color: color.value,
+              color: look.color,
+              theme: look.theme,
+              icon: look.icon,
               owner_id: Number(ownerSelect.value),
               slack_webhook_url: slack.value.trim(),
               notify_enabled: notifyEnabled.checked,

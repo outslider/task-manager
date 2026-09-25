@@ -52,6 +52,8 @@ EMAIL_COLUMNS = {key: "notify_{}".format(key) for key in EMAIL_EVENT_KEYS}
 SLACK_EVENTS = [
     ("issue", "課題の起票", "影響度「大」以上の課題が登録されたとき"),
     ("digest", "日次サマリ", "毎朝の期限超過・本日期限のまとめ"),
+    ("ticket", "チケットの起票", "窓口にチケットが起票されたとき（社外ユーザーからの起票も）"),
+    ("done", "タスクの完了", "タスクが完了になったとき（まとめて完了にしたときは 1 通）"),
 ]
 SLACK_EVENT_KEYS = [key for key, _, _ in SLACK_EVENTS]
 

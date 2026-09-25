@@ -73,13 +73,13 @@ export async function render(container) {
   const listHost = el('div', {});
 
   fill(container, 
-    el('div', { class: 'page-head' },
+    el('div', { class: 'home-hero', dataset: { pattern: 'aurora' } },
       el('div', { class: 'grow' },
         el('h1', { text: `${greeting()}、${store.user.name} さん` }),
-        el('div', { class: 'page-sub' },
+        el('div', { class: 'home-hero-sub' },
           headline(),
           data.streak > 0
-            ? el('span', { class: 'badge', style: { marginLeft: '8px' },
+            ? el('span', { class: 'hero-chip', style: { marginLeft: '8px' },
               text: `🔥 ${data.streak}日連続チェックイン` })
             : null))),
     el('div', { class: 'grid daily-stats', style: { marginBottom: '14px' } },

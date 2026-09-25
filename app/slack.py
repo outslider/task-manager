@@ -23,15 +23,24 @@ def settings():
     }
 
 
+def enabled():
+    """管理者設定の「Slack 通知を使う」。全体の宛先が空でも、プロジェクト個別の宛先には送る。"""
+    return settings()["enabled"]
+
+
 def available():
-    config = settings()
-    return bool(config["enabled"] and config["webhook_url"])
-
-
-def webhook_for(project_id=None):
-    """プロジェクト個別の宛先があればそちらへ、なければ全体設定へ。"""
+    """どこかに送れる状態か（スイッチが入っていて、全体かいずれかのプロジェクトに宛先がある）。"""
     config = settings()
     if not config["enabled"]:
+        return False
+    return bool(config["webhook_url"]) or bool(db.scalar(
+        "SELECT 1 AS x FROM projects WHERE slack_webhook_url<>'' AND archived=0 LIMIT 1", default=0))
+
+
+def webhook_for(project_id=None, ignore_switch=False):
+    """プロジェクト個別の宛先があればそちらへ、なければ全体設定へ。"""
+    config = settings()
+    if not config["enabled"] and not ignore_switch:
         return ""
     if project_id:
         url = db.scalar("SELECT slack_webhook_url AS u FROM projects WHERE id=%s",
@@ -65,8 +74,11 @@ def post(text, webhook_url=None, project_id=None):
 
 
 def post_async(text, project_id=None, event=None):
-    """非同期で送る。event を渡すと、その種類が選ばれているときだけ送る。"""
-    if not available():
+    """非同期で送る。event を渡すと、その種類が選ばれているときだけ送る。
+    宛先はプロジェクト個別 → 全体の順。どちらも無ければ送らない。"""
+    if not enabled() or not webhook_for(project_id):
+        return
+    if project_id and not prefs.project_notify_enabled(project_id):
         return
     if event and not prefs.slack_allowed(event, project_id):
         return
