@@ -7,6 +7,7 @@ import { api } from '../api.js';
 import {
   confirmDialog, el, fill, formatDate, openModal, parseDate, toast, today, toISO,
 } from '../util.js';
+import { markerChar } from '../store.js';
 import { option } from './pickers.js';
 import { buildTree } from './tasks.js';
 
@@ -29,18 +30,19 @@ export function dayLabel(iso) {
 }
 
 /**
- * ガントで置く場所の候補。タスクの木の並びのまま、見出しも含めて出す。
- * 見出しを選ぶと、その区切りの先頭に並ぶ。マイルストーンは束ね役に向かないので外す。
+ * ガントで置く場所の候補。タスクの木の並びのまま、見出しとマイルストーンも含めて出す。
+ * 見出しを選ぶと、その区切りの先頭に並ぶ。マイルストーンを選ぶと、その下に並ぶ
+ * （「リリース判定会」のように、節目にひもづく打ち合わせがあるため）。
  */
 export function placementCandidates(tasks) {
   const { children } = buildTree(tasks);
   const out = [];
   const walk = (parentId, depth) => {
     for (const task of children.get(parentId) || []) {
-      if (!task.is_milestone) {
-        out.push({ id: task.id, depth, heading: Boolean(task.is_heading),
-          label: task.is_heading ? `【見出し】${task.title}` : task.title });
-      }
+      let label = task.title;
+      if (task.is_heading) label = `【見出し】${task.title}`;
+      else if (task.is_milestone) label = `${markerChar(task)} ${task.title}`;
+      out.push({ id: task.id, depth, heading: Boolean(task.is_heading), label });
       walk(task.id, depth + 1);
     }
   };
@@ -239,7 +241,7 @@ export async function openMeetingForm({ project, meeting = null, tasks = [] }) {
         ...placementCandidates(tasks).map((t) => option(t.id, `${'　'.repeat(t.depth)}${t.label}`,
           t.id === meeting?.parent_id)));
       if (meeting?.parent_id && ![...f.parent.options].some((o) => Number(o.value) === meeting.parent_id)) {
-        // 候補から外れるタスク（マイルストーンなど）に置いてあっても、黙って外さない
+        // 候補に無いタスク（消えかけの行など）に置いてあっても、黙って外さない
         const current = tasks.find((t) => t.id === meeting.parent_id);
         f.parent.appendChild(option(meeting.parent_id, current?.title || `#${meeting.parent_id}`, true));
       }
