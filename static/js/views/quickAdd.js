@@ -1,5 +1,6 @@
 /* 自然言語でのクイック追加。一文を解析して、確認してから登録する。 */
 import { api } from '../api.js';
+import { AI_NOTE, aiEnabled, aiMark, engineBadge } from '../ai.js';
 import { store, CATEGORIES, IMPORTANCE_LABEL, category as categoryInfo } from '../store.js';
 import { el, fill, formatDate, openModal, toast } from '../util.js';
 import { categorySelect, option, userSelect } from './pickers.js';
@@ -25,7 +26,7 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
   function syncButtons() {
     if (parseButton) {
       parseButton.disabled = state.busy;
-      parseButton.textContent = state.busy ? '解析中…' : '解析';
+      fill(parseButton, state.busy ? '解析中…' : '解析', aiMark());
     }
     if (footerSubmit) {
       footerSubmit.disabled = state.busy || !state.draft;
@@ -41,6 +42,8 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
     el('span', { class: 'hint', text: '例:' }),
     ...EXAMPLES.map((example) => el('button', {
       class: 'qa-chip', type: 'button',
+      // 押すとそのまま解析する（AI が使える設定なら AI を呼ぶ）
+      title: aiEnabled() ? `この文で解析します。${AI_NOTE}` : 'この文で解析します',
       onClick: () => { input.value = example; parse(); },
     }, example)));
   const status = el('div', {});
@@ -99,10 +102,7 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
     fill(status,
       state.warning ? el('div', { class: 'warn-box', text: state.warning }) : null,
       el('div', { class: 'qa-badges' },
-        el('span', {
-          class: 'badge',
-          title: draft.engine === 'llm' ? 'Claude が解析しました' : 'キーワードと日付表現から解析しました',
-        }, draft.engine === 'llm' ? '🤖 Claude 解析' : '⚡ 簡易解析'),
+        engineBadge(draft.engine),
         ...(draft.matched || []).map((m) => el('span', { class: 'badge doing' },
           `${FIELD_LABEL[m.field] || m.field}: ${labelFor(draft, m)}`))));
 
@@ -123,7 +123,7 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
           el('span', { text: 'マイルストーンにする' }))),
       el('div', { class: 'field' },
         el('label', { class: 'check' }, decomposeCheck,
-          el('span', { text: '登録したあとに子タスクの分解案を出す' }))));
+          el('span', { text: '登録したあとに子タスクの分解案を出す' }), aiMark())));
     preview.hidden = false;
     syncButtons();
   }
@@ -155,7 +155,8 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
         text: '日付・担当者・重要度などを文章から読み取ります。内容を確認してから登録してください。' }),
       input, hint, status, preview),
     footer: (close) => {
-      parseButton = el('button', { class: 'btn', onClick: parse }, '解析');
+      parseButton = el('button', { class: 'btn', onClick: parse, title: aiEnabled() ? AI_NOTE : null },
+        '解析', aiMark());
       footerSubmit = el('button', {
         class: 'btn btn-primary', disabled: true,
         onClick: async (event) => {

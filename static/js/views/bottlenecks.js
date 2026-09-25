@@ -1,5 +1,6 @@
 /* Bottleneck analysis: what is holding the project up, and why. */
 import { api } from '../api.js';
+import { AI_NOTE, aiBadge, aiMark } from '../ai.js';
 import { setHeader } from '../app.js';
 import { STATUS_LABEL, category, store } from '../store.js';
 import { dueClass, el, fill, formatDate } from '../util.js';
@@ -95,11 +96,13 @@ export async function render(container, route) {
       class: review.data ? 'btn btn-sm' : 'btn btn-sm btn-primary',
       disabled: review.loading ? true : null,
       onClick: askReview,
-    }, review.loading ? '見ています…' : (review.data ? '聞き直す' : '🤖 今週の見立てを聞く'));
+    }, review.loading ? '見ています…' : (review.data ? '聞き直す' : '今週の見立てを聞く'),
+    review.loading ? null : aiMark());
 
     fill(reviewHost, el('div', { class: 'card' },
       el('div', { class: 'card-head' },
-        el('h2', {}, '🤖 進行レビュー'),
+        el('h2', { style: { display: 'flex', alignItems: 'center', gap: '8px' } }, '進行レビュー',
+          aiBadge({ title: `${AI_NOTE}（期限・依存・負荷などの数字を送ります）` })),
         review.data
           ? el('span', { class: 'hint', text: `${review.data.generated_at} 時点の数字で` })
           : null,

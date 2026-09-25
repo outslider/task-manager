@@ -1,5 +1,6 @@
 /* Task detail drawer: inline editing, subtasks, links/files, comments. */
 import { api, url } from '../api.js';
+import { aiMark } from '../ai.js';
 import {
   store, STATUS_LABEL, IMPORTANCE_LABEL, ISSUE_STATUS_LABEL, SEVERITY_LABEL, markerChar,
   taskProgress,
@@ -202,7 +203,7 @@ async function renderDetail(instance, taskId, onChange) {
             const added = await openSubtaskSuggestions(task);
             if (added) reload();
           },
-        }, '✨ 分解を提案'),
+        }, '分解を提案', aiMark()),
         el('button', {
           class: 'btn btn-sm',
           onClick: async () => {

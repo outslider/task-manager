@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { store } from '../store.js';
 import { el, fill, openModal, toast } from '../util.js';
 import { categorySelect } from './pickers.js';
+import { aiMark, engineBadge } from '../ai.js';
 
 /**
  * 大きなタスクを子タスクに割る提案を出し、選んだものを登録する。
@@ -45,7 +46,9 @@ export async function openSubtaskSuggestions(task, { onChange } = {}) {
     fill(meta,
       state.loading ? '分解中…' : null,
       !state.loading && state.items.length
-        ? el('span', {},
+        ? el('span', { style: { display: 'inline-flex', gap: '6px', alignItems: 'center',
+          flexWrap: 'wrap' } },
+          engineBadge(state.engine),
           state.engine === 'llm'
             ? 'Claude が内容に合わせて分解しました。'
             : `定型テンプレート「${state.template}」から作成しました。`,
@@ -93,7 +96,7 @@ export async function openSubtaskSuggestions(task, { onChange } = {}) {
           text: 'チェックしたものが子タスクとして追加されます。名前・区分・期限はここで直せます。' }),
         meta, listHost,
         el('div', { style: { marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-          el('button', { class: 'btn btn-sm', onClick: () => load(false) }, '↻ 作り直す'),
+          el('button', { class: 'btn btn-sm', onClick: () => load(false) }, '↻ 作り直す', aiMark()),
           store.meta?.llm_available
             ? el('button', { class: 'btn btn-sm', onClick: () => load(true) }, '定型テンプレートで作る')
             : null,

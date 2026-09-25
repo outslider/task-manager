@@ -1716,3 +1716,23 @@ input[type="color"].input {
 /* 今日の確認：子タスクから集計する親タスクは、進捗のボタンの代わりにこれを出す */
 .qrollup { font-size: 12px; color: var(--text-muted); padding: 4px 8px; border-radius: 8px;
   background: var(--surface-2); white-space: nowrap; }
+
+/* ---------- AI（Claude）の印 ---------- */
+.ai-badge {
+  display: inline-flex; align-items: center; gap: 3px; padding: 1px 7px 1px 5px;
+  border-radius: 999px; font-size: 11.5px; font-weight: 650; line-height: 18px;
+  background: #efe9fd; color: #6a3fd1; border: 1px solid #ddd0fa; white-space: nowrap;
+  vertical-align: middle;
+}
+.ai-badge.sm { font-size: 10.5px; line-height: 15px; padding: 0 5px 0 4px; gap: 2px; }
+.btn .ai-badge { margin-left: 6px; }
+.btn-primary .ai-badge { background: rgba(255, 255, 255, .22); color: #fff; border-color: rgba(255, 255, 255, .35); }
+.engine-badge {
+  display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px;
+  font-size: 11.5px; line-height: 18px; background: var(--surface-3); color: var(--text-muted);
+  white-space: nowrap;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .ai-badge { background: #2d2350; color: #c4b1ff; border-color: #43356f; }
+}
+:root[data-theme="dark"] .ai-badge { background: #2d2350; color: #c4b1ff; border-color: #43356f; }

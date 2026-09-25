@@ -10,6 +10,7 @@ import {
 } from '../util.js';
 import { iconLabel } from '../icons.js';
 import { HEADING_LEVEL_LABEL, headingLevel, sectionize } from '../outline.js';
+import { aiMark } from '../ai.js';
 import { openTaskForm } from './taskForm.js';
 import { categoryChip } from './pickers.js';
 import { openTaskDetail } from './taskDetail.js';
@@ -125,7 +126,7 @@ export async function render(container, route) {
           const { openMemoDialog } = await import('./memoTasks.js');
           if (await openMemoDialog(project)) reload();
         },
-      }, ...iconLabel('note', 'メモから'))
+      }, ...iconLabel('note', 'メモから'), aiMark())
       : null,
     canEdit
       ? el('button', {

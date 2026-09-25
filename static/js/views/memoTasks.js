@@ -6,6 +6,7 @@
 import { api } from '../api.js';
 import { categorySelect, option, userSelect } from './pickers.js';
 import { el, fill, openModal, toast } from '../util.js';
+import { aiMark, engineBadge } from '../ai.js';
 
 const IMPORTANCE = [[0, '低'], [1, '中'], [2, '高'], [3, '最重要']];
 
@@ -26,13 +27,14 @@ export async function openMemoDialog(project) {
   const readButton = el('button', {
     class: 'btn btn-primary',
     onClick: () => read(),
-  }, '🔍 やることを拾う');
+  }, '🔍 やることを拾う', aiMark());
+  const engineHost = el('span', {});
 
   async function read() {
     const text = memo.value.trim();
     if (!text) { toast('メモを貼り付けてください', 'error'); return; }
     readButton.disabled = true;
-    readButton.textContent = '読み取り中…';
+    fill(readButton, '読み取り中…');
     fill(noticeHost);
     fill(problemHost);
     try {
@@ -52,7 +54,7 @@ export async function openMemoDialog(project) {
       toast(error.message, 'error');
     }
     readButton.disabled = false;
-    readButton.textContent = '🔍 やることを拾う';
+    fill(readButton, '🔍 やることを拾う', aiMark());
   }
 
   function draw() {
@@ -64,6 +66,7 @@ export async function openMemoDialog(project) {
       return;
     }
     fill(listHost, el('div', { class: 'memo-rows' }, ...state.rows.map(row)));
+    fill(engineHost, engineBadge(state.engine));
     count();
   }
 
@@ -146,7 +149,8 @@ export async function openMemoDialog(project) {
         text: '会議メモを貼り付けると、やることを拾って一覧にします。'
           + '中身を直してから、要るものだけ登録できます。' }),
       el('div', { class: 'field' }, el('label', { text: 'メモ' }), memo),
-      el('div', { style: { marginBottom: '12px' } }, readButton),
+      el('div', { style: { marginBottom: '12px', display: 'flex', gap: '10px', alignItems: 'center' } },
+        readButton, engineHost),
       noticeHost, listHost, problemHost, summary),
     footer: (close) => [
       el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
