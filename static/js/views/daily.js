@@ -86,7 +86,8 @@ export async function render(container) {
       statCard('期限超過', counts.overdue, counts.overdue ? 'danger' : '', 'overdue'),
       statCard('本日期限', counts.today, counts.today ? 'warn' : '', 'today'),
       statCard('担当の課題', counts.issues, '', 'issues'),
-      statCard('担当のチケット', counts.tickets, '', 'tickets'),
+      // 社外ユーザーはチケットをまだ使えないので、カードごと出さない
+      store.isGuest() ? null : statCard('担当のチケット', counts.tickets, '', 'tickets'),
       statCard('まもなく期限', counts.soon, '', 'soon'),
       statCard('直近7日の完了', counts.done, 'ok', 'done')),
     listHost, saveBar);

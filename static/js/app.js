@@ -73,7 +73,8 @@ function buildShell() {
     menuButton,
     title,
     el('div', { class: 'topbar-spacer' }),
-    searchInput, topActions, quickAdd, present, bell);
+    // 社外ユーザーはタスクを足さない（起票はチケットから）ので、クイック追加は出さない
+    searchInput, topActions, store.isGuest() ? null : quickAdd, present, bell);
 
   const progress = el('div', { class: 'route-progress', hidden: true });
   const content = el('main', { class: 'content', id: 'content' });
@@ -118,10 +119,14 @@ function navItem(item, active) {
  * 左メニューの並び。本人が決めた順があればそれに従い、
  * あとから増えた項目は末尾に回す（設定を消さずに新機能を足せるように）。
  */
+// 社外ユーザーには出さないメニュー（サーバー側でも閉じている）
+const GUEST_HIDDEN = new Set(['tickets', 'trash']);
+
 export function orderedNav() {
   const wanted = store.user?.nav_order || [];
-  if (!wanted.length) return NAV;
-  const byId = new Map(NAV.map((item) => [item.id, item]));
+  const nav = store.isGuest() ? NAV.filter((item) => !GUEST_HIDDEN.has(item.id)) : NAV;
+  if (!wanted.length) return nav;
+  const byId = new Map(nav.map((item) => [item.id, item]));
   const picked = [];
   for (const id of wanted) {
     if (byId.has(id)) {
@@ -460,7 +465,7 @@ async function boot() {
     if (document.querySelector('.overlay')) return;
     event.preventDefault();
     if (event.key === '/') shell.searchInput?.focus();
-    else openQuickAddDialog();
+    else if (!store.isGuest()) openQuickAddDialog();
   });
   await renderRoute();
   primeNotifiedCursor();

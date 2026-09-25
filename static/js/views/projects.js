@@ -156,8 +156,9 @@ export async function render(container) {
     perProjectEvents.addEventListener('change', syncSlackEvents);
     notifyEnabled.addEventListener('change', syncSlackEvents);
     syncSlackEvents();
+    // プロジェクト管理者は社内の人だけ（社外ユーザーはコメント可まで）
     const ownerSelect = el('select', { class: 'select' },
-      ...store.users.map((u) => el('option', {
+      ...store.users.filter((u) => u.role !== 'guest').map((u) => el('option', {
         value: u.id, selected: (project?.owner_id ?? store.user.id) === u.id ? true : null,
       }, u.name)));
 
@@ -168,7 +169,7 @@ export async function render(container) {
         el('div', { class: 'field' }, el('label', { text: '説明' }), description),
         el('div', { class: 'row' },
           el('div', { class: 'field' }, el('label', { text: '色' }), color),
-          el('div', { class: 'field' }, el('label', { text: 'オーナー' }), ownerSelect)),
+          el('div', { class: 'field' }, el('label', { text: 'プロジェクト管理者' }), ownerSelect)),
         el('div', { class: 'field' },
           el('label', { class: 'check' }, notifyEnabled,
             el('span', { text: 'このプロジェクトの通知を送る' })),
@@ -251,7 +252,11 @@ export async function render(container) {
     const drawList = () => {
       clear(listHost);
       const rows = [
-        ...store.users.map((u) => ({ type: 'user', id: u.id, name: u.name, sub: u.email, obj: u })),
+        ...store.users.map((u) => ({
+          type: 'user', id: u.id, name: u.name, obj: u, guest: u.role === 'guest',
+          sub: u.role === 'guest' ? `社外ユーザー・${u.organization_name || '会社未設定'}　${u.email || ''}`
+            : u.email,
+        })),
         ...groupData.groups.map((g) => ({
           type: 'group', id: g.id, name: g.name,
           sub: `${g.members.length} 名`, obj: g,
@@ -260,9 +265,13 @@ export async function render(container) {
       for (const row of rows) {
         const key = `${row.type}:${row.id}`;
         const current = members.get(key) || '';
-        const select = el('select', { class: 'select', style: { maxWidth: '150px' } },
+        // 社外ユーザーはコメント可まで（担当になったタスクの進捗は自分で更新できる）
+        const allowed = row.guest
+          ? store.meta.project_roles.filter((r) => ['commenter', 'viewer'].includes(r.value))
+          : store.meta.project_roles;
+        const select = el('select', { class: 'select', style: { maxWidth: '170px' } },
           el('option', { value: '', selected: current === '' ? true : null }, 'アクセスなし'),
-          ...store.meta.project_roles.map((r) => el('option', {
+          ...allowed.map((r) => el('option', {
             value: r.value, selected: current === r.value ? true : null,
           }, r.label.split('（')[0])));
         select.addEventListener('change', () => {
@@ -275,7 +284,8 @@ export async function render(container) {
             ? avatar(row.obj, 'sm')
             : el('span', { class: 'avatar sm', style: { background: '#98a2b3' } }, '👥'),
           el('div', { class: 'name' },
-            el('div', { text: row.name + (isOwner ? '（オーナー）' : '') }),
+            el('div', {}, row.name + (isOwner ? '（プロジェクト管理者）' : ''),
+              row.guest ? el('span', { class: 'guest-badge', text: '社外' }) : null),
             el('div', { class: 'hint', text: row.sub })),
           select));
       }
@@ -287,7 +297,8 @@ export async function render(container) {
       wide: true,
       build: () => el('div', {},
         el('p', { class: 'page-sub',
-          text: 'ユーザー個別、またはグループ単位で権限を設定できます。両方に該当する場合は強い方の権限が適用されます。' }),
+          text: 'ユーザー個別、またはグループ単位で権限を設定できます。両方に該当する場合は強い方の権限が適用されます。'
+            + '社外ユーザーは「コメント可」までで、担当になったタスクの進捗・状態は自分で更新できます。' }),
         listHost),
       footer: (close) => [
         el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
@@ -315,5 +326,5 @@ export async function render(container) {
 }
 
 function roleLabel(role) {
-  return { owner: 'オーナー', editor: '編集可', commenter: 'コメント可', viewer: '閲覧のみ' }[role] || '—';
+  return { owner: 'プロジェクト管理者', editor: '編集可', commenter: 'コメント可', viewer: '閲覧のみ' }[role] || '—';
 }

@@ -55,12 +55,14 @@ async function renderUsers(container) {
       el('table', { class: 'table' },
         el('thead', {}, el('tr', {},
           el('th', { text: '名前' }), el('th', { text: 'メールアドレス' }),
-          el('th', { text: '権限' }), el('th', { text: 'メール通知' }),
+          el('th', { text: '種類' }), el('th', { text: 'メール通知' }),
           el('th', { text: '状態' }), el('th', { text: '最終ログイン' }), el('th', {}))),
         body))));
 
+  let organizations = [];
   async function load() {
     const data = await api.users({ include_inactive: 1 });
+    organizations = data.organizations || [];
     store.setUsers(data.users.filter((u) => u.is_active));
     clear(body);
     for (const user of data.users) {
@@ -68,10 +70,18 @@ async function renderUsers(container) {
         el('td', {}, el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
           avatar(user, 'sm'), el('span', { text: user.name }))),
         el('td', { text: user.email }),
-        el('td', {}, el('span', {
-          class: `badge ${user.role === 'admin' ? 'doing' : ''}`.trim(),
-          text: user.role === 'admin' ? '管理者' : 'メンバー',
-        })),
+        el('td', {},
+          el('span', {
+            class: `badge ${{ admin: 'doing', guest: 'guest' }[user.role] || ''}`.trim(),
+            text: { admin: '管理者', guest: '社外ユーザー' }[user.role] || '社内ユーザー',
+          }),
+          user.role === 'guest'
+            ? el('div', { class: 'hint', text: user.organization_name || '会社未設定' })
+            : null,
+          user.expires_on
+            ? el('div', { class: `hint${user.expires_on < new Date().toISOString().slice(0, 10) ? ' expired' : ''}`,
+              text: `${user.expires_on.replaceAll('-', '/')} まで` })
+            : null),
         el('td', { text: user.email_notify ? 'あり' : 'なし' }),
         el('td', {}, user.is_active
           ? el('span', { class: 'badge done', text: '有効' })
@@ -121,9 +131,29 @@ async function renderUsers(container) {
     name.value = user?.name || '';
     const email = el('input', { class: 'input', type: 'email' });
     email.value = user?.email || '';
+    const current = user?.role || 'member';
     const role = el('select', { class: 'select' },
-      el('option', { value: 'member', selected: user?.role !== 'admin' ? true : null }, 'メンバー'),
-      el('option', { value: 'admin', selected: user?.role === 'admin' ? true : null }, '管理者'));
+      el('option', { value: 'member', selected: current === 'member' ? true : null }, '社内ユーザー'),
+      el('option', { value: 'guest', selected: current === 'guest' ? true : null }, '社外ユーザー'),
+      el('option', { value: 'admin', selected: current === 'admin' ? true : null }, '管理者'));
+    const orgList = el('datalist', { id: 'org-names' },
+      ...organizations.map((name) => el('option', { value: name })));
+    const organization = el('input', {
+      class: 'input', list: 'org-names', placeholder: '例）株式会社〇〇', maxlength: 120,
+      value: user?.organization_name || '',
+    });
+    const expires = el('input', { class: 'input', type: 'date', value: user?.expires_on || '' });
+    const guestFields = el('div', {},
+      el('div', { class: 'row' },
+        el('div', { class: 'field' }, el('label', { text: '会社名 *' }), organization, orgList),
+        el('div', { class: 'field' }, el('label', { text: '有効期限（任意）' }), expires)),
+      el('div', { class: 'hint', style: { marginTop: '-4px', marginBottom: '8px' },
+        text: '社外ユーザーは、参加しているプロジェクトだけを見られ、コメントと、担当になったタスクの'
+          + '進捗・状態の更新ができます。チケット・雛形・ゴミ箱・負荷・AI 機能は使えません。'
+          + '有効期限を過ぎると入れなくなります。' }));
+    const syncGuest = () => { guestFields.hidden = role.value !== 'guest'; };
+    role.addEventListener('change', syncGuest);
+    syncGuest();
     const active = el('input', { type: 'checkbox' });
     active.checked = user ? Boolean(user.is_active) : true;
     const password = el('input', {
@@ -136,11 +166,12 @@ async function renderUsers(container) {
         el('div', { class: 'field' }, el('label', { text: '氏名 *' }), name),
         el('div', { class: 'field' }, el('label', { text: 'メールアドレス *' }), email),
         el('div', { class: 'row' },
-          el('div', { class: 'field' }, el('label', { text: '権限' }), role),
+          el('div', { class: 'field' }, el('label', { text: '種類' }), role),
           user
             ? el('div', { class: 'field' }, el('label', { text: 'アカウント' }),
               el('label', { class: 'check' }, active, el('span', { text: '有効にする' })))
             : null),
+        guestFields,
         user ? null : el('div', { class: 'field' },
           el('label', { text: '初期パスワード' }), password)),
       footer: (close) => [
@@ -151,6 +182,14 @@ async function renderUsers(container) {
             const payload = {
               name: name.value.trim(), email: email.value.trim(), role: role.value,
             };
+            if (role.value === 'guest') {
+              payload.organization = organization.value.trim();
+              payload.expires_on = expires.value || null;
+              if (!payload.organization) { toast('社外ユーザーには会社名を入れてください', 'error'); return; }
+            } else {
+              payload.organization = '';
+              payload.expires_on = null;
+            }
             if (user) payload.is_active = active.checked;
             else if (password.value) payload.password = password.value;
             try {

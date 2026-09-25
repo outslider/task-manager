@@ -25,6 +25,7 @@ REASON_LABEL = {
     "bad_password": "パスワード違い",
     "inactive": "停止中のアカウント",
     "unknown": "登録のないメールアドレス",
+    "expired": "有効期限切れのアカウント",
 }
 
 

@@ -58,8 +58,9 @@ def user_for_token(token: str):
         return None
     row = db.query_one(
         "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id "
-        "WHERE s.token=%s AND s.expires_at > %s AND u.is_active = 1",
-        (token, db.now()),
+        "WHERE s.token=%s AND s.expires_at > %s AND u.is_active = 1 "
+        "AND (u.expires_on IS NULL OR u.expires_on >= %s)",
+        (token, db.now(), db.today()),
     )
     if row:
         row.pop("password_hash", None)
@@ -92,6 +93,8 @@ def check_login(email: str, password: str):
         return row, "bad_password"
     if not row["is_active"]:
         return row, "inactive"
+    if row.get("expires_on") and row["expires_on"] < db.today():
+        return row, "expired"
     return row, ""
 
 
@@ -106,6 +109,26 @@ def authenticate(email: str, password: str):
 
 def is_admin(user) -> bool:
     return bool(user) and user.get("role") == "admin"
+
+
+# アカウントの種類。社外ユーザーは、参加しているプロジェクトの中だけを扱う。
+ACCOUNT_ROLES = ("admin", "member", "guest")
+ACCOUNT_LABEL = {"admin": "管理者", "member": "社内ユーザー", "guest": "社外ユーザー"}
+# 社外ユーザーがプロジェクトで持てるいちばん強い役割。タスクの追加・編集はさせず、
+# 起票は（第 2 段階で開ける）チケットから。担当タスクの進捗更新は別に許す。
+GUEST_MAX_ROLE = "commenter"
+
+
+def is_guest(user) -> bool:
+    return bool(user) and user.get("role") == "guest"
+
+
+def _cap(user, role):
+    """社外ユーザーは、どんな付け方をされても GUEST_MAX_ROLE までにする。
+    グループ経由で編集者になっていても、ここで抑える。"""
+    if role and is_guest(user) and ROLE_ORDER.get(role, 0) > ROLE_ORDER[GUEST_MAX_ROLE]:
+        return GUEST_MAX_ROLE
+    return role
 
 
 def project_role(user, project_id):
@@ -134,7 +157,7 @@ def project_role(user, project_id):
         roles.append("owner")
     if not roles:
         return None
-    return max(roles, key=lambda r: ROLE_ORDER.get(r, 0))
+    return _cap(user, max(roles, key=lambda r: ROLE_ORDER.get(r, 0)))
 
 
 def project_roles(user, project_ids):
@@ -160,7 +183,7 @@ def project_roles(user, project_ids):
     for row in db.query("SELECT id FROM projects WHERE id IN %s AND owner_id=%s",
                         (scope, user["id"])):
         best[row["id"]] = "owner"
-    return best
+    return {pid: _cap(user, role) for pid, role in best.items()}
 
 
 def has_project_access(user, project_id, minimum="viewer") -> bool:

@@ -19,10 +19,12 @@ export function projectTabs(projectId, active) {
   };
   // このプロジェクト専用の窓口があるときだけ、チケットへの入口を出す
   const openTickets = project?.stats?.open_tickets || 0;
+  // 負荷は担当者ごとの工数が並ぶので、社外ユーザーには出さない（サーバーでも閉じている）
+  const base = store.isGuest() ? TABS.filter((tab) => tab.key !== 'workload') : TABS;
   const tabs = openTickets
-    ? [...TABS, { key: 'tickets', label: 'チケット', icon: 'ticket',
+    ? [...base, { key: 'tickets', label: 'チケット', icon: 'ticket',
       href: `#/tickets?project=${projectId}`, count: openTickets }]
-    : TABS;
+    : base;
   return el('div', { class: 'proj-tabs' },
     ...tabs.map((tab) => el('a', {
       class: `proj-tab${tab.key === active ? ' active' : ''}`,

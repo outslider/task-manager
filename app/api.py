@@ -1,4 +1,5 @@
 """REST API: routing table plus handlers."""
+import json
 import mimetypes
 import os
 import re
@@ -86,6 +87,57 @@ def route(method, pattern):
     return decorator
 
 
+# 社外ユーザーが使ってよい API。ここに無いものは、社外ユーザーには閉じる。
+# 「使えないものを並べる」のではなく「使えるものを並べる」のは、あとから機能を
+# 足したときに、社外ユーザーへ黙って開いてしまわないようにするため。
+# （チケットは、会社ごとの見え方を作る第 2 段階で開ける）
+GUEST_ALLOWED = [(method, re.compile("^" + pattern + "$")) for method, pattern in (
+    ("POST", r"/api/auth/login"), ("POST", r"/api/auth/logout"), ("GET", r"/api/auth/me"),
+    ("POST", r"/api/auth/password"), ("PATCH", r"/api/auth/profile"),
+    ("GET", r"/api/meta"), ("GET", r"/api/holidays"),
+    ("GET", r"/api/me/notification-settings"), ("PUT", r"/api/me/notification-settings"),
+    ("GET", r"/api/notifications"), ("POST", r"/api/notifications/read"),
+    ("DELETE", r"/api/notifications/\d+"),
+    ("GET", r"/api/daily"), ("POST", r"/api/daily/update"),
+    ("GET", r"/api/projects"), ("GET", r"/api/projects/\d+"),
+    ("GET", r"/api/projects/\d+/tasks"), ("GET", r"/api/projects/\d+/issues"),
+    ("GET", r"/api/projects/\d+/bottlenecks"),
+    ("GET", r"/api/gantt"), ("GET", r"/api/meetings"),
+    ("GET", r"/api/tasks"), ("GET", r"/api/tasks/\d+"), ("PATCH", r"/api/tasks/\d+"),
+    ("POST", r"/api/tasks/\d+/comments"), ("POST", r"/api/tasks/\d+/attachments"),
+    ("GET", r"/api/issues"), ("GET", r"/api/issues/\d+"),
+    ("POST", r"/api/issues/\d+/comments"), ("POST", r"/api/issues/\d+/attachments"),
+    ("DELETE", r"/api/comments/\d+"), ("DELETE", r"/api/attachments/\d+"),
+    ("GET", r"/api/attachments/\d+/download"),
+    ("GET", r"/api/search"), ("GET", r"/api/links"), ("GET", r"/api/users"),
+    ("GET", r"/api/todos"), ("POST", r"/api/todos"), ("GET", r"/api/todos/\d+"),
+    ("PATCH", r"/api/todos/\d+"), ("DELETE", r"/api/todos/\d+"),
+    ("POST", r"/api/todos/reorder"),
+    ("GET", r"/api/todo-recurrences"), ("POST", r"/api/todo-recurrences"),
+    ("PATCH", r"/api/todo-recurrences/\d+"), ("DELETE", r"/api/todo-recurrences/\d+"),
+    ("POST", r"/api/todo-recurrences/\d+/run"), ("POST", r"/api/todo-recurrences/\d+/skip"),
+)]
+
+
+def guest_may(method, path):
+    return any(m == method and regex.match(path) for m, regex in GUEST_ALLOWED)
+
+
+def _strip_emails(value, own_id):
+    """社外ユーザーへの返事から、メールアドレスを取り除く（本人のものは残す）。
+
+    メールアドレスを返す場所は、担当者の候補・メンバー一覧・チケットの起票者など
+    あちこちにある。一つずつ塞ぐと漏れるので、社外ユーザーへの返事はここで一括して消す。
+    """
+    if isinstance(value, list):
+        return [_strip_emails(v, own_id) for v in value]
+    if isinstance(value, dict):
+        is_self = value.get("id") == own_id and "email" in value and "name" in value
+        return {k: _strip_emails(v, own_id) for k, v in value.items()
+                if is_self or not (k == "email" or k.endswith("_email"))}
+    return value
+
+
 def dispatch(ctx):
     """ctx carries method, path, query, body, user.  Returns a Response."""
     allowed = set()
@@ -96,7 +148,14 @@ def dispatch(ctx):
         if method != ctx.method:
             allowed.add(method)
             continue
-        return fn(ctx, *[int(g) if g.isdigit() else g for g in match.groups()])
+        guest = auth.is_guest(ctx.user)
+        if guest and not guest_may(method, ctx.path):
+            raise forbidden("社外ユーザーの方は使えない機能です")
+        response = fn(ctx, *[int(g) if g.isdigit() else g for g in match.groups()])
+        if guest and response.content_type.startswith("application/json") and response.body:
+            data = _strip_emails(json.loads(response.body), ctx.user["id"])
+            response.body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        return response
     if allowed:
         raise HttpError(405, "許可されていないメソッドです")
     raise not_found("API エンドポイントが存在しません")
@@ -125,6 +184,8 @@ def public_user(row):
     return {
         "id": row["id"], "name": row["name"], "email": row["email"],
         "role": row["role"], "is_active": bool(row["is_active"]),
+        "organization_id": row.get("organization_id"),
+        "expires_on": row["expires_on"].isoformat() if row.get("expires_on") else None,
         "email_notify": bool(row.get("email_notify", 1)),
         "avatar_color": row.get("avatar_color", "#4f8cff"),
         "ui_theme": row.get("ui_theme", "auto"),
@@ -143,7 +204,35 @@ def project_or_404(user, project_id, minimum="viewer"):
     if auth.ROLE_ORDER[role] < auth.ROLE_ORDER[minimum]:
         raise forbidden("この操作には {} 以上の権限が必要です".format(minimum))
     project["my_role"] = role
+    return hide_project_secrets(project, role)
+
+
+def hide_project_secrets(project, role):
+    """Slack の Webhook URL は、知っていれば誰でもそのチャンネルに投稿できる合い言葉。
+    設定を変えられるプロジェクト管理者（と管理者）にだけ返し、ほかの人には有無だけ渡す。"""
+    url = project.get("slack_webhook_url") or ""
+    project["has_slack_webhook"] = bool(url.strip())
+    if role != "owner":
+        project.pop("slack_webhook_url", None)
     return project
+
+
+# 担当者が、編集の権限が無くても自分で変えてよい項目。協力会社（社外ユーザー）や
+# 「コメント可」の人でも、自分が担当になったタスクの進み具合は自分で書き込める。
+ASSIGNEE_EDITABLE = {"progress", "status", "actual_hours"}
+
+
+def task_for_update(user, task_id, fields):
+    """更新してよいタスク。編集者以上なら何でも、担当者なら ASSIGNEE_EDITABLE だけ。"""
+    task = task_or_404(user, task_id, "viewer")
+    role = auth.project_role(user, task["project_id"])
+    if auth.ROLE_ORDER.get(role, 0) >= auth.ROLE_ORDER["editor"]:
+        return task
+    if task["assignee_id"] == user["id"] and set(fields) <= ASSIGNEE_EDITABLE:
+        return task
+    if task["assignee_id"] == user["id"]:
+        raise forbidden("担当のタスクで変えられるのは、進捗・状態・実績時間だけです")
+    raise forbidden("この操作には editor 以上の権限が必要です")
 
 
 def task_or_404(user, task_id, minimum="viewer"):
@@ -459,13 +548,22 @@ def update_profile(ctx):
 
 @route("GET", r"/api/users")
 def list_users(ctx):
-    me(ctx)
-    include_inactive = as_bool(ctx.query.get("include_inactive"))
-    sql = "SELECT * FROM users"
+    viewer = me(ctx)
+    include_inactive = as_bool(ctx.query.get("include_inactive")) and auth.is_admin(viewer)
+    where, params = [], []
     if not include_inactive:
-        sql += " WHERE is_active=1"
-    sql += " ORDER BY name"
-    users = [public_user(r) for r in db.query(sql)]
+        where.append("is_active=1")
+    if auth.is_guest(viewer):
+        # 社外ユーザーに見えるのは、同じプロジェクトに入っている人だけ
+        where.append("id IN %s")
+        params.append(tuple(co_member_ids(viewer)) or (0,))
+    sql = "SELECT * FROM users" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY name"
+    orgs = organization_names()
+    users = []
+    for row in db.query(sql, params):
+        item = public_user(row)
+        item["organization_name"] = orgs.get(row.get("organization_id"), "")
+        users.append(item)
     if auth.is_admin(ctx.user):
         # 管理画面の一覧に、最後にログインした日時と、この 7 日の失敗回数を添える
         last = {r["user_id"]: r["at"] for r in db.query(
@@ -479,7 +577,67 @@ def list_users(ctx):
             at = last.get(user["id"])
             user["last_login_at"] = at.isoformat(sep=" ", timespec="seconds") if at else None
             user["failed_7d"] = int(failed.get(user["id"], 0))
-    return json_response({"users": users})
+    result = {"users": users}
+    if auth.is_admin(viewer):
+        result["organizations"] = sorted(orgs.values())
+    return json_response(result)
+
+
+def organization_names():
+    return {r["id"]: r["name"] for r in db.query("SELECT id, name FROM organizations")}
+
+
+def organization_id_for(name):
+    """会社名から id。無ければ作る。空なら None（社内）。"""
+    name = str(name or "").strip()[:120]
+    if not name:
+        return None
+    found = db.scalar("SELECT id FROM organizations WHERE name=%s", (name,))
+    if found:
+        return found
+    try:
+        return db.insert("INSERT INTO organizations(name, created_at) VALUES(%s,%s)",
+                         (name, db.now()))
+    except pymysql.err.IntegrityError:
+        return db.scalar("SELECT id FROM organizations WHERE name=%s", (name,))
+
+
+def co_member_ids(user):
+    """user と同じプロジェクトに入っている人（グループ経由・オーナーを含む）。"""
+    ids = auth.visible_project_ids(user)
+    if not ids:
+        return {user["id"]}
+    scope = tuple(ids)
+    people = {user["id"]}
+    for row in db.query(
+            "SELECT principal_id AS uid FROM project_members "
+            "WHERE project_id IN %s AND principal_type='user' "
+            "UNION SELECT gm.user_id FROM project_members pm "
+            "JOIN group_members gm ON gm.group_id = pm.principal_id "
+            "WHERE pm.project_id IN %s AND pm.principal_type='group' "
+            "UNION SELECT owner_id FROM projects WHERE id IN %s AND owner_id IS NOT NULL",
+            (scope, scope, scope)):
+        people.add(row["uid"])
+    return people
+
+
+def account_fields(body, current=None):
+    """アカウントの種類・会社・有効期限。社外ユーザーは会社が要る。"""
+    role = body.get("role", current["role"] if current else "member")
+    if role not in auth.ACCOUNT_ROLES:
+        raise bad_request("アカウントの種類が不正です")
+    if "organization" in body:
+        org_id = organization_id_for(body.get("organization"))
+    else:
+        org_id = current.get("organization_id") if current else None
+    if role == "guest" and not org_id:
+        raise bad_request("社外ユーザーには会社名を入れてください")
+    if "expires_on" in body:
+        expires = as_date(body.get("expires_on"))
+    else:
+        expires = current["expires_on"].isoformat() if current and current.get("expires_on") else None
+    return {"role": role, "organization_id": org_id,
+            "expires_on": None if role == "admin" else expires}
 
 
 LOGIN_PAGE = 100
@@ -526,14 +684,15 @@ def create_user(ctx):
     email = require(ctx.body, "email", "メールアドレス")
     name = require(ctx.body, "name", "氏名")
     password = ctx.body.get("password") or secrets.token_urlsafe(9)
-    role = ctx.body.get("role") if ctx.body.get("role") in ("admin", "member") else "member"
+    account = account_fields(ctx.body)
     if len(password) < 8:
         raise bad_request("パスワードは 8 文字以上にしてください")
     try:
         user_id = db.insert(
-            "INSERT INTO users(email, name, password_hash, role, avatar_color, created_at) "
-            "VALUES(%s,%s,%s,%s,%s,%s)",
-            (email, name, auth.hash_password(password), role,
+            "INSERT INTO users(email, name, password_hash, role, organization_id, expires_on, "
+            "avatar_color, created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
+            (email, name, auth.hash_password(password), account["role"],
+             account["organization_id"], account["expires_on"],
              ctx.body.get("avatar_color", "#4f8cff"), db.now()),
         )
     except pymysql.err.IntegrityError:
@@ -564,11 +723,17 @@ def update_user(ctx, user_id):
         if "email" in ctx.body:
             fields.append("email=%s")
             params.append(require(ctx.body, "email", "メールアドレス"))
-        if ctx.body.get("role") in ("admin", "member"):
-            if target["role"] == "admin" and ctx.body["role"] != "admin" and _last_admin(user_id):
+        if {"role", "organization", "expires_on"} & set(ctx.body):
+            account = account_fields(ctx.body, target)
+            if target["role"] == "admin" and account["role"] != "admin" and _last_admin(user_id):
                 raise bad_request("管理者が 0 人になる操作はできません")
-            fields.append("role=%s")
-            params.append(ctx.body["role"])
+            fields += ["role=%s", "organization_id=%s", "expires_on=%s"]
+            params += [account["role"], account["organization_id"], account["expires_on"]]
+            if account["role"] == "guest" and target["role"] != "guest":
+                # 社外ユーザーに変えたら、今までのプロジェクトの役割も上限まで下げる
+                db.execute("UPDATE project_members SET role=%s WHERE principal_type='user' "
+                           "AND principal_id=%s AND role IN ('owner','editor')",
+                           (auth.GUEST_MAX_ROLE, user_id))
         if "is_active" in ctx.body:
             active = as_bool(ctx.body["is_active"])
             if not active and target["role"] == "admin" and _last_admin(user_id):
@@ -845,6 +1010,9 @@ def list_projects(ctx):
         p["stats"] = stats.get(p["id"], EMPTY_STATS)
         p["my_role"] = roles.get(p["id"])
         p["members"] = members.get(p["id"], [])
+        hide_project_secrets(p, p["my_role"])
+        if auth.is_guest(user):
+            p["stats"] = dict(p["stats"], open_tickets=0)   # チケットはまだ開けていない
     return json_response({"projects": projects})
 
 
@@ -871,7 +1039,9 @@ def get_project(ctx, project_id):
     user = me(ctx)
     project = project_or_404(user, project_id)
     project["members"] = project_member_rows(project_id)
-    project["stats"] = project_stats([project_id]).get(project_id, EMPTY_STATS)
+    project["stats"] = dict(project_stats([project_id]).get(project_id, EMPTY_STATS))
+    if auth.is_guest(user):
+        project["stats"]["open_tickets"] = 0
     return json_response({"project": project,
                           "member_users": project_member_users(project_id)})
 
@@ -902,8 +1072,11 @@ def update_project(ctx, project_id):
         fields.append("slack_events=%s")
         params.append(prefs.format_events(ctx.body["slack_events"], prefs.SLACK_EVENT_KEYS))
     if "owner_id" in ctx.body:
+        owner = as_int(ctx.body["owner_id"])
+        if owner and db.scalar("SELECT role AS r FROM users WHERE id=%s", (owner,)) == "guest":
+            raise bad_request("プロジェクト管理者には社内の人を選んでください")
         fields.append("owner_id=%s")
-        params.append(as_int(ctx.body["owner_id"]))
+        params.append(owner)
     if not fields:
         raise bad_request("更新する項目がありません")
     params.append(project_id)
@@ -941,6 +1114,10 @@ def set_project_members(ctx, project_id):
             raise bad_request("メンバー指定が不正です")
         if role not in auth.PROJECT_ROLES:
             raise bad_request("不正な権限です: {}".format(role))
+        if ptype == "user" and auth.ROLE_ORDER[role] > auth.ROLE_ORDER[auth.GUEST_MAX_ROLE] \
+                and db.scalar("SELECT role AS r FROM users WHERE id=%s", (pid,)) == "guest":
+            # 社外ユーザーはコメント可まで（担当タスクの進捗は別に更新できる）
+            role = auth.GUEST_MAX_ROLE
         rows.append((project_id, ptype, pid, role))
     owner_id = db.scalar("SELECT owner_id FROM projects WHERE id=%s", (project_id,))
     if owner_id and not any(r[1] == "user" and r[2] == owner_id for r in rows):
@@ -1378,7 +1555,7 @@ def get_task(ctx, task_id):
 @route("PATCH", r"/api/tasks/(\d+)")
 def update_task(ctx, task_id):
     user = me(ctx)
-    current = task_or_404(user, task_id, "editor")
+    current = task_for_update(user, task_id, ctx.body)
     body = ctx.body
     fields, params, notes = [], [], []
     if current["is_heading"] and set(body) - HEADING_EDITABLE:
@@ -2129,7 +2306,9 @@ def list_links(ctx):
     """全体で共有しているリンクと、参加しているプロジェクトのリンク。"""
     user = me(ctx)
     ids = auth.visible_project_ids(user)
-    sql = LINK_SELECT + " WHERE l.project_id IS NULL"
+    guest = auth.is_guest(user)
+    # 社外ユーザーには「全体で共有」を見せない（社内の共有フォルダなどが入っているため）
+    sql = LINK_SELECT + (" WHERE 1=0" if guest else " WHERE l.project_id IS NULL")
     params = []
     if ids:
         sql += " OR l.project_id IN %s"
@@ -2145,14 +2324,18 @@ def list_links(ctx):
     return json_response({
         "links": rows,
         # 入力の表記ゆれを減らすため、すでに使われている分類を候補として渡す
-        "categories": [r["category"] for r in db.query(
+        "categories": sorted({r["category"] for r in rows if r["category"]}) if guest
+        else [r["category"] for r in db.query(
             "SELECT DISTINCT category FROM shared_links WHERE category <> '' "
             "ORDER BY category")],
-        # 全体のリンクは誰でも置ける（直せるのは置いた本人と管理者だけ）
-        "can_add_shared": True,
-        "projects": db.query(
+        # 全体のリンクは社内の人なら誰でも置ける（直せるのは置いた本人と管理者だけ）
+        "can_add_shared": not guest,
+        # 置き場所の候補は、リンクを足せる（編集者以上の）プロジェクトだけ
+        "projects": [p for p in (db.query(
             "SELECT id, name, color FROM projects WHERE id IN %s AND archived=0 ORDER BY name",
-            (tuple(ids),)) if ids else [],
+            (tuple(ids),)) if ids else [])
+            if auth.ROLE_ORDER.get(auth.project_roles(user, [p["id"]]).get(p["id"]), 0)
+            >= auth.ROLE_ORDER["editor"]],
     })
 
 
@@ -2162,6 +2345,8 @@ def create_link(ctx):
     project_id = as_int(ctx.body.get("project_id"))
     if project_id:
         project_or_404(user, project_id, "editor")
+    elif auth.is_guest(user):
+        raise forbidden("全体で共有するリンクは、社内の人だけが置けます")
     title = require(ctx.body, "title", "タイトル")
     url = normalize_link_url(ctx.body.get("url"))
     now = db.now()
@@ -3374,7 +3559,10 @@ def daily_update(ctx):
         task_id = as_int(item.get("task_id"))
         if task_id is None:
             continue
-        current = task_or_404(user, task_id, "editor")
+        # 担当者は、編集の権限が無くても進捗・状態・実績とメモ（コメント）は書ける。期限は変えられない
+        asked = {"progress": "progress", "status": "status", "hours": "actual_hours"}
+        wanted = [asked.get(k, k) for k in item if k not in ("task_id", "note")]
+        current = task_for_update(user, task_id, wanted)
         patch = {}
         # 親タスクの進捗は子から集計するので、ここでは変えない（状態や期限は変えられる）
         if "progress" in item and not has_children(task_id):
@@ -3496,7 +3684,7 @@ def meta(ctx):
                        for k, v in sorted(IMPORTANCE_LABEL.items(), reverse=True)],
         "categories": taxonomy.categories(),
         "project_roles": [
-            {"value": "owner", "label": "オーナー（設定変更・削除）"},
+            {"value": "owner", "label": "プロジェクト管理者（設定変更・削除）"},
             {"value": "editor", "label": "編集者（タスク追加・編集）"},
             {"value": "commenter", "label": "コメント可（閲覧＋コメント）"},
             {"value": "viewer", "label": "閲覧のみ"},
@@ -3506,7 +3694,10 @@ def meta(ctx):
                              for v, label, color in ISSUE_CATEGORIES],
         "severity": [{"value": k, "label": v}
                      for k, v in sorted(SEVERITY_LABEL.items(), reverse=True)],
-        "llm_available": llm.available(),
+        # 社外ユーザーには AI（Claude）を使わせない。入力が社外の API に送られるため
+        "llm_available": llm.available() and not auth.is_guest(ctx.user),
+        "account_roles": [{"value": k, "label": auth.ACCOUNT_LABEL[k]} for k in auth.ACCOUNT_ROLES],
+        "guest_max_role": auth.GUEST_MAX_ROLE,
         "tickets": tickets.meta(),
         "slack_events": [{"value": k, "label": label, "help": help_text}
                          for k, label, help_text in prefs.SLACK_EVENTS],
@@ -3985,6 +4176,9 @@ def visible_queue_clause(user, alias="q"):
     """
     if auth.is_admin(user):
         return "", ()
+    if auth.is_guest(user):
+        # 社外ユーザーにはチケットをまだ開けない（第 2 段階で会社ごとに開ける）
+        return "1=0", ()
     ids = auth.visible_project_ids(user)
     if not ids:
         return "{a}.visibility = 'all'".format(a=alias), ()

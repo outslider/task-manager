@@ -93,6 +93,9 @@ def queue_visible_to(user, visibility, project_id):
     ここを使う。別々に書くと、片方だけ直って食い違うため。
     紐づけ先が消えた「メンバーだけ」の窓口は、管理者以外には閉じたままにする。
     """
+    # 社外ユーザーにはチケットをまだ開けない（会社ごとの見え方を作る第 2 段階で開ける）
+    if auth.is_guest(user):
+        return False
     if (visibility or "all") != "project":
         return True
     if auth.is_admin(user):

@@ -88,6 +88,11 @@ export const store = {
     return this.user?.role === 'admin';
   },
 
+  /** 社外ユーザー（参加プロジェクトの中だけを扱う）。 */
+  isGuest() {
+    return this.user?.role === 'guest';
+  },
+
   canEdit(project) {
     const role = typeof project === 'object' ? project?.my_role : this.project(project)?.my_role;
     return role === 'owner' || role === 'editor';

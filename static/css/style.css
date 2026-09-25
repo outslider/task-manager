@@ -1736,3 +1736,14 @@ input[type="color"].input {
   :root:not([data-theme="light"]) .ai-badge { background: #2d2350; color: #c4b1ff; border-color: #43356f; }
 }
 :root[data-theme="dark"] .ai-badge { background: #2d2350; color: #c4b1ff; border-color: #43356f; }
+
+/* 社外ユーザーの印 */
+.badge.guest { background: #fff1e0; color: #b25e09; }
+.guest-badge { margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 11px;
+  background: #fff1e0; color: #b25e09; vertical-align: middle; }
+.hint.expired { color: var(--danger); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .badge.guest,
+  :root:not([data-theme="light"]) .guest-badge { background: #3a2a17; color: #f0b56b; }
+}
+:root[data-theme="dark"] .badge.guest, :root[data-theme="dark"] .guest-badge { background: #3a2a17; color: #f0b56b; }

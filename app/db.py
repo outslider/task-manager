@@ -17,12 +17,21 @@ _local = threading.local()
 
 DDL = [
     """
+    CREATE TABLE IF NOT EXISTS organizations (
+        id         INT AUTO_INCREMENT PRIMARY KEY,
+        name       VARCHAR(120) NOT NULL UNIQUE,         -- 社外ユーザーの会社名
+        created_at DATETIME     NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
     CREATE TABLE IF NOT EXISTS users (
         id            INT AUTO_INCREMENT PRIMARY KEY,
         email         VARCHAR(190) NOT NULL UNIQUE,
         name          VARCHAR(120) NOT NULL,
         password_hash VARCHAR(255) NOT NULL,
-        role          VARCHAR(20)  NOT NULL DEFAULT 'member',
+        role          VARCHAR(20)  NOT NULL DEFAULT 'member',  -- admin | member（社内）| guest（社外）
+        organization_id INT NULL,                        -- 社外ユーザーの会社（社内の人は空）
+        expires_on    DATE NULL,                         -- この日を過ぎたら入れない（契約終了など）
         is_active     TINYINT(1)   NOT NULL DEFAULT 1,
         email_notify  TINYINT(1)   NOT NULL DEFAULT 1,   -- メール通知の親スイッチ
         notify_assigned TINYINT(1) NOT NULL DEFAULT 1,   -- 自分が担当になったとき
@@ -731,6 +740,10 @@ MIGRATIONS = [
      "ALTER TABLE tasks ADD COLUMN category VARCHAR(20) NOT NULL DEFAULT '' AFTER description"),
     ("users", "ui_theme",
      "ALTER TABLE users ADD COLUMN ui_theme VARCHAR(10) NOT NULL DEFAULT 'auto'"),
+    ("users", "organization_id",
+     "ALTER TABLE users ADD COLUMN organization_id INT NULL AFTER role"),
+    ("users", "expires_on",
+     "ALTER TABLE users ADD COLUMN expires_on DATE NULL AFTER organization_id"),
     ("users", "ui_accent",
      "ALTER TABLE users ADD COLUMN ui_accent VARCHAR(20) NOT NULL DEFAULT ''"),
     ("users", "nav_order",
@@ -853,6 +866,9 @@ MIGRATION_FKS = [
     ("todos", "fk_todo_recurrence",
      "ALTER TABLE todos ADD CONSTRAINT fk_todo_recurrence "
      "FOREIGN KEY (recurrence_id) REFERENCES todo_recurrences(id) ON DELETE SET NULL"),
+    ("users", "fk_user_org",
+     "ALTER TABLE users ADD CONSTRAINT fk_user_org "
+     "FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE SET NULL"),
     ("meetings", "fk_meeting_parent",
      "ALTER TABLE meetings ADD CONSTRAINT fk_meeting_parent "
      "FOREIGN KEY (parent_id) REFERENCES tasks(id) ON DELETE SET NULL"),

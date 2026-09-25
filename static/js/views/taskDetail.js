@@ -46,6 +46,8 @@ async function renderDetail(instance, taskId, onChange) {
   } = data;
   const canEdit = role === 'owner' || role === 'editor';
   const canComment = canEdit || role === 'commenter';
+  // 担当者は、編集の権限が無くても進捗・状態・実績は自分で書き込める（協力会社など）
+  const canProgress = canEdit || task.assignee_id === store.user?.id;
   const reload = async () => {
     await renderDetail(instance, taskId, onChange);
     if (onChange) onChange();
@@ -104,7 +106,7 @@ async function renderDetail(instance, taskId, onChange) {
   };
 
   const statusSelect = el('select', {
-    class: 'select', disabled: !canEdit,
+    class: 'select', disabled: !canProgress,
     onChange: (event) => patch({ status: event.target.value }),
   }, ...Object.entries(STATUS_LABEL).map(([value, label]) =>
     el('option', { value, selected: task.status === value ? true : null }, label)));
@@ -122,7 +124,7 @@ async function renderDetail(instance, taskId, onChange) {
           + '子タスクの進捗を更新すると、ここに反映されます。' }))
     : el('input', {
       type: 'range', class: 'range', min: 0, max: 100, step: 5, value: task.progress,
-      disabled: !canEdit, style: { width: '100%' },
+      disabled: !canProgress, style: { width: '100%' },
       onInput: (event) => { progressValue.textContent = `${event.target.value}%`; },
       onChange: (event) => patch({ progress: Number(event.target.value) }),
     });
@@ -146,10 +148,10 @@ async function renderDetail(instance, taskId, onChange) {
   categoryInput.addEventListener('change', (event) =>
     patch({ category: event.target.value }));
 
-  const hoursInput = (key, value) => {
+  const hoursInput = (key, value, allowed = canEdit) => {
     const node = el('input', {
       class: 'input', type: 'number', min: 0, step: 0.5, placeholder: '任意',
-      value: value ?? '', disabled: !canEdit,
+      value: value ?? '', disabled: !allowed,
       onChange: (event) => patch({ [key]: event.target.value === '' ? null : Number(event.target.value) }),
     });
     return node;
@@ -167,7 +169,7 @@ async function renderDetail(instance, taskId, onChange) {
     el('div', {}, el('span', { class: 'label', text: '見積 (h)' }),
       hoursInput('estimate_hours', task.estimate_hours)),
     el('div', {}, el('span', { class: 'label', text: '実績 (h)' }),
-      hoursInput('actual_hours', Number(task.actual_hours) || null))));
+      hoursInput('actual_hours', Number(task.actual_hours) || null, canProgress))));
 
   const overdueLabel = dueLabel(task.due_date, task.status);
   body.append(el('div', { style: { marginTop: '12px' } },
