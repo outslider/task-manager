@@ -216,6 +216,7 @@ DDL = [
         priority     TINYINT      NOT NULL DEFAULT 1,     -- 0 低 .. 3 緊急
         requester_id INT NULL,                            -- 登録した人
         on_behalf_of VARCHAR(120) NOT NULL DEFAULT '',    -- 代理で出したときの依頼元
+        organization_id INT NULL,                         -- どの会社のチケットか（社外ユーザーに見せる範囲）
         assignee_id  INT NULL,                            -- 対応する人
         due_date     DATE NULL,                           -- 回答・対応の期限
         occurred_at  DATETIME NULL,                       -- 障害の発生日時
@@ -297,6 +298,7 @@ DDL = [
         user_id    INT NULL,
         body       TEXT NOT NULL,
         kind       VARCHAR(20) NOT NULL DEFAULT 'comment',   -- comment | system | checkin
+        is_internal TINYINT(1) NOT NULL DEFAULT 0,           -- 社内メモ（社外ユーザーには見せない）
         created_at DATETIME NOT NULL,
         KEY idx_comments_task (task_id),
         KEY idx_comments_issue (issue_id),
@@ -752,6 +754,10 @@ MIGRATIONS = [
      "ALTER TABLE todos ADD COLUMN recurrence_id INT NULL AFTER sort_order"),
     ("meetings", "parent_id",
      "ALTER TABLE meetings ADD COLUMN parent_id INT NULL AFTER project_id"),
+    ("tickets", "organization_id",
+     "ALTER TABLE tickets ADD COLUMN organization_id INT NULL AFTER on_behalf_of"),
+    ("comments", "is_internal",
+     "ALTER TABLE comments ADD COLUMN is_internal TINYINT(1) NOT NULL DEFAULT 0 AFTER kind"),
     ("meetings", "dates",
      "ALTER TABLE meetings ADD COLUMN dates TEXT NULL AFTER nth_weekday"),
     ("ticket_queues", "visibility",
@@ -828,6 +834,8 @@ MIGRATION_INDEXES = [
      "ALTER TABLE tickets ADD KEY idx_tickets_resolved (resolved_at)"),
     ("todos", "idx_todos_recurrence",
      "ALTER TABLE todos ADD KEY idx_todos_recurrence (recurrence_id)"),
+    ("tickets", "idx_tickets_org",
+     "ALTER TABLE tickets ADD KEY idx_tickets_org (organization_id)"),
     ("meetings", "idx_meeting_parent",
      "ALTER TABLE meetings ADD KEY idx_meeting_parent (parent_id)"),
 ]
@@ -866,6 +874,9 @@ MIGRATION_FKS = [
     ("todos", "fk_todo_recurrence",
      "ALTER TABLE todos ADD CONSTRAINT fk_todo_recurrence "
      "FOREIGN KEY (recurrence_id) REFERENCES todo_recurrences(id) ON DELETE SET NULL"),
+    ("tickets", "fk_ticket_org",
+     "ALTER TABLE tickets ADD CONSTRAINT fk_ticket_org "
+     "FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE SET NULL"),
     ("users", "fk_user_org",
      "ALTER TABLE users ADD CONSTRAINT fk_user_org "
      "FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE SET NULL"),

@@ -120,7 +120,7 @@ function navItem(item, active) {
  * あとから増えた項目は末尾に回す（設定を消さずに新機能を足せるように）。
  */
 // 社外ユーザーには出さないメニュー（サーバー側でも閉じている）
-const GUEST_HIDDEN = new Set(['tickets', 'trash']);
+const GUEST_HIDDEN = new Set(['trash']);
 
 export function orderedNav() {
   const wanted = store.user?.nav_order || [];

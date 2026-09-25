@@ -17,12 +17,18 @@ export async function openTicketForm({ ticket = null, queues = null } = {}) {
   const list = queues || (await api.get('/api/ticket-queues')).queues;
   const open = list.filter((q) => q.is_active || q.id === ticket?.queue_id);
   if (!open.length) {
-    toast('受付中の窓口がありません。管理画面で窓口を追加してください', 'error');
+    toast(store.isGuest()
+      ? '起票できる窓口がありません。社内の担当者にお問い合わせください'
+      : '受付中の窓口がありません。管理画面で窓口を追加してください', 'error');
     return null;
   }
 
   const editing = Boolean(ticket);
   const f = {};
+  // 社外ユーザーの起票は、窓口・種別・分類・件名・内容だけ（担当や期限は社内が決める）
+  const guest = store.isGuest();
+  const organizations = guest ? [] : await api.get('/api/organizations')
+    .then((r) => r.organizations).catch(() => []);
 
   return openModal({
     title: editing ? `チケット #${ticket.id} を編集` : 'チケットを起票',
@@ -79,6 +85,10 @@ export async function openTicketForm({ ticket = null, queues = null } = {}) {
         class: 'input', type: 'number', step: '0.5', min: '0', placeholder: '例）1.5',
       });
       f.spent.value = ticket?.spent_hours ?? '';
+      // どの会社のチケットか。選ぶとその会社の社外ユーザーにも見える
+      f.org = el('select', { class: 'select' },
+        option('', '社内だけ（社外には見せない）', !ticket?.organization_id),
+        ...organizations.map((o) => option(o.id, o.name, o.id === ticket?.organization_id)));
 
       const occurredField = el('div', { class: 'field' },
         el('label', { text: '発生日時' }), f.occurred,
@@ -102,10 +112,16 @@ export async function openTicketForm({ ticket = null, queues = null } = {}) {
           categoryField),
         el('div', { class: 'field' }, el('label', { text: '件名 *' }), f.title),
         el('div', { class: 'field' }, el('label', { text: '内容' }), f.body),
-        el('div', { class: 'row' },
+        guest ? el('div', { class: 'hint',
+          text: '起票すると、社内の担当者と、同じ会社の方に見えます。対応の状況はこのチケットで確認できます。' })
+          : null,
+        guest ? null : el('div', { class: 'row' },
           el('div', { class: 'field' }, el('label', { text: '依頼元' }), f.onBehalf),
-          el('div', { class: 'field' }, el('label', { text: '優先度' }), f.priority)),
-        el('div', { class: 'row' },
+          el('div', { class: 'field' }, el('label', { text: '優先度' }), f.priority),
+          organizations.length
+            ? el('div', { class: 'field' }, el('label', { text: '会社（社外に見せる）' }), f.org)
+            : null),
+        guest ? null : el('div', { class: 'row' },
           el('div', { class: 'field' }, el('label', { text: '担当' }), f.assignee),
           el('div', { class: 'field' }, el('label', { text: '期限' }), f.due),
           occurredField,
@@ -133,6 +149,9 @@ export async function openTicketForm({ ticket = null, queues = null } = {}) {
             category_id: f.category && f.category.value ? Number(f.category.value) : null,
             spent_hours: f.spent.value === '' ? null : Number(f.spent.value),
           };
+          if (!guest && organizations.length) {
+            payload.organization_id = f.org.value ? Number(f.org.value) : null;
+          }
           const button = event.currentTarget;
           button.disabled = true;
           try {

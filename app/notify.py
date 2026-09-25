@@ -31,7 +31,8 @@ def may_receive(user_id, task_id=None, issue_id=None, ticket_id=None):
     """
     if not (task_id or issue_id or ticket_id):
         return True
-    user = db.query_one("SELECT id, role, is_active FROM users WHERE id=%s", (user_id,))
+    user = db.query_one("SELECT id, role, is_active, organization_id FROM users WHERE id=%s",
+                        (user_id,))
     if not user or not user["is_active"]:
         return False
     if auth.is_admin(user):
@@ -44,10 +45,10 @@ def may_receive(user_id, task_id=None, issue_id=None, ticket_id=None):
         return bool(project_id) and auth.has_project_access(user, project_id)
     from . import tickets          # tickets は auth を読むので、ここで遅延読み込み
     queue = db.query_one(
-        "SELECT q.visibility, q.project_id FROM tickets t "
+        "SELECT q.visibility, q.project_id, t.organization_id FROM tickets t "
         "JOIN ticket_queues q ON q.id = t.queue_id WHERE t.id=%s", (ticket_id,))
-    return bool(queue) and tickets.queue_visible_to(
-        user, queue["visibility"], queue["project_id"])
+    return bool(queue) and tickets.ticket_visible_to(
+        user, queue["visibility"], queue["project_id"], queue["organization_id"])
 
 
 def create(user_id, ntype, title, body="", task_id=None, dedupe_key=None, email=True,

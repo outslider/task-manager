@@ -107,7 +107,7 @@ class TestGuestSees(GuestTestCase):
         self.assertEqual(self.g.get("/api/projects/{}/tasks".format(self.secret["id"]))[0], 403)
 
     def test_closed_features(self):
-        for method, path in (("GET", "/api/tickets"), ("GET", "/api/ticket-queues"),
+        for method, path in (("GET", "/api/tickets/stats"), ("POST", "/api/ticket-queues"),
                              ("GET", "/api/templates"), ("GET", "/api/trash"),
                              ("GET", "/api/workload"), ("GET", "/api/groups"),
                              ("POST", "/api/nl/parse"), ("POST", "/api/projects"),
@@ -151,7 +151,7 @@ class TestGuestSees(GuestTestCase):
         status, queue = self.admin.post("/api/ticket-queues", {"name": "全員の窓口{}".format(
             uuid.uuid4().hex[:4])})
         self.admin.post("/api/tickets", {"queue_id": queue["queue"]["id"], "title": "社内の相談ZZQ"})
-        self.assertNotIn("社内の相談ZZQ", json.dumps(self.g.get("/api/search?q=ZZQ")[1],
+        self.assertNotIn("社内の相談ZZQ", json.dumps(self.g.get("/api/search?q=ZZQ")[1]["groups"],
                                                 ensure_ascii=False))
         daily = self.g.get("/api/daily")[1]
         self.assertEqual(daily.get("my_tickets", []), [])
@@ -220,3 +220,153 @@ class TestProjectSecrets(GuestTestCase):
         self.assertEqual(project["slack_webhook_url"], hook)
         mine = self.g.get("/api/projects/{}".format(self.project["id"]))[1]["project"]
         self.assertTrue(mine["has_slack_webhook"])
+
+
+class TestGuestTickets(GuestTestCase):
+    """第 2 段階：社外ユーザーは参加プロジェクトの窓口に起票でき、自分の会社のチケットだけ見える。"""
+
+    def setUp(self):
+        super().setUp()
+        status, data = self.admin.post("/api/ticket-queues", {
+            "name": "PJ窓口{}".format(uuid.uuid4().hex[:4]), "project_id": self.project["id"]})
+        self.assertEqual(status, 201, data)
+        self.queue = data["queue"]
+        status, data = self.admin.post("/api/ticket-queues", {
+            "name": "社内窓口{}".format(uuid.uuid4().hex[:4])})
+        self.inside_queue = data["queue"]
+        self.partner, partner_email = self.make_guest("別会社の人", org="B社")
+        self.join(self.project, self.partner, "commenter")
+        self.b = self.client_for(partner_email, "guestpassword")
+        self.org_a = db.scalar("SELECT id FROM organizations WHERE name='A社'")
+
+    def guest_ticket(self, client=None, title="画面が開きません", **extra):
+        body = {"queue_id": self.queue["id"], "title": title, "body": "詳しくは…"}
+        body.update(extra)
+        status, data = (client or self.g).post("/api/tickets", body)
+        self.assertEqual(status, 201, data)
+        return data["ticket"]
+
+    def test_queues_offered_to_a_guest(self):
+        queues = self.g.get("/api/ticket-queues")[1]["queues"]
+        self.assertEqual([q["id"] for q in queues], [self.queue["id"]])
+        # 社内だけの窓口には起票できない
+        status, _ = self.g.post("/api/tickets", {"queue_id": self.inside_queue["id"], "title": "x"})
+        self.assertEqual(status, 404)
+
+    def test_a_guest_ticket_belongs_to_the_company(self):
+        me_id = self.guest["id"]
+        ticket = self.guest_ticket(assignee_id=me_id, status="done", priority=3,
+                                   due_date="2026-12-01", spent_hours=5)
+        self.assertEqual(ticket["organization_id"], self.org_a)
+        self.assertEqual(ticket["organization_name"], "A社")
+        # 担当・状態・優先度・期限・工数は社内が決める
+        self.assertEqual((ticket["assignee_id"], ticket["status"], ticket["priority"],
+                          ticket["due_date"]), (None, "new", 1, None))
+
+    def test_other_companies_cannot_see_it(self):
+        ticket = self.guest_ticket(title="A社の問い合わせQQX")
+        url = "/api/tickets/{}".format(ticket["id"])
+        self.assertEqual(self.b.get(url)[0], 404)
+        self.assertNotIn(ticket["id"], [t["id"] for t in self.b.get("/api/tickets")[1]["tickets"]])
+        self.assertNotIn("QQX", json.dumps(self.b.get("/api/search?q=QQX")[1]["groups"], ensure_ascii=False))
+        self.assertIn("QQX", json.dumps(self.g.get("/api/search?q=QQX")[1]["groups"], ensure_ascii=False))
+        # 件数にも、ほかの会社の分を混ぜない
+        queue = next(q for q in self.b.get("/api/ticket-queues")[1]["queues"])
+        self.assertEqual(queue["open_count"], 0)
+        project = next(p for p in self.b.get("/api/projects")[1]["projects"])
+        self.assertEqual(project["stats"]["open_tickets"], 0)
+        project = next(p for p in self.g.get("/api/projects")[1]["projects"])
+        self.assertEqual(project["stats"]["open_tickets"], 1)
+        # 社内の人には見える
+        self.assertEqual(self.admin.get(url)[0], 200)
+
+    def test_internal_memo_stays_inside(self):
+        ticket = self.guest_ticket()
+        url = "/api/tickets/{}".format(ticket["id"])
+        before = db.scalar("SELECT COUNT(*) AS c FROM notifications WHERE user_id=%s",
+                           (self.guest["id"],))
+        status, data = self.admin.post(url + "/comments", {"body": "社内だけの相談MEMOX",
+                                                           "internal": True})
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["comment"]["is_internal"], 1)
+        self.assertEqual(db.scalar("SELECT COUNT(*) AS c FROM notifications WHERE user_id=%s",
+                                   (self.guest["id"],)), before)
+        texts = [c["body"] for c in self.g.get(url)[1]["comments"]]
+        self.assertNotIn("社内だけの相談MEMOX", texts)
+        # 件数にも数えない（あることも伝えない）
+        self.assertEqual(self.g.get(url)[1]["ticket"]["comment_count"], 0)
+        listed = next(t for t in self.g.get("/api/tickets")[1]["tickets"] if t["id"] == ticket["id"])
+        self.assertEqual(listed["comment_count"], 0)
+        self.assertEqual(self.admin.get(url)[1]["ticket"]["comment_count"], 1)
+        self.assertNotIn("MEMOX", json.dumps(self.g.get("/api/search?q=MEMOX")[1]["groups"], ensure_ascii=False))
+        self.assertIn("社内だけの相談MEMOX", [c["body"] for c in self.admin.get(url)[1]["comments"]])
+        # ふつうのコメントは届き、見える
+        self.admin.post(url + "/comments", {"body": "お問い合わせありがとうございます"})
+        self.assertGreater(db.scalar("SELECT COUNT(*) AS c FROM notifications WHERE user_id=%s",
+                                     (self.guest["id"],)), before)
+        self.assertIn("お問い合わせありがとうございます",
+                      [c["body"] for c in self.g.get(url)[1]["comments"]])
+        # 社外ユーザーは社内メモを書けない（印を付けても普通のコメントになる）
+        status, data = self.g.post(url + "/comments", {"body": "追記です", "internal": True})
+        self.assertEqual(data["comment"]["is_internal"], 0)
+
+    def test_what_a_guest_cannot_do_with_tickets(self):
+        ticket = self.guest_ticket()
+        url = "/api/tickets/{}".format(ticket["id"])
+        for method, path in (("PATCH", url), ("DELETE", url), ("POST", url + "/task"),
+                             ("POST", url + "/issue"), ("PUT", url + "/tasks"),
+                             ("GET", "/api/tickets/stats"), ("POST", "/api/tickets/import")):
+            status, data = self.g.request(method, path, {} if method != "GET" else None)
+            self.assertEqual(status, 403, (method, path, data))
+        self.assertFalse(self.g.get(url)[1]["can_delete"])
+
+    def test_internal_staff_can_share_a_ticket_with_a_company(self):
+        status, data = self.admin.post("/api/tickets", {
+            "queue_id": self.queue["id"], "title": "電話で受けた件", "organization_id": self.org_a,
+            "spent_hours": 2})
+        self.assertEqual(status, 201, data)
+        url = "/api/tickets/{}".format(data["ticket"]["id"])
+        seen = self.g.get(url)[1]
+        self.assertEqual(seen["ticket"]["title"], "電話で受けた件")
+        self.assertIsNone(seen["ticket"]["spent_hours"])      # 社内の工数は見せない
+        self.assertEqual(self.b.get(url)[0], 404)
+        # 会社を付け替えると、見える相手も変わる
+        org_b = db.scalar("SELECT id FROM organizations WHERE name='B社'")
+        self.admin.patch(url, {"organization_id": org_b})
+        self.assertEqual(self.g.get(url)[0], 404)
+        self.assertEqual(self.b.get(url)[0], 200)
+        orgs = [o["name"] for o in self.admin.get("/api/organizations")[1]["organizations"]]
+        self.assertIn("A社", orgs)
+        self.assertEqual(self.g.get("/api/organizations")[0], 403)
+
+    def test_guest_cannot_be_assigned_and_untied_queues_stay_closed(self):
+        ticket = self.guest_ticket()
+        status, _ = self.admin.patch("/api/tickets/{}".format(ticket["id"]),
+                                     {"assignee_id": self.guest["id"]})
+        self.assertEqual(status, 400)
+        # プロジェクトにひもづかない窓口のチケットは、会社が同じでも見えない
+        status, data = self.admin.post("/api/tickets", {
+            "queue_id": self.inside_queue["id"], "title": "社内窓口の件", "organization_id": self.org_a})
+        self.assertEqual(self.g.get("/api/tickets/{}".format(data["ticket"]["id"]))[0], 404)
+
+    def test_guest_can_comment_on_own_company_ticket(self):
+        colleague, email = self.make_guest("同じ会社の人", org="A社")
+        self.join(self.project, colleague, "viewer")
+        ticket = self.guest_ticket()
+        other = self.client_for(email, "guestpassword")
+        status, data = other.post("/api/tickets/{}/comments".format(ticket["id"]), {"body": "私も困っています"})
+        self.assertEqual(status, 201, data)
+
+    def test_guest_can_only_remove_own_attachments(self):
+        ticket = self.guest_ticket()
+        url = "/api/tickets/{}/attachments".format(ticket["id"])
+        status, data = self.admin.post(url, {"kind": "link", "url": "https://intra.example/x",
+                                             "name": "社内の資料"})
+        self.assertEqual(status, 201, data)
+        staff_att = (data.get("attachments") or [data.get("attachment")])[0]["id"]
+        status, data = self.g.post(url, {"kind": "link", "url": "https://partner.example/y",
+                                         "name": "先方の資料"})
+        self.assertEqual(status, 201, data)
+        own_att = (data.get("attachments") or [data.get("attachment")])[0]["id"]
+        self.assertEqual(self.g.delete("/api/attachments/{}".format(staff_att))[0], 403)
+        self.assertEqual(self.g.delete("/api/attachments/{}".format(own_att))[0], 200)

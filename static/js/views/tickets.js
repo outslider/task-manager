@@ -33,8 +33,9 @@ export async function render(container, route) {
   const kindLabel = Object.fromEntries(meta.kinds.map((k) => [k.value, k]));
   const statusLabel = Object.fromEntries(meta.statuses.map((s) => [s.value, s]));
 
+  const guest = store.isGuest();
   setHeader('チケット', [
-    el('button', {
+    guest ? null : el('button', {
       class: 'btn', title: 'CSV や Excel からまとめて登録します',
       onClick: async () => {
         const { openTicketImport } = await import('./importTickets.js');
@@ -73,10 +74,12 @@ export async function render(container, route) {
     ['', '種別: すべて'], ...meta.kinds.map((k) => [k.value, `${k.icon} ${k.label}`]),
   ], state.kind, (value) => { state.kind = value; load(); });
 
-  const scopeSelect = select([
-    ['', 'すべての担当'], ['mine', '自分が担当'], ['raised', '自分が出した'],
-    ['unassigned', '担当が未定'],
-  ], state.scope, (value) => { state.scope = value; load(); });
+  // 社外ユーザーに見えるのは自分の会社のチケットだけなので、担当での絞り込みは要らない
+  const scopeSelect = select(guest
+    ? [['', '会社のチケットすべて'], ['raised', '自分が出した']]
+    : [['', 'すべての担当'], ['mine', '自分が担当'], ['raised', '自分が出した'],
+      ['unassigned', '担当が未定']],
+  state.scope, (value) => { state.scope = value; load(); });
 
   // 分類は窓口ごとなので、窓口を選んでいるときだけ出す
   const categoryHost = el('span', {});
@@ -224,7 +227,7 @@ export async function render(container, route) {
       turnaround !== null && turnaround !== undefined
         ? el('span', { class: 'hint', text: `受けてから片付くまで 平均 ${turnaround} 日` })
         : null,
-      el('button', {
+      guest ? null : el('button', {
         class: 'btn btn-sm', onClick: () => { state.view = 'stats'; drawView(); },
       }, '📊 集計を見る'));
   }

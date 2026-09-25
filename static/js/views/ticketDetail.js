@@ -44,6 +44,8 @@ async function renderDetail(instance, ticketId, onChange) {
   }
   const { ticket, tasks, issues, comments, attachments } = data;
   const meta = ticketMeta();
+  // 社外ユーザーは、起票・閲覧・コメント・添付まで。状態や担当などは社内が決める
+  const guest = store.isGuest();
   const kind = meta.kinds.find((k) => k.value === ticket.kind) || { icon: '', label: ticket.kind };
   const people = store.users || [];
 
@@ -65,7 +67,7 @@ async function renderDetail(instance, ticketId, onChange) {
         + (ticket.queue_project_name ? ` （${ticket.queue_project_name}）` : '')
         + ` ・ チケット #${ticket.id}`),
       el('h2', { text: ticket.title, style: { whiteSpace: 'normal' } })),
-    el('button', {
+    guest ? null : el('button', {
       class: 'icon-btn', title: '編集',
       onClick: async () => { if (await openTicketForm({ ticket })) reload(); },
     }, '✏️'),
@@ -154,6 +156,24 @@ async function renderDetail(instance, ticketId, onChange) {
       text: `✓ 対応中のタスクが ${ticket.open_task_count} 件あります。` }));
   }
 
+  if (guest) {
+    for (const node of [statusSelect, kindSelect, prioritySelect, assigneeSelect, dueInput,
+      categorySelect].filter(Boolean)) node.disabled = true;
+  }
+  // どの会社のチケットか。選ぶと、その会社の社外ユーザーにも見える（社内の人だけが選べる）
+  const orgSelect = guest ? null : el('select', {
+    class: 'select',
+    onChange: (event) => patch({
+      organization_id: event.target.value ? Number(event.target.value) : null }),
+  }, option('', '社内だけ', !ticket.organization_id),
+  ticket.organization_id
+    ? option(ticket.organization_id, ticket.organization_name || '（会社）', true) : null);
+  if (orgSelect) {
+    api.get('/api/organizations').then((result) => {
+      fill(orgSelect, option('', '社内だけ', !ticket.organization_id),
+        ...result.organizations.map((o) => option(o.id, o.name, o.id === ticket.organization_id)));
+    }).catch(() => { /* 取れなくても今の値は出ている */ });
+  }
   body.append(el('div', { class: 'detail-grid' },
     el('div', {}, el('span', { class: 'label', text: '状態' }), statusSelect),
     el('div', {}, el('span', { class: 'label', text: '種別' }), kindSelect),
@@ -163,7 +183,11 @@ async function renderDetail(instance, ticketId, onChange) {
       : null,
     el('div', {}, el('span', { class: 'label', text: '担当' }), assigneeSelect),
     el('div', {}, el('span', { class: 'label', text: '期限' }), dueInput),
-    el('div', {}, el('span', { class: 'label', text: '対応時間 (h)' }), spentInput)));
+    guest ? null : el('div', {}, el('span', { class: 'label', text: '対応時間 (h)' }), spentInput),
+    orgSelect
+      ? el('div', { title: '選んだ会社の社外ユーザーにも、このチケットが見えるようになります' },
+        el('span', { class: 'label', text: '会社（社外に見せる）' }), orgSelect)
+      : null));
 
   body.append(el('div', { class: 'meta-row' },
     el('span', { class: 'badge', text: `${kind.icon} ${kind.label}` }),
@@ -174,6 +198,10 @@ async function renderDetail(instance, ticketId, onChange) {
       } }, ticket.category_label)
       : null,
     el('span', { class: 'badge', text: `起票: ${ticket.requester_name || '—'}` }),
+    ticket.organization_name
+      ? el('span', { class: 'guest-badge', title: 'この会社の社外ユーザーにも見えます',
+        text: ticket.organization_name })
+      : null,
     ticket.on_behalf_of
       ? el('span', { class: 'badge', text: `依頼元: ${ticket.on_behalf_of}` })
       : null,
@@ -187,20 +215,20 @@ async function renderDetail(instance, ticketId, onChange) {
 
   body.append(sectionTitle('内容'));
   body.append(memoEditor({
-    value: ticket.body, canEdit: true, people,
+    value: ticket.body, canEdit: !guest, people,
     placeholder: '困っていること、してほしいこと…',
     onSave: (value) => patch({ body: value }),
   }));
 
   body.append(sectionTitle('対応結果'));
   body.append(memoEditor({
-    value: ticket.resolution, canEdit: true, people,
+    value: ticket.resolution, canEdit: !guest, people,
     placeholder: '何をして、どう返したか…',
     onSave: (value) => patch({ resolution: value }),
   }));
 
   /* ---- タスクへ渡す ---- */
-  body.append(sectionTitle(`関連タスク (${tasks.length})`,
+  body.append(sectionTitle(`関連タスク (${tasks.length})`, guest ? null :
     el('span', { style: { display: 'flex', gap: '6px' } },
       el('button', { class: 'btn btn-sm btn-primary',
         onClick: () => makeTask(ticket, reload) }, '＋ タスクにする'),
@@ -208,7 +236,8 @@ async function renderDetail(instance, ticketId, onChange) {
         onClick: () => editTaskLinks(ticket, tasks, reload) }, '既存に紐づけ'))));
   if (!tasks.length) {
     body.append(el('div', { class: 'hint',
-      text: '作業が要るものは「タスクにする」でプロジェクトへ渡せます' }));
+      text: guest ? '対応のためのタスクができると、ここに出ます'
+        : '作業が要るものは「タスクにする」でプロジェクトへ渡せます' }));
   } else {
     body.append(...tasks.map((task) => el('div', {
       class: 'att-item', style: { cursor: 'pointer' },
@@ -231,7 +260,7 @@ async function renderDetail(instance, ticketId, onChange) {
   }
 
   /* ---- 課題へ渡す ---- */
-  body.append(sectionTitle(`関連課題 (${issues.length})`,
+  body.append(sectionTitle(`関連課題 (${issues.length})`, guest ? null :
     el('button', { class: 'btn btn-sm',
       onClick: () => makeIssue(ticket, reload) }, '＋ 課題にする')));
   if (issues.length) {
@@ -248,7 +277,8 @@ async function renderDetail(instance, ticketId, onChange) {
   body.append(sectionTitle(`リンク・ファイル (${attachments.length})`,
     el('button', { class: 'btn btn-sm', onClick: () => addLink(ticket, reload) }, '🔗 リンク')));
   body.append(dropzone(ticket, reload));
-  body.append(...attachments.map((att) => attachmentRow(att, reload)));
+  body.append(...attachments.map((att) => attachmentRow(att, reload,
+    !guest || att.uploaded_by === store.user?.id)));
 
   /* ---- やりとり ---- */
   const said = comments.filter((c) => c.kind !== 'system').length;
@@ -260,15 +290,19 @@ async function renderDetail(instance, ticketId, onChange) {
 
   const input = el('textarea', {
     class: 'textarea',
-    placeholder: '対応の経過や回答を記録…（@ でメンバーを呼べます / Ctrl+Enter で送信）',
+    placeholder: guest ? '追加の情報や質問を書く…（Ctrl+Enter で送信）'
+      : '対応の経過や回答を記録…（@ でメンバーを呼べます / Ctrl+Enter で送信）',
     style: { minHeight: '64px' },
   });
+  // 社内メモ：起票した社外の人などには見えないコメント（振り分けの相談などに使う）
+  const internalBox = guest ? null : el('input', { type: 'checkbox' });
   attachMentions(input, () => people);
   const send = async () => {
     const value = input.value.trim();
     if (!value) return;
     try {
-      const result = await api.post(`/api/tickets/${ticket.id}/comments`, { body: value });
+      const result = await api.post(`/api/tickets/${ticket.id}/comments`,
+        { body: value, internal: Boolean(internalBox?.checked) });
       input.value = '';
       if (result.mentioned?.length) {
         toast(`${result.mentioned.join('、')} さんに通知しました`, 'ok');
@@ -280,7 +314,12 @@ async function renderDetail(instance, ticketId, onChange) {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') send();
   });
   body.append(el('div', { style: { marginTop: '12px' } }, input,
-    el('div', { style: { marginTop: '6px', textAlign: 'right' } },
+    el('div', { style: { marginTop: '6px', display: 'flex', alignItems: 'center', gap: '10px',
+      justifyContent: 'flex-end' } },
+      internalBox
+        ? el('label', { class: 'check', title: '社外ユーザーには見えず、通知もしません' },
+          internalBox, el('span', { text: '社内メモ（社外の人には見えません）' }))
+        : null,
       el('button', { class: 'btn btn-primary btn-sm', onClick: send }, '記録する'))));
 
   fill(instance.drawer, head, body);
@@ -462,7 +501,7 @@ async function editTaskLinks(ticket, linked, reload) {
 function commentRow(comment, reload, people) {
   const own = comment.user_id === store.user?.id;
   const canDelete = comment.kind !== 'system' && (own || store.isAdmin());
-  return el('div', { class: `comment ${comment.kind}` },
+  return el('div', { class: `comment ${comment.kind}${comment.is_internal ? ' internal' : ''}` },
     comment.kind === 'system'
       ? el('span', { class: 'avatar sm', style: { background: 'var(--border-strong)' } }, '⟳')
       : avatar({ name: comment.user_name, avatar_color: comment.avatar_color }, 'sm'),
@@ -470,6 +509,9 @@ function commentRow(comment, reload, people) {
       el('div', { class: 'comment-meta' },
         el('strong', { text: comment.user_name || 'システム' }),
         el('span', { text: formatDateTime(comment.created_at) }),
+        comment.is_internal
+          ? el('span', { class: 'internal-badge', title: '社外ユーザーには見えません', text: '社内メモ' })
+          : null,
         canDelete
           ? el('button', {
             class: 'btn btn-ghost btn-sm',
@@ -482,7 +524,7 @@ function commentRow(comment, reload, people) {
       richText(comment.body, people)));
 }
 
-function attachmentRow(att, reload) {
+function attachmentRow(att, reload, canRemove = true) {
   const isFile = att.kind === 'file';
   return el('div', { class: 'att-item' },
     el('span', { text: isFile ? '📎' : '🔗' }),
@@ -491,7 +533,7 @@ function attachmentRow(att, reload) {
       target: '_blank', rel: 'noopener noreferrer', text: att.name,
     }),
     isFile ? el('span', { class: 'size', text: formatBytes(att.size) }) : null,
-    el('button', {
+    canRemove ? el('button', {
       class: 'icon-btn', title: '削除',
       onClick: async () => {
         if (!await confirmDialog(`「${att.name}」を削除しますか？`,
@@ -499,7 +541,7 @@ function attachmentRow(att, reload) {
         await api.del(`/api/attachments/${att.id}`);
         reload();
       },
-    }, '×'));
+    }, '×') : null);
 }
 
 function dropzone(ticket, reload) {
