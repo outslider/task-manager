@@ -92,6 +92,7 @@ def route(method, pattern):
 # 足したときに、社外ユーザーへ黙って開いてしまわないようにするため。
 GUEST_ALLOWED = [(method, re.compile("^" + pattern + "$")) for method, pattern in (
     ("POST", r"/api/auth/login"), ("POST", r"/api/auth/logout"), ("GET", r"/api/auth/me"),
+    ("POST", r"/api/auth/act/stop"),   # 管理者が社外ユーザーとして見ているときに、自分へ戻る
     ("POST", r"/api/auth/password"), ("PATCH", r"/api/auth/profile"),
     ("GET", r"/api/auth/mfa"), ("POST", r"/api/auth/mfa/(setup|enable|disable|recovery-codes)"),
     ("GET", r"/api/auth/logins"),
@@ -128,6 +129,22 @@ def guest_may(method, path):
     return any(m == method and regex.match(path) for m, regex in GUEST_ALLOWED)
 
 
+# 代理表示（管理者が「この人として見る」）で通すもの：読み出しだけ。ただし本人だけのもの
+# （個人 ToDo・ログイン履歴・多要素認証の設定）は、管理者にも見せない
+ACTING_BLOCKED = [re.compile("^" + pattern + "$") for pattern in (
+    r"/api/todos.*", r"/api/todo-recurrences.*", r"/api/auth/logins", r"/api/auth/mfa.*",
+)]
+ACTING_WRITES = [(method, re.compile("^" + pattern + "$")) for method, pattern in (
+    ("POST", r"/api/auth/act/stop"), ("POST", r"/api/auth/logout"),
+)]
+
+
+def acting_may(method, path):
+    if any(m == method and r.match(path) for m, r in ACTING_WRITES):
+        return True
+    return method == "GET" and not any(r.match(path) for r in ACTING_BLOCKED)
+
+
 # 多要素認証が必須なのに未設定の人が使えるのは、設定の画面に要るものだけ
 MFA_SETUP_ALLOWED = [(method, re.compile("^" + pattern + "$")) for method, pattern in (
     ("GET", r"/api/auth/me"), ("POST", r"/api/auth/logout"), ("GET", r"/api/auth/mfa"),
@@ -160,7 +177,9 @@ def dispatch(ctx):
         if method != ctx.method:
             allowed.add(method)
             continue
-        if ctx.user and not ctx.user.get("mfa_on") and mfa.required_for(ctx.user) \
+        if ctx.actor and not acting_may(method, ctx.path):
+            raise HttpError(403, "代理表示中は見るだけです（変更はできません）", {"acting": True})
+        if ctx.user and not ctx.actor and not ctx.user.get("mfa_on") and mfa.required_for(ctx.user) \
                 and not any(m == method and r.match(ctx.path) for m, r in MFA_SETUP_ALLOWED):
             # 必須なのにまだ設定していない人は、設定を済ませるまで他のことはできない
             raise HttpError(403, "多要素認証の設定が必要です", {"mfa_setup_required": True})
@@ -704,8 +723,11 @@ def my_logins(ctx):
 @route("POST", r"/api/auth/logout")
 def logout(ctx):
     if ctx.session_token:
-        if ctx.user:
-            logins.record("logout", ctx.user, "", ctx.ip, ctx.user_agent)
+        if ctx.actor:
+            auth.stop_acting(ctx.session_token, ctx.actor, ctx.user, "", ctx.ip, ctx.user_agent)
+        who = ctx.actor or ctx.user
+        if who:
+            logins.record("logout", who, "", ctx.ip, ctx.user_agent)
         auth.destroy_session(ctx.session_token)
     resp = json_response({"ok": True})
     resp.add_cookie(auth.SESSION_COOKIE, "", max_age=0, secure=ctx.secure_cookie)
@@ -720,17 +742,53 @@ def whoami(ctx):
     }
     if not ctx.user:
         return json_response({"user": None, "ui": ui})
+    acting = None
+    if ctx.actor:
+        acting = {"by": ctx.actor["name"],
+                  "until": ctx.user["_acting_until"].isoformat(sep=" ", timespec="seconds")}
     return json_response({
         "user": own_user(ctx.user),
         "unread": notify.unread_count(ctx.user["id"]),
         "ui": ui,
+        "acting": acting,
     })
+
+
+@route("POST", r"/api/admin/act")
+def start_acting(ctx):
+    """管理者が「この人として見る」（閲覧専用）を始める。30 分で自動的に戻る。
+    管理者アカウント・停止中・期限切れの人は対象にしない。始めたことは相手の履歴にも残る。"""
+    actor = admin_only(ctx)
+    target_id = as_int(ctx.body.get("user_id"))
+    if target_id == actor["id"]:
+        raise bad_request("自分自身は選べません")
+    target = auth._clean(db.query_one(auth._USER_BY, (target_id, db.today()))) if target_id else None
+    if not target:
+        raise bad_request("このユーザーは停止中か有効期限切れのため、代理表示できません")
+    if auth.is_admin(target):
+        raise bad_request("管理者アカウントは代理表示できません")
+    until = auth.start_acting(ctx.session_token, actor, target)
+    logins.record("act_start", target, "", ctx.ip, ctx.user_agent,
+                  label="{}（{} が代理表示）".format(target["name"], actor["name"]))
+    return json_response({"ok": True, "until": until.isoformat(sep=" ", timespec="seconds")})
+
+
+@route("POST", r"/api/auth/act/stop")
+def stop_acting(ctx):
+    if ctx.actor:
+        auth.stop_acting(ctx.session_token, ctx.actor, ctx.user, "", ctx.ip, ctx.user_agent)
+    return json_response({"ok": True})
 
 
 def own_user(row):
     """本人に返す自分の情報。多要素認証の状態も添える。"""
     out = public_user(row)
     out["mfa_enabled"] = bool(row.get("mfa_on"))
+    if row.get("_acting_until"):
+        # 代理表示中は、相手の多要素認証の設定を画面に出さない（設定を促す画面にもしない）
+        out["mfa_enabled"] = False
+        out["mfa_setup_required"] = False
+        return out
     out["mfa_setup_required"] = not out["mfa_enabled"] and mfa.required_for(row)
     return out
 
@@ -2588,7 +2646,7 @@ def search(ctx):
         "SELECT id, name, description, color FROM projects "
         " WHERE id IN %s AND (name LIKE %s OR description LIKE %s) ORDER BY archived, name "
         " LIMIT %s", (scope, like, like, limit))
-    todos = db.query(
+    todos = [] if ctx.actor else db.query(
         "SELECT id, title, due_date, is_done FROM todos "
         " WHERE user_id=%s AND (title LIKE %s OR note LIKE %s) "
         " ORDER BY is_done, (due_date IS NULL), due_date LIMIT %s",
@@ -3866,7 +3924,8 @@ DAILY_LIST = 20
 @route("GET", r"/api/daily")
 def daily(ctx):
     user = me(ctx)
-    recurrence.run_todos(user["id"])
+    if not ctx.actor:   # 代理表示中は、相手の定例 ToDo を作らない（見るだけ）
+        recurrence.run_todos(user["id"])
     buckets = notify.daily_summary_for(user["id"])
     today = db.today()
     # 参加していないプロジェクトのタスクは、担当でも出さない
@@ -3913,11 +3972,13 @@ def daily(ctx):
         issue_params + (DAILY_LIST,))
     totals["issues"] = _daily_total(
         "issues i JOIN projects p ON p.id = i.project_id", issue_where, issue_params, issues)
-    todos = db.query(
+    # 個人 ToDo は本人だけのもの。代理表示中の管理者にも見せない
+    todos = [] if ctx.actor else db.query(
         TODO_SELECT + " WHERE user_id=%s AND is_done=0 "
         "ORDER BY (due_date IS NULL), due_date, sort_order, id LIMIT %s",
         (user["id"], DAILY_LIST))
-    totals["todos"] = _daily_total("todos", "user_id=%s AND is_done=0", (user["id"],), todos)
+    totals["todos"] = 0 if ctx.actor else _daily_total(
+        "todos", "user_id=%s AND is_done=0", (user["id"],), todos)
     # 自分が担当のチケット。期限切れ → 期限の近い順 → 優先度の高い順で並べる。
     # 担当に付いていても、見えない窓口のものは出さない（外れたあとに残らないように）
     seen, seen_params = visible_ticket_clause(user)

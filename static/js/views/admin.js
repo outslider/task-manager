@@ -115,6 +115,8 @@ async function renderUsers(container) {
           el('button', {
             class: 'btn btn-sm', title: 'パスワード再発行・2FA解除・削除',
             onClick: (event) => popupMenu(event.currentTarget, (item) => [
+              user.is_active && user.role !== 'admin' && user.id !== store.user.id
+                ? item('👁 この人として見る（見るだけ）', () => actAs(user)) : null,
               item('パスワードを再発行', () => resetPassword(user)),
               user.mfa_enabled ? item('多要素認証を解除', () => resetMfa(user)) : null,
               item('削除', () => removeUser(user), true),
@@ -204,6 +206,21 @@ async function renderUsers(container) {
       ],
     });
     if (result) load();
+  }
+
+  async function actAs(user) {
+    if (!await confirmDialog(
+      `「${user.name}」さんとして画面を表示します（${user.role === 'guest' ? '社外ユーザー' : '社内ユーザー'}）。\n\n`
+      + '・見るだけです。変更・コメント・起票などはできません\n'
+      + '・本人の個人 ToDo・パスワードや多要素認証の設定は表示しません\n'
+      + '・30 分で自動的に自分の表示に戻ります\n'
+      + '・代理表示したことは、ログイン履歴（本人の履歴にも）に残ります',
+      { okLabel: 'この人として見る' })) return;
+    try {
+      await api.post('/api/admin/act', { user_id: user.id });
+      location.hash = '#/daily';
+      location.reload();
+    } catch (error) { toast(error.message, 'error'); }
   }
 
   async function resetMfa(user) {

@@ -344,6 +344,8 @@ DDL = [
         user_id    INT NOT NULL,
         created_at DATETIME NOT NULL,
         expires_at DATETIME NOT NULL,
+        acting_as    INT NULL,       -- 管理者が「この人として見る」（閲覧専用）をしている相手
+        acting_until DATETIME NULL,  -- 代理表示の期限（過ぎたら自分に戻る）
         KEY idx_sessions_user (user_id),
         CONSTRAINT fk_session_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -779,6 +781,8 @@ def set_setting(key, value):
 
 # Columns added after the first release.  Applied on every start-up.
 MIGRATIONS = [
+    ("sessions", "acting_as", "ALTER TABLE sessions ADD COLUMN acting_as INT NULL"),
+    ("sessions", "acting_until", "ALTER TABLE sessions ADD COLUMN acting_until DATETIME NULL"),
     ("tasks", "category",
      "ALTER TABLE tasks ADD COLUMN category VARCHAR(20) NOT NULL DEFAULT '' AFTER description"),
     ("users", "ui_theme",

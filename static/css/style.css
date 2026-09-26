@@ -2147,3 +2147,24 @@ button.hero-members:hover { background: color-mix(in srgb, var(--proj-ink, #fff)
 .member-create { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .member-create .hint { margin: 0; }
 .input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .04em; }
+
+/* 代理表示中の帯（常に上に出す） */
+.acting-banner {
+  position: sticky; top: 0; z-index: 60; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 16px; font-size: 13px; color: #3b2400;
+  background: repeating-linear-gradient(135deg, #ffd66b 0 14px, #ffcc4d 14px 28px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .12);
+}
+.acting-banner strong { margin-right: 2px; }
+.acting-left { font-weight: 650; font-variant-numeric: tabular-nums; margin-left: auto; }
+.acting-banner .acting-stop { background: #3b2400; color: #fff; border-color: #3b2400; }
+.acting-banner .acting-stop:hover { background: #5a3a00; }
+@media (min-width: 721px) {
+  .acting-banner { height: 40px; padding-top: 0; padding-bottom: 0; flex-wrap: nowrap; white-space: nowrap; overflow: hidden; }
+  :root[data-acting] .sidebar { top: 40px; height: calc(100vh - 40px); }
+  :root[data-acting] .topbar { top: 40px; }
+}
+@media (max-width: 720px) {
+  .acting-banner { position: static; font-size: 12px; padding: 6px 12px; }
+  .acting-left { margin-left: 0; }
+}

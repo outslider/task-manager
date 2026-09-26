@@ -84,12 +84,41 @@ function buildShell() {
 
   clear(root);
   root.append(wrap, backdrop, mobileNav);
+  if (store.acting) root.prepend(actingBanner());
   shell = { sidebar, backdrop, title, topActions, content, bellBadge, mobileNav, progress,
     searchInput };
   import('./views/search.js').then((m) => m.attachSearch(searchInput));
   renderSidebar();
   renderMobileNav();
   store.on(() => { renderSidebar(); renderMobileNav(); updateBell(); tintForRoute(); });
+}
+
+/** 代理表示中の帯。いつ見ても「誰として見ているか」「見るだけ」が分かるように、常に上に出す。 */
+function actingBanner() {
+  document.documentElement.setAttribute('data-acting', '');
+  const left = el('span', { class: 'acting-left' });
+  const until = new Date(store.acting.until.replace(' ', 'T'));
+  const tick = () => {
+    const minutes = Math.max(0, Math.ceil((until - Date.now()) / 60000));
+    left.textContent = `あと ${minutes} 分`;
+    if (minutes <= 0) location.reload();
+  };
+  tick();
+  setInterval(tick, 20000);
+  return el('div', { class: 'acting-banner', role: 'status' },
+    icon('eye', { size: 16 }),
+    el('span', {},
+      el('strong', { text: `${store.user.name} さん` }),
+      el('span', { text: `として表示中（見るだけ・${store.acting.by} さんの代理表示）` })),
+    left,
+    el('button', {
+      class: 'btn btn-sm acting-stop',
+      onClick: async () => {
+        await api.post('/api/auth/act/stop');
+        location.hash = '#/admin/users';
+        location.reload();
+      },
+    }, '自分の表示に戻る'));
 }
 
 /** プロジェクトの画面ではその色で染め、ほかの画面では本人の色に戻す。 */
@@ -144,10 +173,15 @@ function navItem(item, active) {
  */
 // 社外ユーザーには出さないメニュー（サーバー側でも閉じている）
 const GUEST_HIDDEN = new Set(['trash']);
+const ACTING_HIDDEN = new Set(['todos', 'trash']);
+// 代理表示中に開かない画面（本人だけのもの・設定を変える画面）
+const ACTING_CLOSED = new Set(['todos', 'profile', 'trash', 'admin']);
 
 export function orderedNav() {
   const wanted = store.user?.nav_order || [];
-  const nav = store.isGuest() ? NAV.filter((item) => !GUEST_HIDDEN.has(item.id)) : NAV;
+  let nav = store.isGuest() ? NAV.filter((item) => !GUEST_HIDDEN.has(item.id)) : NAV;
+  // 代理表示中は、本人だけのもの（マイ ToDo）を出さない（サーバーでも閉じている）
+  if (store.acting) nav = nav.filter((item) => !ACTING_HIDDEN.has(item.id));
   if (!wanted.length) return nav;
   const byId = new Map(nav.map((item) => [item.id, item]));
   const picked = [];
@@ -404,6 +438,14 @@ async function renderRoute() {
     return;
   }
 
+  if (store.acting && ACTING_CLOSED.has(route.view)) {
+    setHeader('代理表示中');
+    fill(shell.content, el('div', { class: 'card' },
+      el('div', { class: 'empty' }, el('div', { class: 'big', text: '🔒' }),
+        '代理表示中は、この画面を開けません（本人だけの画面・設定を変える画面のため）')));
+    return;
+  }
+
   // プロジェクトで使っていないタブ（社外ユーザーに見せていないタブを含む）を URL で
   // 開いたときは、タスク一覧へ回す。前に開いていたタブを覚えている場合もここに来る
   if (route.projectId && route.view !== 'tasks') {
@@ -515,6 +557,7 @@ async function boot() {
     else if (!store.isGuest()) openQuickAddDialog();
   });
   await renderRoute();
+  if (store.acting) return;   // 代理表示中は、相手の通知を管理者のデスクトップに出さない
   const recoveryLeft = sessionStorage.getItem('tm.recoveryWarn');
   if (recoveryLeft !== null) {
     sessionStorage.removeItem('tm.recoveryWarn');

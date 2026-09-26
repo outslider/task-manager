@@ -53,20 +53,63 @@ def destroy_session(token: str):
     db.execute("DELETE FROM sessions WHERE token=%s", (token,))
 
 
+_USER_BY = (
+    "SELECT u.*, (SELECT m.enabled_at IS NOT NULL FROM user_mfa m WHERE m.user_id = u.id) AS mfa_on "
+    "FROM users u WHERE u.id=%s AND u.is_active = 1 AND (u.expires_on IS NULL OR u.expires_on >= %s)")
+
+ACT_MINUTES = 30   # 代理表示（閲覧専用）を続けられる時間
+
+
 def user_for_token(token: str):
+    """セッションの利用者。管理者が代理表示をしているときは、見ている相手の行を返し、
+    本人（管理者）の行を "_actor" に入れる。"""
     if not token:
         return None
-    row = db.query_one(
-        "SELECT u.*, (SELECT m.enabled_at IS NOT NULL FROM user_mfa m WHERE m.user_id = u.id) "
-        "AS mfa_on FROM sessions s JOIN users u ON u.id = s.user_id "
-        "WHERE s.token=%s AND s.expires_at > %s AND u.is_active = 1 "
-        "AND (u.expires_on IS NULL OR u.expires_on >= %s)",
-        (token, db.now(), db.today()),
-    )
+    session = db.query_one("SELECT user_id, acting_as, acting_until FROM sessions "
+                           "WHERE token=%s AND expires_at > %s", (token, db.now()))
+    if not session:
+        return None
+    row = _clean(db.query_one(_USER_BY, (session["user_id"], db.today())))
+    if not row or not session["acting_as"]:
+        return row
+    target = _clean(db.query_one(_USER_BY, (session["acting_as"], db.today())))
+    if (not is_admin(row) or not target or is_admin(target)
+            or not session["acting_until"] or session["acting_until"] <= db.now()):
+        # 期限切れ・相手が停止された・管理者でなくなった → 自分に戻す
+        stop_acting(token, row, target, reason="expired_act")
+        return row
+    target["_actor"] = row
+    target["_acting_until"] = session["acting_until"]
+    return target
+
+
+def _clean(row):
     if row:
         row.pop("password_hash", None)
         row["mfa_on"] = bool(row.get("mfa_on"))
     return row
+
+
+def start_acting(token, actor, target):
+    until = db.now() + timedelta(minutes=ACT_MINUTES)
+    db.execute("UPDATE sessions SET acting_as=%s, acting_until=%s WHERE token=%s",
+               (target["id"], until, token))
+    return until
+
+
+def stop_acting(token, actor, target, reason="", ip="", user_agent=""):
+    """代理表示を終える。終わったことも履歴に残す。"""
+    from . import logins
+    session = db.query_one("SELECT acting_as FROM sessions WHERE token=%s", (token,))
+    if not session or not session["acting_as"]:
+        return
+    if not db.execute("UPDATE sessions SET acting_as=NULL, acting_until=NULL "
+                      "WHERE token=%s AND acting_as IS NOT NULL", (token,)):
+        return
+    target = target or db.query_one("SELECT id, name FROM users WHERE id=%s", (session["acting_as"],))
+    if target:
+        logins.record("act_end", target, reason, ip, user_agent,
+                      label="{}（{} の代理表示）".format(target["name"], actor["name"]))
 
 
 def purge_expired_sessions():

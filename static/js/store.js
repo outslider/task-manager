@@ -19,6 +19,7 @@ export const store = {
   async loadSession() {
     const data = await api.me();
     this.user = data.user;
+    this.acting = data.acting || null;   // 管理者が「この人として見る」をしているとき
     this.unread = data.unread || 0;
     if (data.ui) this.ui = data.ui;
     return this.user;

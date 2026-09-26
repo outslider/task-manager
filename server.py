@@ -50,6 +50,7 @@ class Context:
         self.session_token = session_token
         self.secure_cookie = SECURE_COOKIE
         self.ip = ""                 # 接続元（ログイン履歴に残す）
+        self.actor = None            # 代理表示をしている管理者
         self.user_agent = ""
 
 
@@ -154,8 +155,10 @@ class Handler(BaseHTTPRequestHandler):
         cookies = parse_cookies(self.headers.get("Cookie"))
         token = cookies.get(auth.SESSION_COOKIE)
         user = auth.user_for_token(token)
+        actor = user.pop("_actor", None) if user else None
         query = {k: v[0] for k, v in parse_qs(raw_query).items()}
         ctx = Context(self.command, path.rstrip("/") or path, query, body, files, user, token)
+        ctx.actor = actor           # 代理表示をしている管理者（していなければ None）
         ctx.ip = self._client_ip()
         ctx.user_agent = self.headers.get("User-Agent", "")[:300]
         return api.dispatch(ctx)
