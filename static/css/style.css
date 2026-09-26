@@ -2144,3 +2144,6 @@ button.hero-members:hover { background: color-mix(in srgb, var(--proj-ink, #fff)
 /* プロジェクトの画面では帯に名前が出るので、上の見出しは狭いときだけ隠す（「新.」のように潰れるため） */
 @media (max-width: 1440px) { :root[data-in-project] .topbar h1 { display: none; } }
 :root[data-in-project] .topbar .topbar-actions { margin-left: auto; }
+.member-create { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.member-create .hint { margin: 0; }
+.input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .04em; }

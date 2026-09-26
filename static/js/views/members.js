@@ -49,7 +49,7 @@ export async function openMembers(projectId) {
   const groups = groupData.groups || [];
   const members = new Map();
   for (const m of project.members) members.set(`${m.principal_type}:${m.id}`, m.role);
-  const before = JSON.stringify([...members.entries()].sort());
+  let before = JSON.stringify([...members.entries()].sort());
 
   // 候補：社内・社外のユーザーとグループ
   const everyone = [
@@ -66,6 +66,11 @@ export async function openMembers(projectId) {
     })),
   ];
   const byKey = new Map(everyone.map((row) => [row.key, row]));
+  const userRow = (u) => ({
+    key: `user:${u.id}`, type: 'user', id: u.id, name: u.name, obj: u, guest: u.role === 'guest',
+    sub: u.role === 'guest' ? `社外ユーザー・${u.organization_name || '会社未設定'}` : (u.email || ''),
+    search: `${u.name} ${u.email || ''} ${u.organization_name || ''}`.toLowerCase(),
+  });
   const isOwnerRow = (row) => row.type === 'user' && row.id === project.owner_id;
 
   const listHost = el('div', { class: 'member-list' });
@@ -159,6 +164,26 @@ export async function openMembers(projectId) {
       el('div', { class: 'member-section-head', style: { marginTop: '18px' } }, el('strong', { text: '＋ メンバーを追加' })),
       search,
       candHost,
+      (store.meta.creatable_account_roles || []).length
+        ? el('div', { class: 'member-create' },
+          el('span', { class: 'hint', text: 'まだアカウントの無い人は' }),
+          el('button', {
+            type: 'button', class: 'btn btn-sm',
+            onClick: async () => {
+              const made = await createAccount(project);
+              if (!made) return;
+              const row = userRow(made.user);
+              everyone.push(row);
+              byKey.set(row.key, row);
+              members.set(row.key, made.project_role);
+              // サーバーではもうメンバーになっているので、「変更あり」には数えない
+              before = JSON.stringify([...members.entries()].sort());
+              store.setUsers([...store.users, made.user]);
+              store.forgetMembers(project.id);
+              draw();
+            },
+          }, '＋ 新しいアカウントを作って追加'))
+        : null,
       el('p', { class: 'hint', style: { marginTop: '12px' },
         text: 'ユーザー個別、またはグループ単位で権限を付けられます。両方に当てはまる人は強い方の権限が効きます'
           + '（個別の設定でグループより下げることはできません）。社外ユーザーは「コメント可」までで、'
@@ -183,5 +208,97 @@ export async function openMembers(projectId) {
         },
       }, '保存'),
     ],
+  });
+}
+
+/** 新しい人のアカウントを作って、このプロジェクトに入れる。作れたら { user, project_role } を返す。 */
+async function createAccount(project) {
+  const kinds = store.meta.creatable_account_roles || [];
+  const kind = el('select', { class: 'select' },
+    ...kinds.map((value) => el('option', { value }, value === 'guest' ? '社外ユーザー（協力会社・お客さま）' : '社内ユーザー')));
+  const name = el('input', { class: 'input', placeholder: '例）山田 太郎', autocomplete: 'off' });
+  const email = el('input', { class: 'input', type: 'email', placeholder: 'taro@example.co.jp', autocomplete: 'off' });
+  const company = el('input', { class: 'input', placeholder: '例）○○株式会社', list: 'member-org-list' });
+  const orgList = el('datalist', { id: 'member-org-list' });
+  const expires = el('input', { class: 'input', type: 'date' });
+  const role = el('select', { class: 'select' });
+  const drawRoles = () => {
+    const guest = kind.value === 'guest';
+    const choices = store.meta.project_roles.filter((r) => r.value !== 'owner'
+      && (!guest || ['commenter', 'viewer'].includes(r.value)));
+    fill(role, ...choices.map((r) => el('option', {
+      value: r.value, selected: r.value === (guest ? 'commenter' : 'editor') ? true : null,
+    }, r.label.split('（')[0])));
+    guestFields.hidden = !guest;
+  };
+  const guestFields = el('div', {},
+    el('div', { class: 'row' },
+      el('div', { class: 'field' }, el('label', { text: '会社名 *' }), company, orgList),
+      el('div', { class: 'field' }, el('label', { text: '有効期限（任意）' }), expires)),
+    el('div', { class: 'hint', style: { marginTop: '-4px', marginBottom: '10px' },
+      text: '社外ユーザーは、参加しているプロジェクトの中だけを見られます。権限は「コメント可」までで、担当になったタスクの進捗は自分で更新できます。' }));
+  kind.addEventListener('change', drawRoles);
+  drawRoles();
+  api.get('/api/organizations').then((data) => fill(orgList,
+    ...(data.organizations || []).map((o) => el('option', { value: o.name })))).catch(() => {});
+
+  const error = el('div', { class: 'login-error', hidden: true });
+  const made = await openModal({
+    title: `新しいアカウントを作って「${project.name}」に追加`,
+    build: (close) => el('form', {
+      onSubmit: (event) => { event.preventDefault(); submit(close); },
+    },
+    error,
+    kinds.length > 1 ? el('div', { class: 'field' }, el('label', { text: '種類' }), kind) : null,
+    el('div', { class: 'field' }, el('label', { text: '氏名 *' }), name),
+    el('div', { class: 'field' }, el('label', { text: 'メールアドレス *（ログインに使います）' }), email),
+    guestFields,
+    el('div', { class: 'field' }, el('label', { text: 'このプロジェクトでの権限' }), role),
+    el('div', { class: 'hint',
+      text: '作ると初期パスワードを一度だけ表示します。本人に安全な方法で伝えてください。'
+        + 'アカウントの編集・停止・削除は管理者が行います。' }),
+    el('button', { type: 'submit', hidden: true })),
+    footer: (close) => [
+      el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
+      el('button', { class: 'btn btn-primary', onClick: () => submit(close) }, '作成して追加'),
+    ],
+  });
+  if (made) await showInitialPassword(made.user.email, made.initial_password);
+  return made;
+
+  async function submit(close) {
+    error.hidden = true;
+    const body = {
+      role: kind.value || kinds[0], name: name.value.trim(), email: email.value.trim(),
+      project_role: role.value,
+    };
+    if (body.role === 'guest') {
+      body.organization = company.value.trim();
+      if (expires.value) body.expires_on = expires.value;
+    }
+    try {
+      close(await api.post(`/api/projects/${project.id}/accounts`, body));
+    } catch (err) {
+      error.textContent = err.message;
+      error.hidden = false;
+    }
+  }
+}
+
+function showInitialPassword(email, password) {
+  const copy = `ログイン: ${location.origin}${location.pathname}\nメールアドレス: ${email}\n初期パスワード: ${password}`;
+  return openModal({
+    title: 'アカウントを作りました',
+    build: () => el('div', {},
+      el('p', { text: 'この画面を閉じると、初期パスワードは二度と表示できません。本人に安全な方法で伝えてください（ログイン後、プロフィール設定で変えられます）。' }),
+      el('div', { class: 'field' }, el('label', { text: 'メールアドレス' }),
+        el('input', { class: 'input', value: email, readonly: true })),
+      el('div', { class: 'field' }, el('label', { text: '初期パスワード' }),
+        el('input', { class: 'input mono', value: password, readonly: true })),
+      el('button', {
+        class: 'btn btn-sm', type: 'button',
+        onClick: () => navigator.clipboard?.writeText(copy).then(() => toast('コピーしました', 'ok')),
+      }, 'ログイン情報をまとめてコピー')),
+    footer: (close) => [el('button', { class: 'btn btn-primary', onClick: () => close(true) }, '控えました')],
   });
 }

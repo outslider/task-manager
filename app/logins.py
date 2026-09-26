@@ -27,10 +27,11 @@ EVENT_LABEL = {
     "mfa_off": "多要素認証の解除",
     "mfa_reset": "多要素認証のリセット",
     "mfa_codes": "予備コードの作り直し",
+    "created": "アカウント作成",
 }
 # ログイン以外の、アカウントの守りに関わる出来事（履歴の「セキュリティ」の絞り込み）
 SECURITY_EVENTS = ("password", "reset", "recovery", "recovered",
-                   "mfa_on", "mfa_off", "mfa_reset", "mfa_codes")
+                   "mfa_on", "mfa_off", "mfa_reset", "mfa_codes", "created")
 REASON_LABEL = {
     "bad_password": "パスワード違い",
     "inactive": "停止中のアカウント",

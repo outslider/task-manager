@@ -640,6 +640,7 @@ DEFAULT_SETTINGS = {
     "work_hours_per_day": "8",
     "app_name": "タスク管理",
     "mfa_required": "off",          # off | admin（管理者だけ必須） | all（全員必須）
+    "owner_account_creation": "all",  # プロジェクト管理者が作れるアカウント：off | guest（社外だけ） | all
 }
 
 

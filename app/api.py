@@ -941,24 +941,74 @@ def list_login_events(ctx):
 @route("POST", r"/api/users")
 def create_user(ctx):
     admin_only(ctx)
-    email = require(ctx.body, "email", "メールアドレス")
-    name = require(ctx.body, "name", "氏名")
+    row, password = _insert_account(ctx, account_fields(ctx.body))
+    return json_response({"user": public_user(row), "initial_password": password}, 201)
+
+
+def _insert_account(ctx, account, project_id=None, project_role=None, exists_hint=""):
+    """アカウントを 1 件作る（プロジェクトを渡せば、そのメンバーにもする）。誰が作ったかを履歴に残す。"""
+    email = require(ctx.body, "email", "メールアドレス").strip()
+    name = require(ctx.body, "name", "氏名").strip()
+    if "@" not in email or len(email) > 190:
+        raise bad_request("メールアドレスの形が正しくありません")
     password = ctx.body.get("password") or secrets.token_urlsafe(9)
-    account = account_fields(ctx.body)
     if len(password) < 8:
         raise bad_request("パスワードは 8 文字以上にしてください")
     try:
-        user_id = db.insert(
-            "INSERT INTO users(email, name, password_hash, role, organization_id, expires_on, "
-            "avatar_color, created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
-            (email, name, auth.hash_password(password), account["role"],
-             account["organization_id"], account["expires_on"],
-             ctx.body.get("avatar_color", "#4f8cff"), db.now()),
-        )
+        with db.transaction():
+            user_id = db.insert(
+                "INSERT INTO users(email, name, password_hash, role, organization_id, expires_on, "
+                "avatar_color, created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
+                (email, name, auth.hash_password(password), account["role"],
+                 account["organization_id"], account["expires_on"],
+                 ctx.body.get("avatar_color", "#4f8cff"), db.now()),
+            )
+            if project_id:
+                db.execute("INSERT INTO project_members(project_id, principal_type, principal_id, role) "
+                           "VALUES(%s,'user',%s,%s)", (project_id, user_id, project_role))
     except pymysql.err.IntegrityError:
-        raise bad_request("このメールアドレスは既に登録されています")
+        raise bad_request("このメールアドレスは既に登録されています" + exists_hint)
     row = db.query_one("SELECT * FROM users WHERE id=%s", (user_id,))
-    return json_response({"user": public_user(row), "initial_password": password}, 201)
+    logins.record("created", row, "", ctx.ip, ctx.user_agent,
+                  label="{}（{} が作成）".format(name, ctx.user["name"]))
+    return row, password
+
+
+ACCOUNT_CREATION_ROLES = {"off": (), "guest": ("guest",), "all": ("member", "guest")}
+
+
+def owner_creatable_roles(user):
+    """この人が作れるアカウントの種類。管理者は何でも、プロジェクト管理者は設定の範囲だけ。"""
+    if auth.is_admin(user):
+        return ("member", "guest", "admin")
+    return ACCOUNT_CREATION_ROLES.get(db.get_setting("owner_account_creation", "all"), ())
+
+
+@route("POST", r"/api/projects/(\d+)/accounts")
+def create_project_account(ctx, project_id):
+    """プロジェクト管理者が、新しい人のアカウントを作って、そのままこのプロジェクトに入れる。
+    管理者アカウントは作れない。作った人は履歴に残る。"""
+    user = me(ctx)
+    project_or_404(user, project_id, "owner")
+    allowed = [r for r in owner_creatable_roles(user) if r != "admin"]
+    role = ctx.body.get("role", "member")
+    if role not in allowed:
+        raise forbidden("この種類のアカウントは作れません（管理者の設定による）" if role != "admin"
+                        else "管理者アカウントは作れません")
+    account = account_fields({k: ctx.body.get(k) for k in ("organization", "expires_on")
+                              if k in ctx.body} | {"role": role})
+    project_role = ctx.body.get("project_role") or ("commenter" if role == "guest" else "editor")
+    if project_role not in auth.PROJECT_ROLES or project_role == "owner":
+        raise bad_request("このプロジェクトでの権限が正しくありません")
+    if role == "guest" and auth.ROLE_ORDER[project_role] > auth.ROLE_ORDER[auth.GUEST_MAX_ROLE]:
+        project_role = auth.GUEST_MAX_ROLE
+    row, password = _insert_account(
+        ctx, account, project_id, project_role,
+        exists_hint="。「＋ メンバーを追加」から探して加えてください")
+    store_user = public_user(row)
+    store_user["organization_name"] = organization_names().get(row.get("organization_id"), "")
+    return json_response({"user": store_user, "initial_password": password,
+                          "project_role": project_role}, 201)
 
 
 @route("PATCH", r"/api/users/(\d+)")
@@ -4027,6 +4077,8 @@ def put_settings(ctx):
             continue
         if key in SECRET_SETTINGS and value == "********":
             continue
+        if key == "owner_account_creation" and value not in ACCOUNT_CREATION_ROLES:
+            raise bad_request("アカウント作成の範囲が正しくありません")
         if key == "mfa_required" and value not in mfa.REQUIRED_LABEL:
             raise bad_request("多要素認証の必須の範囲が正しくありません")
         if key == "slack_events":
@@ -4057,7 +4109,7 @@ def run_digest(ctx):
 
 @route("GET", r"/api/meta")
 def meta(ctx):
-    me(ctx)  # カテゴリ名などは社内情報なので、ログインしていない相手には返さない
+    user = me(ctx)  # カテゴリ名などは社内情報なので、ログインしていない相手には返さない
     return json_response({
         "statuses": taxonomy.statuses(),
         "importance": [{"value": k, "label": v}
@@ -4085,6 +4137,8 @@ def meta(ctx):
         "slack_has_default": bool(db.get_setting("slack_webhook_url", "").strip()),
         "markers": [{"value": v, "char": ch, "label": label} for v, ch, label in MARKERS],
         "project_themes": list(PROJECT_THEMES),
+        "creatable_account_roles": [] if auth.is_guest(user)
+        else [r for r in owner_creatable_roles(user) if r != "admin"],
         "project_colors": list(PROJECT_COLORS),
         "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
         "max_depth": MAX_TASK_DEPTH,

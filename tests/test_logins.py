@@ -105,7 +105,9 @@ class TestLoginHistory(ApiTestCase):
             Client(self.base).post("/api/auth/login", {"email": email, "password": "wrong-pw-x"})
         self.client_for(email)
         mine = self.events(user_id=user["id"])
-        self.assertEqual([e["event"] for e in mine["events"]], ["login", "failed", "failed", "failed"])
+        # いちばん古いのは、管理者がこの人を作ったときの記録
+        self.assertEqual([e["event"] for e in mine["events"]],
+                         ["login", "failed", "failed", "failed", "created"])
         self.assertEqual(mine["summary"]["failed"], 3)
         self.assertEqual(mine["events"][1]["reason_label"], "パスワード違い")
         failed = self.events(user_id=user["id"], kind="failed")
@@ -115,7 +117,7 @@ class TestLoginHistory(ApiTestCase):
         first = self.events(user_id=user["id"])
         last_id = first["events"][1]["id"]
         rest = self.events(user_id=user["id"], before=last_id)
-        self.assertEqual(len(rest["events"]), 2)
+        self.assertEqual([e["event"] for e in rest["events"]], ["failed", "failed", "created"])
         self.assertFalse(rest["has_more"])
 
     def test_user_list_shows_last_login_to_admins_only(self):

@@ -440,6 +440,13 @@ async function renderSettings(container) {
   };
 
   const testTo = el('input', { class: 'input', placeholder: store.user.email });
+  const accountCreationField = () => {
+    const node = el('select', { class: 'select', style: { maxWidth: '300px' } },
+      ...[['all', '社内・社外ユーザーとも作れる'], ['guest', '社外ユーザーだけ作れる'], ['off', '作れない（管理者だけ）']]
+        .map(([value, label]) => el('option', { value, selected: (s.owner_account_creation || 'all') === value ? true : null }, label)));
+    fields.owner_account_creation = () => node.value;
+    return el('div', { class: 'field' }, el('label', { text: 'プロジェクト管理者によるアカウント作成' }), node);
+  };
   const mfaRequiredField = () => {
     const node = el('select', { class: 'select', style: { maxWidth: '260px' } },
       ...[['off', '必須にしない（各自で設定できる）'], ['admin', '管理者だけ必須'], ['all', '全員必須（社外ユーザーも）']]
@@ -549,10 +556,14 @@ async function renderSettings(container) {
     el('div', { class: 'card', style: { marginTop: '14px' } },
       el('div', { class: 'card-head' }, el('h2', {}, 'ログインとセキュリティ')),
       el('div', { class: 'card-body' },
+        accountCreationField(),
+        el('div', { class: 'hint', style: { marginTop: '-6px', marginBottom: '12px' },
+          text: 'プロジェクト管理者は、メンバーの画面から新しい人のアカウントを作り、そのまま自分のプロジェクトに入れられます'
+            + '（管理者アカウントは作れません。だれが作ったかはログイン履歴に残ります）。' }),
         mfaRequiredField(),
         el('div', { class: 'hint',
           text: '必須にすると、まだ設定していない人は次の操作から設定の画面になり、済ませるまで他の画面を使えません。'
-            + 'スマホをなくした人は「ユーザー管理」の「2FA解除」で外せます。' }),
+            + 'スマホをなくした人は「ユーザー管理」の「⋯ > 多要素認証を解除」で外せます。' }),
         el('div', { class: 'hint', style: { marginTop: '6px' },
           text: data.email_ready
             ? 'パスワードを忘れた人には、再設定のリンクをメールで送ります（60 分有効）。'
