@@ -187,6 +187,7 @@ export function orderedNav() {
   let nav = store.isGuest() ? NAV.filter((item) => !GUEST_HIDDEN.has(item.id)) : NAV;
   // 代理表示中は、本人だけのもの（マイ ToDo）を出さない（サーバーでも閉じている）
   if (store.acting) nav = nav.filter((item) => !ACTING_HIDDEN.has(item.id));
+  if (store.navOff?.size) nav = nav.filter((item) => !store.navOff.has(item.id));
   if (!wanted.length) return nav;
   const byId = new Map(nav.map((item) => [item.id, item]));
   const picked = [];
@@ -442,6 +443,12 @@ async function renderRoute() {
     }
     location.hash = `#/p/${detail.issue.project_id}/issues`;
     setTimeout(() => openIssueDetail(route.issueId), 60);
+    return;
+  }
+
+  // 社外ユーザーに見せていない画面（課題・チケット・全体ガント）を URL で開いたら、今日の確認へ
+  if (!route.projectId && store.navOff?.has(route.view)) {
+    location.replace('#/daily');
     return;
   }
 

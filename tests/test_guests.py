@@ -475,3 +475,41 @@ class TestInternalAttachments(GuestTestCase):
         # 社外ユーザーは「社内のみ」にできない
         status, data = self.g.post(url, {"url": "https://partner.example/a", "name": "先方", "internal": True})
         self.assertEqual(data["attachments"][0]["is_internal"], 0)
+
+
+class TestGuestNavigation(ApiTestCase):
+    """参加しているどのプロジェクトでも見せていない画面は、社外ユーザーの左メニューに出さない。"""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project("社外に一部だけ見せるPJ")
+        status, data = self.admin.post("/api/users", {
+            "name": "社外の人", "email": "nav-{}@test.local".format(self.project["id"]), "role": "guest",
+            "organization": "協力会社N", "password": "userpassword"})
+        self.guest = data["user"]
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {"members": [
+            {"principal_type": "user", "principal_id": self.guest["id"], "role": "commenter"}]})
+        self.client = self.client_for(self.guest["email"])
+
+    def off(self):
+        return sorted(self.client.get("/api/auth/me")[1]["nav_off"])
+
+    def tabs(self, *keys):
+        self.admin.patch("/api/projects/{}".format(self.project["id"]), {"guest_tabs": list(keys)})
+
+    def test_only_tasks_shown_hides_the_rest(self):
+        self.tabs("tasks")
+        self.assertEqual(self.off(), ["gantt", "issues", "tickets"])
+
+    def test_opening_tabs_brings_the_menu_back(self):
+        self.tabs("tasks", "issues", "gantt")
+        self.assertEqual(self.off(), ["tickets"])   # 窓口がまだ無い
+        self.admin.post("/api/ticket-queues", {"name": "窓口N{}".format(self.project["id"]),
+                                               "project_id": self.project["id"]})
+        self.assertEqual(self.off(), ["tickets"])   # チケットのタブを見せていない
+        self.tabs("tasks", "issues", "gantt", "tickets")
+        self.assertEqual(self.off(), [])
+
+    def test_insiders_keep_every_menu(self):
+        self.tabs("tasks")
+        self.assertEqual(self.admin.get("/api/auth/me")[1]["nav_off"], [])

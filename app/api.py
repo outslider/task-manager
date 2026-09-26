@@ -751,6 +751,7 @@ def whoami(ctx):
     }
     if not ctx.user:
         return json_response({"user": None, "ui": ui})
+    nav_off = guest_nav_off(ctx.user)
     acting = None
     if ctx.actor:
         acting = {"by": ctx.actor["name"],
@@ -761,7 +762,21 @@ def whoami(ctx):
         "unread": notify.unread_count(ctx.user["id"]),
         "ui": ui,
         "acting": acting,
+        "nav_off": nav_off,
     })
+
+
+def guest_nav_off(user):
+    """社外ユーザーの左メニューから外すもの。参加しているどのプロジェクトでも見せていない画面は出さない
+    （開いても空になるだけで、「何か隠されている」ように見えるため）。社内の人は外さない。"""
+    if not auth.is_guest(user):
+        return []
+    off = [key for key in ("issues", "gantt") if not auth.tab_project_ids(user, key)]
+    seen, params = visible_queue_clause(user)
+    if seen == "1=0" or not db.scalar(
+            "SELECT COUNT(*) AS c FROM ticket_queues q WHERE q.is_active=1 AND " + seen, params, default=0):
+        off.append("tickets")
+    return off
 
 
 @route("POST", r"/api/admin/act")

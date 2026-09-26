@@ -20,6 +20,8 @@ export const store = {
     const data = await api.me();
     this.user = data.user;
     this.acting = data.acting || null;   // 管理者が「この人として見る」をしているとき
+    // 社外ユーザーの左メニューから外す画面（どの参加プロジェクトでも見せていないもの）
+    this.navOff = new Set(data.nav_off || []);
     this.unread = data.unread || 0;
     if (data.ui) this.ui = data.ui;
     return this.user;

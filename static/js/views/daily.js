@@ -85,7 +85,7 @@ export async function render(container) {
     el('div', { class: 'grid daily-stats', style: { marginBottom: '14px' } },
       statCard('期限超過', counts.overdue, counts.overdue ? 'danger' : '', 'overdue'),
       statCard('本日期限', counts.today, counts.today ? 'warn' : '', 'today'),
-      statCard('担当の課題', counts.issues, '', 'issues'),
+      store.navOff?.has('issues') ? null : statCard('担当の課題', counts.issues, '', 'issues'),
       // 社外ユーザーはチケットをまだ使えないので、カードごと出さない
       store.isGuest() ? null : statCard('担当のチケット', counts.tickets, '', 'tickets'),
       statCard('まもなく期限', counts.soon, '', 'soon'),
