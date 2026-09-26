@@ -2,9 +2,13 @@
 import { api } from '../api.js';
 import { defaultNavOrder, navChoices, setHeader } from '../app.js';
 import { store } from '../store.js';
-import { el, fill, toast } from '../util.js';
+import { el, fill, svgEl, toast } from '../util.js';
 import { ACCENT_PRESETS, applyAccent, applyTheme } from '../theme.js';
 import { securityCard } from './security.js';
+import { icon } from '../icons.js';
+
+// スマホ下部のタブに出る数（app.js の MOBILE_NAV_COUNT と同じ）
+const MOBILE_TABS = 4;
 
 export async function render(container) {
   setHeader('プロフィール設定');
@@ -136,67 +140,125 @@ export async function render(container) {
  * 左メニューの並び替え。よく使うものを上に持ってこられるようにする。
  * スマホ下部のタブは、この並びの先頭 4 つを使う。
  */
+/** つまみの印（点 6 つ）。記号の文字はフォントによって出ないので SVG で描く。 */
+function gripIcon() {
+  return svgEl('svg', { width: 12, height: 18, viewBox: '0 0 12 18', 'aria-hidden': 'true' },
+    ...[3, 9].flatMap((x) => [3, 9, 15].map((y) => svgEl('circle', { cx: x, cy: y, r: 1.6, fill: 'currentColor' }))));
+}
+
 function navOrderCard() {
   let items = navChoices();
+  const byId = new Map(items.map((item) => [item.id, item]));
   const listHost = el('div', { class: 'nav-order' });
-  const saveButton = el('button', {
-    class: 'btn btn-primary',
-    onClick: async (event) => {
-      const button = event.currentTarget;
-      button.disabled = true;
+  const status = el('span', { class: 'nav-order-status', 'aria-live': 'polite' });
+  let saveTimer = null;
+
+  // 並べ替えたらすぐ左メニューに映し、少し待ってから保存する（保存ボタンは押さなくてよい）
+  const commit = () => {
+    const ids = items.map((item) => item.id);
+    store.user = { ...store.user, nav_order: ids };
+    store.emit();
+    status.textContent = '保存しています…';
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
       try {
-        const result = await api.patch('/api/auth/profile',
-          { nav_order: items.map((item) => item.id) });
+        const result = await api.patch('/api/auth/profile', { nav_order: ids });
         store.user = result.user;
-        store.emit();
-        toast('並び順を保存しました', 'ok');
-      } catch (error) { toast(error.message, 'error'); }
-      button.disabled = false;
-    },
-  }, '並び順を保存');
+        status.textContent = '✓ 保存しました';
+      } catch (error) {
+        status.textContent = '';
+        toast(error.message, 'error');
+      }
+    }, 500);
+  };
 
   const move = (index, direction) => {
     const to = index + direction;
     if (to < 0 || to >= items.length) return;
     items.splice(to, 0, items.splice(index, 1)[0]);
     draw();
+    commit();
+    listHost.children[to]?.querySelector(direction < 0 ? '.up' : '.down')?.focus();
+  };
+
+  /** つまみを押したまま上下に動かす。マウスでも指でも同じ動き。 */
+  const startDrag = (event, row) => {
+    event.preventDefault();
+    // 行を DOM の中で動かすとポインターの捕捉が外れるので、動きは文書全体で受ける
+    const pointerId = event.pointerId;
+    row.classList.add('dragging');
+    listHost.classList.add('sorting');
+    const onMove = (e) => {
+      if (e.pointerId !== pointerId) return;
+      const others = [...listHost.children].filter((node) => node !== row);
+      const next = others.find((node) => {
+        const rect = node.getBoundingClientRect();
+        return e.clientY < rect.top + rect.height / 2;
+      });
+      if (next) { if (row.nextSibling !== next) listHost.insertBefore(row, next); }
+      else if (listHost.lastChild !== row) listHost.appendChild(row);
+    };
+    const onUp = (e) => {
+      if (e.pointerId !== pointerId) return;
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onUp);
+      const order = [...listHost.children].map((node) => byId.get(node.dataset.id));
+      const changed = order.some((item, i) => item !== items[i]);
+      items = order;
+      draw();
+      if (changed) commit();
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onUp);
   };
 
   function draw() {
-    fill(listHost, ...items.map((item, index) => el('div', { class: 'nav-order-row' },
-      el('span', { class: 'nav-order-no', text: String(index + 1) }),
-      el('span', { class: 'ico', text: item.icon }),
-      el('span', { class: 'grow', text: item.label }),
-      index < 4 ? el('span', { class: 'hint', text: 'スマホ下部' }) : null,
-      el('button', {
-        class: 'icon-btn', title: '上へ', disabled: index === 0 ? true : null,
-        onClick: () => move(index, -1),
-      }, '↑'),
-      el('button', {
-        class: 'icon-btn', title: '下へ',
-        disabled: index === items.length - 1 ? true : null,
-        onClick: () => move(index, 1),
-      }, '↓'))));
+    listHost.classList.remove('sorting');
+    fill(listHost, ...items.map((item, index) => {
+      const row = el('div', {
+        class: `nav-order-row${index < MOBILE_TABS ? ' on-mobile' : ''}${index === MOBILE_TABS - 1 ? ' mobile-last' : ''}`,
+        dataset: { id: item.id },
+      });
+      row.append(
+        el('span', {
+          class: 'nav-order-grip', title: '押したまま上下に動かして並べ替え',
+          onPointerdown: (event) => startDrag(event, row),
+        }, gripIcon()),
+        el('span', { class: 'nav-order-ico' }, item.icon ? icon(item.icon) : null),
+        el('span', { class: 'grow', text: item.label }),
+        el('button', {
+          class: 'icon-btn up', title: '上へ', 'aria-label': `${item.label}を上へ`,
+          disabled: index === 0 ? true : null, onClick: () => move(index, -1),
+        }, '↑'),
+        el('button', {
+          class: 'icon-btn down', title: '下へ', 'aria-label': `${item.label}を下へ`,
+          disabled: index === items.length - 1 ? true : null, onClick: () => move(index, 1),
+        }, '↓'));
+      return row;
+    }));
   }
   draw();
 
   return el('div', { class: 'card', style: { marginTop: '14px' } },
     el('div', { class: 'card-head' },
       el('h2', {}, '左メニューの並び順'),
+      status,
       el('button', {
         class: 'btn btn-sm',
         onClick: () => {
           const order = defaultNavOrder();
           items = [...items].sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
           draw();
+          commit();
         },
       }, '既定の並びに戻す')),
     el('div', { class: 'card-body' },
       el('p', { class: 'page-sub', style: { marginTop: 0 },
-        text: 'よく使うものを上に動かせます。保存すると自分の画面だけに反映されます。'
-          + 'スマホでは、上から 4 つが画面下のタブになります。' }),
-      listHost,
-      el('div', { style: { marginTop: '12px' } }, saveButton)));
+        text: '左のつまみ（点の印）を押したまま上下に動かすか、↑↓ で並べ替えます。動かすとすぐ左メニューに反映され、自動で保存されます'
+          + '（自分の画面だけ）。スマホでは、色の付いた上の 4 つが画面下のタブになります。' }),
+      listHost));
 }
 
 function notificationCard(data) {

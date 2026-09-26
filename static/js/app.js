@@ -95,6 +95,7 @@ function buildShell() {
 /** プロジェクトの画面ではその色で染め、ほかの画面では本人の色に戻す。 */
 function tintForRoute() {
   const id = currentRoute?.projectId;
+  document.documentElement.toggleAttribute('data-in-project', Boolean(id));
   applyProjectTheme(id ? store.project(id) : null, { tint: store.user?.ui_project_tint !== false });
 }
 

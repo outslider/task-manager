@@ -2,7 +2,7 @@
 import { el, svgEl } from '../util.js';
 import { store } from '../store.js';
 import { icon } from '../icons.js';
-import { projectTile } from '../app.js';
+import { projectTile, refreshRoute } from '../app.js';
 import { projectColors } from '../theme.js';
 
 const TABS = [
@@ -67,8 +67,11 @@ function projectHero(project, nav) {
     stats.open_issues ? el('span', { class: 'hero-chip', text: `課題 ${stats.open_issues}` }) : null,
     stats.milestones ? el('span', { class: 'hero-chip', text: `◆ ${stats.milestones}` }) : null,
   ].filter(Boolean);
+  // 「プロジェクトの色で染める」を外した人には、帯も白地にする（札と上端の細い線だけ色を残す）
+  const tinted = store.user?.ui_project_tint !== false;
   return el('div', {
-    class: 'proj-head', dataset: { pattern: project.theme || 'aurora' }, style: projectColors(project.color),
+    class: `proj-head${tinted ? '' : ' neutral'}`, dataset: { pattern: project.theme || 'aurora' },
+    style: projectColors(project.color),
   },
     el('div', { class: 'proj-hero' },
       projectTile(project, 'lg'),
@@ -79,7 +82,8 @@ function projectHero(project, nav) {
           : null),
       el('div', { class: 'proj-hero-stats' },
         chips.length ? el('div', { class: 'hero-chips' }, ...chips) : null,
-        stats.total ? progressRing(stats.done || 0, stats.total) : null)),
+        stats.total ? progressRing(stats.done || 0, stats.total) : null,
+        memberButton(project))),
     nav);
 }
 
@@ -87,4 +91,26 @@ function projectHero(project, nav) {
 export function tabAllowed(projectId, key) {
   const project = store.project(projectId);
   return !project?.tabs || key === 'tasks' || project.tabs.includes(key);
+}
+
+/** 参加している人の顔と人数。プロジェクト管理者には、押すとメンバーの編集が開く。 */
+function memberButton(project) {
+  const people = project.members || [];
+  const owner = project.my_role === 'owner';
+  if (!people.length && !owner) return null;
+  const faces = el('span', { class: 'avatar-stack' },
+    ...people.slice(0, 4).map((u) => el('span', {
+      class: 'avatar sm', style: { background: u.avatar_color || '#98a2b3' }, text: (u.name || '?').slice(0, 1),
+    })));
+  const label = el('span', { text: owner ? `メンバー ${people.length}` : `${people.length} 名` });
+  if (!owner) {
+    return el('span', { class: 'hero-members', title: people.map((u) => u.name).join('、') }, faces, label);
+  }
+  return el('button', {
+    class: 'hero-members', type: 'button', title: 'メンバーの追加・外す・権限の変更',
+    onClick: async () => {
+      const { openMembers } = await import('./members.js');
+      if (await openMembers(project.id)) refreshRoute();
+    },
+  }, faces, label);
 }
