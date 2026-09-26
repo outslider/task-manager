@@ -2,7 +2,8 @@
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store } from '../store.js';
-import { avatar, el, fill, formatDate } from '../util.js';
+import { avatar, el, fill, formatDate, openModal, toast } from '../util.js';
+import { AI_NOTE, aiEnabled, aiMark, engineBadge } from '../ai.js';
 import { iconLabel } from '../icons.js';
 import { projectTabs } from './projectNav.js';
 import { openDecisionDetail, statusBadge } from './decisionDetail.js';
@@ -29,8 +30,88 @@ export async function render(container, route) {
     if (saved) { await reload(); openDecisionDetail(saved.id, { onChange: reload }); }
   };
   setHeader(`${project?.name || ''} — 決定`, [
+    canEdit ? el('button', {
+      class: 'btn', title: '会議メモから、決まったことを読み取って下書きにします',
+      onClick: () => fromMemo(),
+    }, ...iconLabel('note', 'メモから'), aiMark()) : null,
     canEdit ? el('button', { class: 'btn btn-primary', onClick: add }, ...iconLabel('plus', '決定を記録')) : null,
   ]);
+
+  /** 会議メモから決まったことを読み取り、下書きを選んで記録する。AI は「読み取る」を押したときだけ。 */
+  async function fromMemo() {
+    const memo = el('textarea', { class: 'textarea', rows: 10,
+      placeholder: '議事録や会議メモを貼り付けてください。「決定：〜」「〜で進める」「〜は見送る」などを拾います。' });
+    const resultHost = el('div', {});
+    let rows = [];
+    const read = el('button', {
+      class: 'btn btn-primary', type: 'button',
+      onClick: async () => {
+        if (!memo.value.trim()) { toast('メモを貼り付けてください', 'error'); return; }
+        read.disabled = true;
+        read.textContent = '読み取り中…';
+        try {
+          const res = await api.post(`/api/projects/${projectId}/decisions/extract`, { text: memo.value });
+          rows = res.rows.map((r) => ({ ...r, pick: true }));
+          drawResult(res);
+        } catch (error) { toast(error.message, 'error'); }
+        read.disabled = false;
+        read.textContent = '読み取る';
+      },
+    }, '読み取る');
+    const drawResult = (res) => fill(resultHost,
+      el('div', { class: 'memo-result-head' },
+        engineBadge(res.engine),
+        el('span', { class: 'hint', text: rows.length ? `${rows.length} 件の決定らしきものが見つかりました。記録するものを選んでください。` : '決まったことは見つかりませんでした。' })),
+      res.warning ? el('div', { class: 'warn-box', text: res.warning }) : null,
+      ...rows.map((r) => {
+        const box = el('input', { type: 'checkbox', checked: r.pick ? true : null });
+        box.addEventListener('change', () => { r.pick = box.checked; });
+        return el('div', { class: 'memo-decision' },
+          el('label', { class: 'check' }, box, el('strong', { text: r.title })),
+          r.why ? el('div', { class: 'hint', text: `なぜ：${r.why}` }) : null,
+          r.options.length ? el('div', { class: 'hint', text: `案：${r.options.map((o) => `${o.adopted ? '採用' : '却下'}「${o.title}」`).join('、')}` }) : null,
+          r.people_extra.length || r.people.length ? el('div', { class: 'hint', text: `決めた人：${[...r.people.map((id) => store.usersById?.get(id)?.name || ''), ...r.people_extra].filter(Boolean).join('、')}` }) : null,
+          r.source ? el('div', { class: 'memo-source', text: `メモ：${r.source}` }) : null,
+          el('button', {
+            type: 'button', class: 'btn btn-sm', style: { marginTop: '4px' },
+            onClick: async () => {
+              const saved = await openDecisionForm({ projectId, decisions: data.decisions, prefill: { ...r, status: 'decided' } });
+              if (saved) { r.pick = false; box.checked = false; box.disabled = true; await reload(); }
+            },
+          }, '中身を確かめて記録'));
+      }));
+    const done = await openModal({
+      title: 'メモから決定を読み取る',
+      wide: true,
+      build: () => el('div', {},
+        el('div', { class: 'field' }, memo),
+        el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' } },
+          read, aiEnabled() ? el('span', { class: 'hint', text: AI_NOTE }) : el('span', { class: 'hint', text: '決まった言い回しの行を拾う簡易読み取りです（AI は使いません）。' })),
+        resultHost),
+      footer: (close) => [
+        el('button', { class: 'btn', onClick: () => close(false) }, '閉じる'),
+        el('button', {
+          class: 'btn btn-primary',
+          onClick: async () => {
+            const picked = rows.filter((r) => r.pick);
+            if (!picked.length) { toast('記録するものを選んでください', 'error'); return; }
+            try {
+              for (const r of picked) {
+                await api.post(`/api/projects/${projectId}/decisions`, {
+                  title: r.title, what: r.what, why: r.why, status: 'draft',
+                  people: r.people, people_extra: r.people_extra, options: r.options,
+                  premises: r.premises.map((text) => ({ text })),
+                });
+              }
+              toast(`${picked.length} 件を「検討中」で記録しました。中身を確かめて「決定」にしてください`, 'ok');
+              close(true);
+            } catch (error) { toast(error.message, 'error'); }
+          },
+        }, '選んだものを「検討中」で記録'),
+      ],
+    });
+    if (done) reload();
+  }
 
   const search = el('input', { class: 'input', type: 'search', placeholder: '件名・決定内容・理由で探す' });
   search.addEventListener('input', () => { state.q = search.value.trim().toLowerCase(); draw(); });
@@ -118,7 +199,9 @@ export async function render(container, route) {
           ? el('span', { class: 'avatar-stack', title: d.people.map((p) => p.name).join('、') },
             ...d.people.slice(0, 4).map((p) => avatar(p, 'sm')))
           : null,
-        d.people.length ? el('span', { class: 'cell-mut', text: d.people.map((p) => p.name).join('、') }) : null,
+        d.people.length || d.people_extra.length
+          ? el('span', { class: 'cell-mut', text: [...d.people.map((p) => p.name), ...d.people_extra].join('、') })
+          : null,
         d.category ? el('span', { class: 'decision-chip', text: d.category }) : null,
         d.rejected_count ? el('span', { class: 'decision-chip', text: `却下した案 ${d.rejected_count}` }) : null,
         d.broken_count ? el('span', { class: 'decision-chip warn', text: `崩れた前提 ${d.broken_count}` }) : null,

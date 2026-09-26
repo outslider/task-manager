@@ -10,8 +10,10 @@ const SETTLED = ['decided', 'review', 'superseded', 'withdrawn'];
  * @param {object} o projectId, decision（直すとき）, decisions（同じプロジェクトの一覧。置き換えの候補）
  * @returns {Promise<object|null>} 保存した決定
  */
-export async function openDecisionForm({ projectId, decision = null, decisions = [] }) {
+export async function openDecisionForm({ projectId, decision = null, decisions = [], prefill = null }) {
   const editing = Boolean(decision);
+  // 課題・定例会議・メモから書き始めるときの下書き（新しく記録するときだけ）
+  if (!editing && prefill) decision = { ...prefill, id: null };
   const [taskData, issueData] = await Promise.all([
     api.projectTasks(projectId),
     api.get(`/api/projects/${projectId}/issues`).catch(() => ({ issues: [] })),
@@ -36,6 +38,20 @@ export async function openDecisionForm({ projectId, decision = null, decisions =
     (decision?.people || []).map((p) => p.id), {
       placeholder: '決めた人を選ぶ…', emptyText: '（未設定）', exhausted: '選べる人はもういません',
     });
+  const extra = el('input', {
+    class: 'input', placeholder: 'メンバー以外（役員・お客さまなど）：例）山田社長、佐々木取締役',
+    value: (decision?.people_extra || []).join('、'),
+  });
+  let meeting = decision?.meeting_id
+    ? { id: decision.meeting_id, on: decision.meeting_on, title: decision.meeting_title || decision.meeting?.title || '定例会議' }
+    : (decision?.meeting ? { id: decision.meeting.id, on: decision.meeting.on, title: decision.meeting.title } : null);
+  const meetingHost = el('div', {});
+  const drawMeeting = () => fill(meetingHost, meeting
+    ? el('div', { class: 'decision-meeting-pick' },
+      el('span', { text: `📅 ${meeting.title}${meeting.on ? `（${meeting.on.replace(/-/g, '/')} の回）` : ''}` }),
+      el('button', { type: 'button', class: 'btn btn-sm', onClick: () => { meeting = null; drawMeeting(); } }, '外す'))
+    : el('span', { class: 'hint', text: '（なし）定例会議の回の画面から「決定として記録」で書き始めると入ります' }));
+  drawMeeting();
   const tasks = chipPicker((taskData.tasks || []).filter((t) => !t.is_heading),
     decision?.links?.tasks || [], { placeholder: '関連するタスクを選ぶ…', emptyText: '（なし）' });
   const issues = chipPicker((issueData.issues || []).map((i) => ({ id: i.id, title: `#${i.seq} ${i.title}` })),
@@ -50,7 +66,7 @@ export async function openDecisionForm({ projectId, decision = null, decisions =
 
   // 検討した案：案ごとに採用／却下と理由
   const options = (decision?.options || []).map((o) => ({ ...o }));
-  if (!editing) options.push({ title: '', detail: '', adopted: true, reason: '' });
+  if (!editing && !options.length) options.push({ title: '', detail: '', adopted: true, reason: '' });
   const optionHost = el('div', { class: 'decision-edit-list' });
   const drawOptions = () => fill(optionHost, ...options.map((o, i) => {
     const name = el('input', { class: 'input', placeholder: `案 ${i + 1}`, value: o.title });
@@ -72,7 +88,7 @@ export async function openDecisionForm({ projectId, decision = null, decisions =
   drawOptions();
 
   // 前提条件：崩れたら印を付け、見直す日を決められる
-  const premises = (decision?.premises || []).map((p) => ({ ...p }));
+  const premises = (decision?.premises || []).map((p) => (typeof p === 'string' ? { text: p, review_on: null, broken: false } : { ...p }));
   const premiseHost = el('div', { class: 'decision-edit-list' });
   const drawPremises = () => fill(premiseHost, ...premises.map((p, i) => {
     const text = el('input', { class: 'input', placeholder: '例）全社員が SSO のアカウントを持っている', value: p.text });
@@ -108,7 +124,10 @@ export async function openDecisionForm({ projectId, decision = null, decisions =
         el('div', { class: 'field' }, el('label', { text: '分類' }), category, catList)),
       el('div', { class: 'field' }, el('label', { text: '何を決めたか' }), what),
       el('div', { class: 'field' }, el('label', { text: 'なぜ（理由・根拠）' }), why),
-      el('div', { class: 'field' }, el('label', { text: '決めた人' }), people.node),
+      el('div', { class: 'field' }, el('label', { text: '決めた人' }), people.node,
+        el('div', { style: { marginTop: '6px' } }, extra),
+        el('div', { class: 'hint', text: 'メンバー以外の人は名前を「、」で区切って入れます。' })),
+      el('div', { class: 'field' }, el('label', { text: '決めた場' }), meetingHost),
       el('div', { class: 'field' }, el('label', { text: '検討した案（採用・却下）' }), optionHost),
       el('div', { class: 'field' }, el('label', { text: '前提条件' }), premiseHost,
         el('div', { class: 'hint', text: 'この決定が成り立つための前提。崩れたら印を付け、状態を「見直し中」にします。' })),
@@ -134,6 +153,8 @@ export async function openDecisionForm({ projectId, decision = null, decisions =
             title: title.value.trim(), status: status.value, decided_on: decidedOn.value || null,
             category: category.value.trim(), what: what.value, why: why.value,
             people: people.ids(), guest_visible: guestVisible.checked,
+            people_extra: extra.value.split(/[、,，\n]/).map((n) => n.trim()).filter(Boolean),
+            meeting_id: meeting ? meeting.id : null, meeting_on: meeting ? meeting.on : null,
             supersedes_id: supersedes.value ? Number(supersedes.value) : null,
             options: options.filter((o) => o.title.trim()),
             premises: premises.filter((p) => p.text.trim()),

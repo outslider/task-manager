@@ -2028,7 +2028,7 @@ def get_task(ctx, task_id):
     return json_response({
         "task": task, "path": path, "children": children, "comments": comments,
         "attachments": attachments, "deps": deps, "blocking": blocking, "issues": issues,
-        "tickets": linked_tickets,
+        "tickets": linked_tickets, "decisions": linked_decisions(user, "task", task_id),
         "metrics": metrics, "impact": impact, "conflicts": conflicts,
         "members": project_member_users(task["project_id"]),
         "my_role": auth.project_role(user, task["project_id"]),
@@ -4030,6 +4030,21 @@ def daily(ctx):
         issue_params + (DAILY_LIST,))
     totals["issues"] = _daily_total(
         "issues i JOIN projects p ON p.id = i.project_id", issue_where, issue_params, issues)
+    # 見直し日が来た前提（自分が決めた人・記録した人・プロジェクト管理者の決定）
+    mine = [r["id"] for r in db.query(
+        "SELECT DISTINCT d.id FROM decisions d JOIN projects p ON p.id = d.project_id "
+        "LEFT JOIN decision_people dp ON dp.decision_id = d.id "
+        "WHERE d.project_id IN %s AND (dp.user_id=%s OR d.created_by=%s OR p.owner_id=%s)",
+        (visible, user["id"], user["id"], user["id"]))]
+    if auth.is_guest(user):
+        mine = []
+    reviews = {}
+    for row in decisions.due_premises(today, mine):
+        item = reviews.setdefault(row["decision_id"], {
+            "id": row["decision_id"], "seq": row["seq"], "title": row["title"],
+            "project_name": row["project_name"], "project_id": row["project_id"], "premises": []})
+        item["premises"].append({"text": row["text"], "review_on": row["review_on"]})
+    decision_reviews = list(reviews.values())
     # 個人 ToDo は本人だけのもの。代理表示中の管理者にも見せない
     todos = [] if ctx.actor else db.query(
         TODO_SELECT + " WHERE user_id=%s AND is_done=0 "
@@ -4059,6 +4074,7 @@ def daily(ctx):
     return json_response({
         "date": today, "buckets": buckets, "recently_done": recent,
         "stale": stale, "checkin": checkin, "issues": issues, "todos": todos,
+        "decision_reviews": decision_reviews,
         "tickets": my_tickets, "unclaimed_tickets": unclaimed,
         "totals": totals, "list_limit": DAILY_LIST,
         "streak": _checkin_streak(user["id"]),
@@ -4185,6 +4201,19 @@ def decision_or_404(user, decision_id, minimum="viewer"):
     return row, role
 
 
+def linked_decisions(user, kind, target_id):
+    """タスク・課題に結びついた決定（その人に見えるものだけ）。「なぜこうなったか」をたどれるように。"""
+    rows = db.query(
+        "SELECT d.id, d.project_id, d.seq, d.title, d.status, d.guest_visible, d.decided_on "
+        "FROM decisions d JOIN decision_links l ON l.decision_id = d.id "
+        "WHERE l.kind=%s AND l.target_id=%s ORDER BY d.decided_on DESC, d.seq DESC", (kind, target_id))
+    if not rows or not auth.guest_tab_open(user, rows[0]["project_id"], "decisions"):
+        return []
+    if auth.is_guest(user):
+        rows = [r for r in rows if decision_guest_ok(user, r)]
+    return [dict(_decision_ref(r), decided_on=r["decided_on"]) for r in rows]
+
+
 def _decision_ref(row):
     return {"id": row["id"], "seq": row["seq"], "title": row["title"], "status": row["status"],
             "status_label": decisions.STATUS_LABEL.get(row["status"], row["status"])}
@@ -4200,7 +4229,7 @@ def list_decisions(ctx, project_id):
         where.append("d.guest_visible=1 AND d.status<>'draft'")
     rows = db.query(
         "SELECT d.id, d.seq, d.title, d.status, d.what, d.why, d.decided_on, d.category, "
-        "       d.guest_visible, d.supersedes_id, d.version, d.updated_at, "
+        "       d.guest_visible, d.supersedes_id, d.version, d.updated_at, d.people_extra, "
         "       (SELECT COUNT(*) FROM decision_options o WHERE o.decision_id=d.id) AS option_count, "
         "       (SELECT COUNT(*) FROM decision_options o WHERE o.decision_id=d.id AND o.adopted=0) "
         "           AS rejected_count, "
@@ -4220,6 +4249,7 @@ def list_decisions(ctx, project_id):
     by_id = {r["id"]: r for r in rows}
     for row in rows:
         row["people"] = people.get(row["id"], [])
+        row["people_extra"] = decisions.parse_extra(row.pop("people_extra", None))
         row["status_label"] = decisions.STATUS_LABEL.get(row["status"], row["status"])
         row["guest_visible"] = bool(row["guest_visible"])
         older = by_id.get(row["supersedes_id"])
@@ -4269,6 +4299,30 @@ def _decision_input(ctx, project_id, current=None):
         out["people"] = ids
     else:
         out["people"] = [p["id"] for p in cur.get("people", [])]
+    # メンバー以外の決めた人（役員・お客さまなど）は、名前をそのまま残す
+    if "people_extra" in body:
+        raw = body.get("people_extra") or []
+        if isinstance(raw, str):
+            raw = re.split(r"[、,，\n]", raw)
+        names = []
+        for name in raw:
+            name = str(name or "").strip()[:60]
+            if name and name not in names:
+                names.append(name)
+        if len(names) > 20:
+            raise bad_request("メンバー以外の決めた人は 20 人までです")
+        out["people_extra"] = names
+    else:
+        out["people_extra"] = cur.get("people_extra", [])
+    meeting_id = as_int(body["meeting_id"]) if "meeting_id" in body else cur.get("meeting_id")
+    if meeting_id:
+        if db.scalar("SELECT project_id AS p FROM meetings WHERE id=%s", (meeting_id,)) != project_id:
+            raise bad_request("決めた場の会議は、このプロジェクトのものを選んでください")
+        out["meeting_id"] = meeting_id
+        out["meeting_on"] = as_date(body["meeting_on"]) if "meeting_on" in body else (
+            cur["meeting_on"].isoformat() if cur.get("meeting_on") else None)
+    else:
+        out["meeting_id"], out["meeting_on"] = None, None
     if "options" in body:
         options = body.get("options") or []
         if not isinstance(options, list) or len(options) > 30:
@@ -4307,9 +4361,12 @@ def _decision_input(ctx, project_id, current=None):
 def _write_decision(decision_id, data, user_id):
     db.execute(
         "UPDATE decisions SET title=%s, status=%s, what=%s, why=%s, decided_on=%s, category=%s, "
-        "guest_visible=%s, supersedes_id=%s, updated_by=%s, updated_at=%s WHERE id=%s",
+        "guest_visible=%s, supersedes_id=%s, people_extra=%s, meeting_id=%s, meeting_on=%s, "
+        "updated_by=%s, updated_at=%s WHERE id=%s",
         (data["title"], data["status"], data["what"], data["why"], data["decided_on"], data["category"],
-         1 if data["guest_visible"] else 0, data["supersedes_id"], user_id, db.now(), decision_id))
+         1 if data["guest_visible"] else 0, data["supersedes_id"],
+         json.dumps(data["people_extra"], ensure_ascii=False), data["meeting_id"], data["meeting_on"],
+         user_id, db.now(), decision_id))
     db.execute("DELETE FROM decision_people WHERE decision_id=%s", (decision_id,))
     if data["people"]:
         db.executemany("INSERT INTO decision_people(decision_id, user_id) VALUES(%s,%s)",
@@ -4366,7 +4423,32 @@ def create_decision(ctx, project_id):
                                  ctx.body.get("reason") or "", user["id"])
         if data["supersedes_id"] and data["status"] == "decided":
             _supersede(data["supersedes_id"], row, user["id"])
+    if data["status"] == "decided":
+        slack_decision(row, user)
     return json_response({"decision": _decision_out(user, decision_id)}, 201)
+
+
+def slack_decision(row, actor, reason=""):
+    """決定になった・見直し中になったことを Slack に流す（「決定の記録」を選んだときだけ）。"""
+    base = db.get_setting("app_base_url", "").rstrip("/")
+    first = lambda text: (str(text or "").strip().splitlines() or [""])[0][:120]  # noqa: E731
+    people = [p["name"] for p in row.get("people", [])] + list(row.get("people_extra") or [])
+    if row["status"] == "review":
+        text = "🔁 決定を見直し中にしました：D-{} {}".format(row["seq"], row["title"])
+        if reason:
+            text += "\n理由: {}".format(first(reason))
+    else:
+        text = "⚖️ 決定しました：D-{} {}".format(row["seq"], row["title"])
+        if row.get("what"):
+            text += "\n何を: {}".format(first(row["what"]))
+        if row.get("why"):
+            text += "\nなぜ: {}".format(first(row["why"]))
+        if people:
+            text += "\n決めた人: {}".format("、".join(people))
+    text += "\n記録: {}".format(actor["name"])
+    if base:
+        text += "\n{}/#/p/{}/decisions".format(base, row["project_id"])
+    slack.post_async(text, project_id=row["project_id"], event="decision")
 
 
 @route("PATCH", r"/api/decisions/(\d+)")
@@ -4393,6 +4475,8 @@ def update_decision(ctx, decision_id):
         if (data["supersedes_id"] and data["status"] == "decided"
                 and (data["supersedes_id"] != current["supersedes_id"] or current["status"] != "decided")):
             _supersede(data["supersedes_id"], fresh, user["id"])
+    if data["status"] != current["status"] and data["status"] in ("decided", "review"):
+        slack_decision(fresh, user, reason)
     return json_response({"decision": _decision_out(user, decision_id)})
 
 
@@ -4440,6 +4524,56 @@ def get_decision(ctx, decision_id):
                                "ON u.id = d.created_by WHERE d.id=%s", (decision_id,))
         out["created_by_name"] = creator["name"] if creator else ""
     return json_response(out)
+
+
+# 簡易読み取りで「決まったこと」とみなす書き方
+DECISION_LINE = re.compile(r"(決定|決まった|決まり|合意|とする|で進める|を採用|は見送)")
+
+
+def _decisions_by_rule(text):
+    """Claude を使わない読み取り：「決定：」「〜で進める」などを含む行を、そのまま下書きにする。"""
+    rows = []
+    for line in text.splitlines():
+        body = re.sub(r"^[\s・\-*●○◎→＞>]*(決定(事項)?[:：]\s*)?", "", line).strip()
+        if len(body) < 4 or not DECISION_LINE.search(line):
+            continue
+        rows.append({"title": body[:120], "what": body, "why": "", "decided_by": [],
+                     "options": [], "premises": [], "source": line.strip()})
+    return rows[:30]
+
+
+@route("POST", r"/api/projects/(\d+)/decisions/extract")
+def extract_decisions(ctx, project_id):
+    """会議メモから、決定の下書きをまとめて取り出す。DB には書き込まない（記録は画面で確かめてから）。"""
+    user = me(ctx)
+    project_or_404(user, project_id, "editor")
+    text = require(ctx.body, "text", "メモ")
+    if len(text) > 20000:
+        raise bad_request("メモが長すぎます（2 万文字まで）")
+    members = project_member_users(project_id)
+    rows, engine, warning = None, "llm", None
+    if llm.available() and not as_bool(ctx.body.get("force_rule")):
+        try:
+            rows = llm.extract_decisions(text, users=members)
+        except llm.LlmError as error:
+            warning = "{}（簡易読み取りで代替しました）".format(error)
+        except Exception as error:  # noqa: BLE001 - 読み取り失敗で操作を止めない
+            warning = "読み取りに失敗しました（簡易読み取りで代替しました）"
+            log_llm_failure(error)
+    if rows is None:
+        rows, engine = _decisions_by_rule(text), "rule"
+    # 決めた人：メンバーに当てはまれば選び、当てはまらなければメンバー以外の名前として残す
+    for row in rows:
+        people, extra = [], []
+        for name in row.pop("decided_by", []):
+            matched = _match_member(name, members)
+            person = next((m for m in members if m["name"] == matched), None)
+            if person and person["id"] not in people:
+                people.append(person["id"])
+            elif not person and name not in extra:
+                extra.append(name)
+        row["people"], row["people_extra"] = people, extra
+    return json_response({"rows": rows[:30], "engine": engine, "warning": warning})
 
 
 @route("GET", r"/api/decisions/(\d+)/versions/(\d+)")
@@ -4829,7 +4963,7 @@ def get_issue(ctx, issue_id):
         (issue_id,) + seen_params)
     return json_response({
         "issue": issue, "tasks": tasks, "comments": comments, "attachments": attachments,
-        "tickets": linked_tickets,
+        "tickets": linked_tickets, "decisions": linked_decisions(user, "issue", issue_id),
         "members": project_member_users(issue["project_id"]),
         "my_role": auth.project_role(user, issue["project_id"]),
     })

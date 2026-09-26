@@ -381,6 +381,9 @@ DDL = [
         category      VARCHAR(60)  NOT NULL DEFAULT '',
         guest_visible TINYINT(1)   NOT NULL DEFAULT 0,     -- 社外ユーザーにも見せる
         supersedes_id INT NULL,                            -- この決定が置き換えた、前の決定
+        people_extra  TEXT,                                -- メンバー以外の決めた人（役員など）。JSON の配列
+        meeting_id    INT NULL,                            -- 決めた場の定例会議
+        meeting_on    DATE NULL,                           -- その会議の回の日付
         version       INT NOT NULL DEFAULT 1,
         created_by    INT NULL,
         updated_by    INT NULL,
@@ -493,6 +496,7 @@ DDL = [
         task_id    INT NULL,
         issue_id   INT NULL,
         ticket_id  INT NULL,
+        decision_id INT NULL,
         type       VARCHAR(30)  NOT NULL,
         title      VARCHAR(300) NOT NULL,
         body       TEXT,
@@ -869,6 +873,10 @@ def set_setting(key, value):
 # Columns added after the first release.  Applied on every start-up.
 MIGRATIONS = [
     ("sessions", "acting_as", "ALTER TABLE sessions ADD COLUMN acting_as INT NULL"),
+    ("decisions", "people_extra", "ALTER TABLE decisions ADD COLUMN people_extra TEXT"),
+    ("decisions", "meeting_id", "ALTER TABLE decisions ADD COLUMN meeting_id INT NULL"),
+    ("decisions", "meeting_on", "ALTER TABLE decisions ADD COLUMN meeting_on DATE NULL"),
+    ("notifications", "decision_id", "ALTER TABLE notifications ADD COLUMN decision_id INT NULL"),
     ("sessions", "acting_until", "ALTER TABLE sessions ADD COLUMN acting_until DATETIME NULL"),
     ("sessions", "preview_project", "ALTER TABLE sessions ADD COLUMN preview_project INT NULL"),
     ("sessions", "preview_org", "ALTER TABLE sessions ADD COLUMN preview_org INT NULL"),
@@ -994,6 +1002,13 @@ NULLABLE_COLUMNS = [
 ]
 
 MIGRATION_FKS = [
+    # 決定の表は定例会議の表より先に作られるので、会議への参照はあとから足す
+    ("decisions", "fk_decision_meeting",
+     "ALTER TABLE decisions ADD CONSTRAINT fk_decision_meeting "
+     "FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE SET NULL"),
+    ("notifications", "fk_notif_decision",
+     "ALTER TABLE notifications ADD CONSTRAINT fk_notif_decision "
+     "FOREIGN KEY (decision_id) REFERENCES decisions(id) ON DELETE CASCADE"),
     ("comments", "fk_comment_issue",
      "ALTER TABLE comments ADD CONSTRAINT fk_comment_issue "
      "FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE"),

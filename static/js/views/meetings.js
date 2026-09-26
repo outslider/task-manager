@@ -7,7 +7,7 @@ import { api } from '../api.js';
 import {
   confirmDialog, el, fill, formatDate, openModal, parseDate, toast, today, toISO,
 } from '../util.js';
-import { markerChar } from '../store.js';
+import { markerChar, store } from '../store.js';
 import { option } from './pickers.js';
 import { buildTree } from './tasks.js';
 
@@ -391,6 +391,26 @@ export async function openOccurrenceDialog(meeting, occurrence) {
         occurrence.shifted_from
           ? el('div', { class: 'hint', style: { marginBottom: '10px' },
             text: `本来は ${dayLabel(occurrence.shifted_from)} ですが、休日のためこの日にずらしています。` })
+          : null,
+        meeting.project_id && occurrence.status !== 'cancelled'
+          && (store.project(meeting.project_id)?.tabs || ['decisions']).includes('decisions')
+          ? el('div', { class: 'meeting-decision' },
+            el('span', { class: 'hint', text: 'この回で決まったことを、意思決定ログに残せます' }),
+            el('button', {
+              type: 'button', class: 'btn btn-sm',
+              onClick: async () => {
+                const list = await api.get(`/api/projects/${meeting.project_id}/decisions`);
+                const { openDecisionForm } = await import('./decisionForm.js');
+                const saved = await openDecisionForm({
+                  projectId: meeting.project_id, decisions: list.decisions,
+                  prefill: {
+                    title: '', status: 'decided', decided_on: occurrence.date,
+                    meeting_id: meeting.id, meeting_on: occurrence.date, meeting_title: meeting.title,
+                  },
+                });
+                if (saved) toast(`D-${saved.seq} を記録しました（決定タブで見られます）`, 'ok');
+              },
+            }, '⚖️ 決定として記録'))
           : null,
         el('div', { class: 'field' }, el('label', { text: 'メモ（理由など）' }), f.note),
         el('div', { class: 'field' },

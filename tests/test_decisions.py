@@ -175,3 +175,116 @@ class TestWhoMaySee(DecisionCase):
         data = self.detail(new["id"], self.guest_client)[1]
         self.assertIsNone(data["supersedes"])
         self.assertNotIn("supersedes_id", data["decision"])
+
+
+class TestSecondStage(DecisionCase):
+    """第 2 段階：メンバー以外の決めた人・決めた場・見直し日の知らせ・関連・Slack・メモからの下書き。"""
+
+    def test_people_outside_the_project(self):
+        d = self.create(people_extra="山田社長、佐々木取締役")
+        data = self.detail(d["id"])[1]["decision"]
+        self.assertEqual(data["people_extra"], ["山田社長", "佐々木取締役"])
+        rows = self.admin.get("/api/projects/{}/decisions".format(self.pid))[1]["decisions"]
+        self.assertEqual(rows[0]["people_extra"], ["山田社長", "佐々木取締役"])
+        # 名前だけを変えても、決めた人の変更として版に残る
+        status, data = self.admin.patch("/api/decisions/{}".format(d["id"]), {
+            "people_extra": ["山田社長"], "reason": "取締役は出席していなかった"})
+        self.assertEqual(status, 200, data)
+        versions = self.detail(d["id"])[1]["versions"]
+        self.assertEqual(versions[0]["changes"], "決めた人")
+
+    def test_the_meeting_where_it_was_decided(self):
+        status, data = self.admin.post("/api/projects/{}/meetings".format(self.pid), {
+            "title": "週次定例", "freq": "weekly", "weekdays": [1], "start_on": "2026-09-01",
+            "holiday_rule": "skip"})
+        meeting = data["meeting"]
+        d = self.create(meeting_id=meeting["id"], meeting_on="2026-09-21")
+        got = self.detail(d["id"])[1]["decision"]["meeting"]
+        self.assertEqual((got["title"], got["on"]), ("週次定例", "2026-09-21"))
+        other = self.make_project("よその定例")
+        status, data = self.admin.post("/api/projects/{}/meetings".format(other["id"]), {
+            "title": "よその会", "freq": "weekly", "weekdays": [1], "start_on": "2026-09-01",
+            "holiday_rule": "skip"})
+        status, _ = self.admin.post("/api/projects/{}/decisions".format(self.pid), {
+            "title": "x", "meeting_id": data["meeting"]["id"]})
+        self.assertEqual(status, 400)
+
+    def test_review_dates_notify_once(self):
+        from app import notify
+        editor, email = self.make_user("決めた編集者")
+        self.admin.put("/api/projects/{}/members".format(self.pid), {"members": [
+            {"principal_type": "user", "principal_id": editor["id"], "role": "editor"}]})
+        d = self.create(people=[editor["id"]], premises=[
+            {"text": "予算は 500 万円以内", "review_on": "2020-01-01"},
+            {"text": "まだ先の前提", "review_on": "2999-01-01"},
+            {"text": "もう崩れた前提", "review_on": "2020-01-01", "broken": True}])
+        self.assertGreaterEqual(notify.scan_decision_reviews(), 1)
+        self.assertEqual(notify.scan_decision_reviews(), 0)   # 同じ日にもう一度走っても増えない
+        client = self.client_for(email)
+        notes = client.get("/api/notifications")[1]["notifications"]
+        note = next(n for n in notes if n["type"] == "decision_review")
+        self.assertEqual(note["decision_id"], d["id"])
+        self.assertIn("予算は 500 万円以内", note["body"])
+        self.assertNotIn("まだ先の前提", note["body"])
+        self.assertNotIn("もう崩れた前提", note["body"])
+        # 今日の確認にも出る
+        reviews = client.get("/api/daily")[1]["decision_reviews"]
+        self.assertEqual([r["id"] for r in reviews], [d["id"]])
+        # 見直し日を延ばすと、今日の確認から消える
+        self.admin.patch("/api/decisions/{}".format(d["id"]), {
+            "premises": [{"text": "予算は 500 万円以内", "review_on": "2999-01-01"}],
+            "reason": "来期も予算は変わらないと確認した"})
+        self.assertEqual(client.get("/api/daily")[1]["decision_reviews"], [])
+
+    def test_drafts_and_superseded_ones_are_not_nagged(self):
+        from app import notify
+        self.create(status="draft", premises=[{"text": "検討中の前提", "review_on": "2020-01-01"}])
+        before = db.scalar("SELECT COUNT(*) AS c FROM notifications WHERE type='decision_review'")
+        notify.scan_decision_reviews()
+        after = db.scalar("SELECT COUNT(*) AS c FROM notifications WHERE type='decision_review'")
+        self.assertEqual(before, after)
+
+    def test_tasks_and_issues_show_their_decisions(self):
+        d = self.create()
+        task = self.admin.get("/api/tasks/{}".format(self.task["id"]))[1]
+        issue = self.admin.get("/api/issues/{}".format(self.issue["id"]))[1]
+        self.assertEqual([x["seq"] for x in task["decisions"]], [d["seq"]])
+        self.assertEqual([x["seq"] for x in issue["decisions"]], [d["seq"]])
+
+    def test_slack_on_decided_and_review(self):
+        from unittest import mock
+        from app import slack
+        sent = []
+        with mock.patch.object(slack, "post_async", side_effect=lambda text, **k: sent.append((text, k))):
+            d = self.create(status="draft")
+            self.assertEqual(sent, [])
+            self.admin.patch("/api/decisions/{}".format(d["id"]), {"status": "decided"})
+            self.admin.patch("/api/decisions/{}".format(d["id"]), {
+                "status": "review", "reason": "前提が崩れた"})
+        self.assertEqual([k["event"] for _, k in sent], ["decision", "decision"])
+        self.assertIn("決定しました：D-", sent[0][0])
+        self.assertIn("見直し中", sent[1][0])
+        self.assertIn("前提が崩れた", sent[1][0])
+
+    def test_extract_from_notes_by_rule_and_by_claude(self):
+        from unittest import mock
+        from app import llm
+        memo = "・次回の打ち合わせは来週\n・決定：認証は社内 SSO で進める\n・宿題：見積もりを取る"
+        path = "/api/projects/{}/decisions/extract".format(self.pid)
+        status, data = self.admin.post(path, {"text": memo, "force_rule": True})
+        self.assertEqual((status, data["engine"]), (200, "rule"))
+        self.assertEqual([r["title"] for r in data["rows"]], ["認証は社内 SSO で進める"])
+        admin_name = db.scalar("SELECT name FROM users WHERE id=%s", (self.admin_id,))
+        fake = [{"title": "SSO を採用", "what": "社内 SSO", "why": "一本化", "source": "決定",
+                 "decided_by": [admin_name, "山田社長"],
+                 "options": [{"title": "独自", "adopted": False, "reason": "二重管理"}], "premises": []}]
+        with mock.patch.object(llm, "available", return_value=True), \
+                mock.patch.object(llm, "extract_decisions", return_value=fake):
+            status, data = self.admin.post(path, {"text": memo})
+        self.assertEqual((status, data["engine"]), (200, "llm"))
+        row = data["rows"][0]
+        self.assertEqual(row["people"], [self.admin_id])
+        self.assertEqual(row["people_extra"], ["山田社長"])
+        # 下書きを返すだけで、記録はしない
+        self.assertEqual(db.scalar("SELECT COUNT(*) AS c FROM decisions WHERE project_id=%s",
+                                   (self.pid,)), 0)

@@ -211,6 +211,7 @@ export async function render(container) {
       (data.tickets || []).length || data.unclaimed_tickets
         ? section('tickets', ticketCard())
         : null,
+      (data.decision_reviews || []).length ? section('decisions', reviewCard()) : null,
     ].filter(Boolean);
     listHost.append(...urgent);
 
@@ -313,6 +314,28 @@ export async function render(container) {
             el('span', { class: `badge ${issue.status}`,
               text: ISSUE_STATUS_LABEL[issue.status] })))),
           moreLine(data.issues.length, counts.issues, '#/issues')));
+  }
+
+  /** 前提の見直し日が来た決定。まだ成り立つなら見直し日を延ばし、崩れていれば決定を見直す。 */
+  function reviewCard() {
+    return el('div', { class: 'card daily-bucket kind-decision' },
+      el('div', { class: 'card-head' },
+        el('h2', {}, '⚖️ 前提の見直し日が来た決定'),
+        el('span', { class: 'badge', text: `${data.decision_reviews.length} 件` })),
+      el('div', { class: 'card-body tight' },
+        ...data.decision_reviews.map((d) => el('div', { class: 'daily-item' },
+          el('div', { style: { minWidth: 0, flex: 1 } },
+            el('a', {
+              href: '#', style: { fontWeight: 650 },
+              onClick: async (event) => {
+                event.preventDefault();
+                const { openDecisionDetail } = await import('./decisionDetail.js');
+                openDecisionDetail(d.id, { onChange: reload });
+              },
+            }, `D-${d.seq} ${d.title}`),
+            el('div', { class: 'hint', text: d.project_name }),
+            ...d.premises.map((p) => el('div', { class: 'hint', style: { color: 'var(--warn)' },
+              text: `・${p.text}（見直し日 ${formatDate(p.review_on)}）` })))))));
   }
 
   function todoCard() {

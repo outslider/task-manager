@@ -82,9 +82,16 @@ async function draw(instance, decisionId, onChange) {
     ...chain,
     section('何を決めたか', d.what ? el('div', { class: 'decision-text', text: d.what }) : muted('（未記入）')),
     section('なぜ（理由・根拠）', d.why ? el('div', { class: 'decision-text', text: d.why }) : muted('（未記入）')),
-    section('決めた人', d.people.length
-      ? el('div', { class: 'decision-people' }, ...d.people.map((p) => el('span', { class: 'decision-person' }, avatar(p, 'sm'), p.name)))
+    section('決めた人', d.people.length || d.people_extra.length
+      ? el('div', { class: 'decision-people' },
+        ...d.people.map((p) => el('span', { class: 'decision-person' }, avatar(p, 'sm'), p.name)),
+        ...d.people_extra.map((name) => el('span', { class: 'decision-person extra', title: 'プロジェクトのメンバー以外' },
+          el('span', { class: 'avatar sm', style: { background: '#98a2b3' }, text: name.slice(0, 1) }), name)))
       : muted('（未記入）')),
+    d.meeting ? section('決めた場', el('button', {
+      type: 'button', class: 'decision-link',
+      onClick: () => { instance.close(); location.hash = `#/p/${d.project_id}/gantt`; },
+    }, `📅 ${d.meeting.title}`, d.meeting.on ? el('span', { class: 'cell-mut', text: `　${formatDate(d.meeting.on)} の回` }) : null)) : null,
     section(`検討した案（${d.options.length}）`, d.options.length
       ? el('div', { class: 'decision-options' }, ...d.options.map((o) => el('div', { class: `decision-option ${o.adopted ? 'adopted' : 'rejected'}` },
         el('div', { class: 'decision-option-head' },
@@ -142,6 +149,7 @@ async function showVersion(d, version) {
       section('何を決めたか', el('div', { class: 'decision-text', text: s.what || '（未記入）' })),
       section('なぜ', el('div', { class: 'decision-text', text: s.why || '（未記入）' })),
       section('決めた人', el('div', { text: (s.people || []).map((p) => p.name).join('、') || '（未記入）' })),
+      s.meeting ? section('決めた場', el('div', { text: `${s.meeting.title}${s.meeting.on ? `（${formatDate(s.meeting.on)} の回）` : ''}` })) : null,
       section('検討した案', el('ul', {}, ...(s.options || []).map((o) => el('li', {},
         `${o.adopted ? '【採用】' : '【却下】'}${o.title}${o.reason ? `　— ${o.reason}` : ''}`)))),
       section('前提条件', el('ul', {}, ...(s.premises || []).map((p) => el('li', {},
@@ -166,3 +174,15 @@ function section(title, content) {
 function muted(text) { return el('div', { class: 'hint', text }); }
 
 function today() { return new Date().toISOString().slice(0, 10); }
+
+/** タスク・課題の詳細に出す「関連する決定」の行。 */
+export function decisionRows(list, onChange) {
+  return (list || []).map((d) => el('div', {
+    class: 'att-item', style: { cursor: 'pointer' },
+    onClick: () => openDecisionDetail(d.id, { onChange }),
+  },
+  el('span', { class: 'issue-no', text: `D-${d.seq}` }),
+  el('span', { class: 'name', text: d.title }),
+  statusBadge(d.status, d.status_label),
+  d.decided_on ? el('span', { class: 'size', text: formatDate(d.decided_on) }) : null));
+}

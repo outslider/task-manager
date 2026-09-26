@@ -353,6 +353,72 @@ def extract(text, users=(), projects=(), base=None):
     return rows
 
 
+DECISIONS_SYSTEM = """あなたは社内プロジェクトの議事録から「決まったこと」を拾うアシスタントです。
+会議メモを読み、意思決定ログに残す下書きを作ります。
+
+- 「決まった」「〜とする」「〜で進める」「〜は見送る」など、合意・決定が書かれているものだけを拾う。
+  検討中・宿題・やること（タスク）は決定として作らない
+- 何を決めたか（what）と、なぜ（why）を分けて書く。理由が書かれていなければ why は空文字
+- 比べた案が書かれていれば options に入れ、採用した案は adopted=true、見送った案は adopted=false と、
+  その理由を書く。書かれていなければ空の配列
+- 決定の前提（「予算内であれば」「〜が前提」など）が書かれていれば premises に入れる
+- 決めた人は、メモに書かれている呼び方をそのまま（「佐藤部長」なら「佐藤部長」）
+- 推測で埋めない。書かれていないものは空にする"""
+
+DECISIONS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "decisions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "決定の件名。一覧で読める簡潔な一文"},
+                    "what": {"type": "string", "description": "何を決めたか"},
+                    "why": {"type": "string", "description": "理由・根拠。書かれていなければ空文字"},
+                    "decided_by": {"type": "array", "items": {"type": "string"},
+                                   "description": "決めた人の呼び方。書かれていなければ空"},
+                    "options": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {"title": {"type": "string"}, "adopted": {"type": "boolean"},
+                                       "reason": {"type": "string"}},
+                        "required": ["title", "adopted", "reason"], "additionalProperties": False}},
+                    "premises": {"type": "array", "items": {"type": "string"}},
+                    "source": {"type": "string", "description": "根拠になったメモ中の一文をそのまま写す"},
+                },
+                "required": ["title", "what", "why", "decided_by", "options", "premises", "source"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["decisions"],
+    "additionalProperties": False,
+}
+
+
+def extract_decisions(text, users=()):
+    """会議メモから、意思決定ログの下書きを取り出す。失敗時は LlmError。"""
+    data = _ask(DECISIONS_SYSTEM,
+                "メンバー: {}\n\n---\n会議メモ:\n{}".format(
+                    "、".join(u["name"] for u in users) or "なし", text),
+                DECISIONS_SCHEMA, effort="medium")
+    rows = []
+    for item in data.get("decisions", []):
+        title = (item.get("title") or "").strip()
+        if not title:
+            continue
+        rows.append({
+            "title": title[:300], "what": item.get("what") or "", "why": item.get("why") or "",
+            "decided_by": [str(n).strip() for n in item.get("decided_by") or [] if str(n).strip()],
+            "options": [{"title": (o.get("title") or "").strip(), "adopted": bool(o.get("adopted")),
+                         "reason": o.get("reason") or ""}
+                        for o in item.get("options") or [] if (o.get("title") or "").strip()],
+            "premises": [str(p).strip() for p in item.get("premises") or [] if str(p).strip()],
+            "source": (item.get("source") or "").strip(),
+        })
+    return rows
+
+
 def review(context):
     """進行状況の要約テキストを渡し、今週の見立てを書いてもらう。失敗時は LlmError。"""
     return _ask(REVIEW_SYSTEM, context, REVIEW_SCHEMA, effort="medium")

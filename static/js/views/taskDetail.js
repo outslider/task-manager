@@ -319,6 +319,13 @@ async function renderDetail(instance, taskId, onChange) {
     el('span', { class: `size sev sev-${issue.severity}`, text: SEVERITY_LABEL[issue.severity] }))));
   }
 
+  /* ---- 関連する決定（このタスクがなぜこうなっているか） ---- */
+  if ((data.decisions || []).length) {
+    body.append(sectionTitle(`関連する決定 (${data.decisions.length})`));
+    const { decisionRows } = await import('./decisionDetail.js');
+    body.append(...decisionRows(data.decisions, onChange));
+  }
+
   /* ---- attachments ---- */
   body.append(sectionTitle(`リンク・ファイル (${attachments.length})`,
     canEdit ? el('button', { class: 'btn btn-sm', onClick: () => addLink(task, reload) }, '🔗 リンク') : null));

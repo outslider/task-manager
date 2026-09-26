@@ -206,6 +206,30 @@ async function renderDetail(instance, issueId, onChange) {
     ticket.on_behalf_of ? el('span', { class: 'size', text: ticket.on_behalf_of }) : null)));
   }
 
+  /* ---- 関連する決定（課題の結論を、意思決定ログに残す） ---- */
+  const decisionsOpen = (store.project(issue.project_id)?.tabs || ['decisions']).includes('decisions');
+  const linkedDecisions = data.decisions || [];
+  if (decisionsOpen && (linkedDecisions.length || canEdit)) {
+    body.append(sectionTitle(`関連する決定 (${linkedDecisions.length})`,
+      canEdit ? el('button', {
+        class: 'btn btn-sm', title: 'この課題の結論を、意思決定ログに記録します',
+        onClick: async () => {
+          const list = await api.get(`/api/projects/${issue.project_id}/decisions`);
+          const { openDecisionForm } = await import('./decisionForm.js');
+          const saved = await openDecisionForm({
+            projectId: issue.project_id, decisions: list.decisions,
+            prefill: {
+              title: issue.title, what: issue.resolution || '', why: issue.description || '',
+              status: 'decided', links: { tasks: tasks.map((t) => t.id), issues: [issue.id] },
+            },
+          });
+          if (saved) reload();
+        },
+      }, '⚖️ 決定として記録') : null));
+    const { decisionRows } = await import('./decisionDetail.js');
+    body.append(...decisionRows(linkedDecisions, reload));
+  }
+
   /* ---- attachments ---- */
   body.append(sectionTitle(`リンク・ファイル (${attachments.length})`,
     canEdit ? el('button', { class: 'btn btn-sm', onClick: () => addLink(issue, reload) }, '🔗 リンク') : null));

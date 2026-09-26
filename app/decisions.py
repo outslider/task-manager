@@ -24,7 +24,17 @@ FIELD_LABEL = {
     "title": "件名", "status": "状態", "what": "決定内容", "why": "理由", "decided_on": "決めた日",
     "category": "分類", "guest_visible": "社外への公開", "supersedes_id": "置き換えた決定",
     "people": "決めた人", "options": "検討した案", "premises": "前提条件", "links": "関連",
+    "meeting": "決めた場",
 }
+
+
+def parse_extra(value):
+    """メンバー以外の決めた人（JSON の配列）を読む。"""
+    try:
+        names = json.loads(value or "[]")
+    except ValueError:
+        return []
+    return [str(n) for n in names if str(n).strip()] if isinstance(names, list) else []
 
 
 def load(decision_id):
@@ -32,6 +42,7 @@ def load(decision_id):
     row = db.query_one("SELECT * FROM decisions WHERE id=%s", (decision_id,))
     if not row:
         return None
+    row = dict(row)
     row["people"] = db.query(
         "SELECT u.id, u.name, u.avatar_color FROM decision_people dp JOIN users u ON u.id = dp.user_id "
         "WHERE dp.decision_id=%s ORDER BY u.name", (decision_id,))
@@ -51,6 +62,13 @@ def load(decision_id):
     row["links"] = {"tasks": [l["target_id"] for l in links if l["kind"] == "task"],
                     "issues": [l["target_id"] for l in links if l["kind"] == "issue"]}
     row["guest_visible"] = bool(row["guest_visible"])
+    row["people_extra"] = parse_extra(row.get("people_extra"))
+    row["meeting"] = None
+    if row.get("meeting_id"):
+        meeting = db.query_one("SELECT id, title FROM meetings WHERE id=%s", (row["meeting_id"],))
+        if meeting:
+            row["meeting"] = {"id": meeting["id"], "title": meeting["title"],
+                              "on": row["meeting_on"].isoformat() if row.get("meeting_on") else None}
     return row
 
 
@@ -63,7 +81,9 @@ def snapshot(row):
         else row["decided_on"],
         "category": row["category"] or "", "guest_visible": bool(row["guest_visible"]),
         "supersedes_id": row["supersedes_id"],
-        "people": [{"id": p["id"], "name": p["name"]} for p in row["people"]],
+        "people": [{"id": p["id"], "name": p["name"]} for p in row["people"]]
+        + [{"id": None, "name": name} for name in row.get("people_extra") or []],
+        "meeting": row.get("meeting"),
         "options": [{k: o[k] for k in ("title", "detail", "adopted", "reason")} for o in row["options"]],
         "premises": [{k: p[k] for k in ("text", "review_on", "broken")} for p in row["premises"]],
         "links": row["links"],
@@ -76,7 +96,8 @@ def changed_fields(before, after):
     for key, label in FIELD_LABEL.items():
         a, b = before.get(key), after.get(key)
         if key == "people":
-            a, b = sorted(p["id"] for p in a or []), sorted(p["id"] for p in b or [])
+            a = sorted(str(p["id"] or p["name"]) for p in a or [])
+            b = sorted(str(p["id"] or p["name"]) for p in b or [])
         if a != b:
             labels.append(label)
     return labels
@@ -100,3 +121,32 @@ def chain_contains(start_id, target_id):
         seen.add(current)
         current = db.scalar("SELECT supersedes_id AS s FROM decisions WHERE id=%s", (current,))
     return False
+
+
+def audience(decision_id):
+    """見直しの知らせを届ける人：決めた人（メンバー）・記録した人・プロジェクト管理者。"""
+    row = db.query_one("SELECT d.created_by, p.owner_id FROM decisions d JOIN projects p "
+                       "ON p.id = d.project_id WHERE d.id=%s", (decision_id,))
+    if not row:
+        return []
+    ids = {r["user_id"] for r in db.query("SELECT user_id FROM decision_people WHERE decision_id=%s",
+                                          (decision_id,))}
+    ids |= {row["created_by"], row["owner_id"]}
+    return sorted(i for i in ids if i)
+
+
+def due_premises(today, decision_ids=None):
+    """見直す日が来た（過ぎた）前提。崩れた印のないもの、決定・見直し中の決定だけ。"""
+    sql = ("SELECT d.id AS decision_id, d.project_id, d.seq, d.title, d.status, p.name AS project_name, "
+           "       r.text, r.review_on "
+           "  FROM decision_premises r JOIN decisions d ON d.id = r.decision_id "
+           "  JOIN projects p ON p.id = d.project_id "
+           " WHERE r.broken=0 AND r.review_on IS NOT NULL AND r.review_on <= %s "
+           "   AND d.status IN ('decided','review') AND p.archived=0")
+    params = [today]
+    if decision_ids is not None:
+        if not decision_ids:
+            return []
+        sql += " AND d.id IN %s"
+        params.append(tuple(decision_ids))
+    return db.query(sql + " ORDER BY r.review_on, d.seq", tuple(params))

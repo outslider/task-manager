@@ -21,7 +21,7 @@ OPEN_STATUSES = taxonomy.OPEN_STATUS_KEYS
 # in-app notifications
 # --------------------------------------------------------------------------
 
-def may_receive(user_id, task_id=None, issue_id=None, ticket_id=None):
+def may_receive(user_id, task_id=None, issue_id=None, ticket_id=None, decision_id=None):
     """通知の中身（件名・抜粋）を、いまそれを見られる人にだけ届ける。
 
     通知には件名やコメントの抜粋が入る。送り先の選び方は呼び出し側ごとに
@@ -29,7 +29,7 @@ def may_receive(user_id, task_id=None, issue_id=None, ticket_id=None):
     漏れがあっても中身が外へ出ないよう、最後にここで必ず確かめる。
     プロジェクトから外れた人や、「メンバーだけ」の窓口に入っていない人が該当する。
     """
-    if not (task_id or issue_id or ticket_id):
+    if not (task_id or issue_id or ticket_id or decision_id):
         return True
     user = db.query_one("SELECT id, role, is_active, organization_id FROM users WHERE id=%s",
                         (user_id,))
@@ -37,6 +37,14 @@ def may_receive(user_id, task_id=None, issue_id=None, ticket_id=None):
         return False
     if auth.is_admin(user):
         return True
+    if decision_id:
+        row = db.query_one("SELECT project_id, status, guest_visible FROM decisions WHERE id=%s",
+                           (decision_id,))
+        if not row or not auth.has_project_access(user, row["project_id"]):
+            return False
+        return not auth.is_guest(user) or (
+            auth.guest_tab_open(user, row["project_id"], "decisions")
+            and bool(row["guest_visible"]) and row["status"] != "draft")
     if task_id:
         project_id = db.scalar("SELECT project_id FROM tasks WHERE id=%s", (task_id,))
         return bool(project_id) and auth.has_project_access(user, project_id)
@@ -53,20 +61,21 @@ def may_receive(user_id, task_id=None, issue_id=None, ticket_id=None):
 
 
 def create(user_id, ntype, title, body="", task_id=None, dedupe_key=None, email=True,
-           project_id=None, issue_id=None, ticket_id=None):
+           project_id=None, issue_id=None, ticket_id=None, decision_id=None):
     """Insert a notification.  A repeated dedupe_key for the same user is a no-op.
 
     画面の通知一覧には必ず残し、メールを送るかどうかだけ通知設定で判断する。
     """
     if project_id and not prefs.project_notify_enabled(project_id):
         return False
-    if not may_receive(user_id, task_id, issue_id, ticket_id):
+    if not may_receive(user_id, task_id, issue_id, ticket_id, decision_id):
         return False
     try:
         db.insert(
-            "INSERT INTO notifications(user_id, task_id, issue_id, ticket_id, type, title, "
-            "body, dedupe_key, created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (user_id, task_id, issue_id, ticket_id, ntype, title, body, dedupe_key, db.now()),
+            "INSERT INTO notifications(user_id, task_id, issue_id, ticket_id, decision_id, type, "
+            "title, body, dedupe_key, created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, task_id, issue_id, ticket_id, decision_id, ntype, title, body, dedupe_key,
+             db.now()),
         )
     except pymysql.err.IntegrityError:
         return False  # already sent
@@ -348,6 +357,7 @@ def _run_daily_digest():
     logins.purge_expired()           # 残す日数を過ぎたログイン履歴を消す
     mfa.purge_expired()              # 期限を過ぎたログイン待ち・再設定リンクの記録を消す
     scanned = scan_due_tasks()
+    decision_reviews = scan_decision_reviews()
     slack_posts = slack_daily_summary()
     sent = 0
     for user in db.query("SELECT id, name, email FROM users WHERE is_active=1"):
@@ -362,7 +372,33 @@ def _run_daily_digest():
             sent += 1
     return {"sent": sent, "due_notifications": scanned,
             "recurring_tasks": recurring, "recurring_todos": recurring_todos,
-            "purged_trash": purged, "slack_posts": slack_posts}
+            "purged_trash": purged, "slack_posts": slack_posts,
+            "decision_reviews": decision_reviews}
+
+
+def scan_decision_reviews():
+    """前提の見直し日が来た決定を、決めた人・記録した人・プロジェクト管理者に知らせる。
+    同じ前提・同じ見直し日の知らせは一度だけ（見直し日を先に延ばせば、その日にまた届く）。"""
+    import hashlib
+    from . import decisions
+    by_decision = {}
+    for row in decisions.due_premises(db.today()):
+        by_decision.setdefault(row["decision_id"], []).append(row)
+    sent = 0
+    for decision_id, rows in by_decision.items():
+        head = rows[0]
+        title = "前提の見直し日です：D-{} {}".format(head["seq"], head["title"])
+        body = "「{}」の決定 D-{}「{}」で、見直す日が来た前提があります。\n\n{}\n\n" \
+               "まだ成り立っていれば見直し日を先に延ばし、崩れていれば印を付けて、決定を見直してください。".format(
+                   head["project_name"], head["seq"], head["title"],
+                   "\n".join("・{}（見直し日 {}）".format(r["text"], r["review_on"]) for r in rows))
+        key = "|".join("{}:{}".format(r["review_on"], r["text"]) for r in rows)
+        dedupe = "premise:{}:{}".format(decision_id, hashlib.sha1(key.encode("utf-8")).hexdigest()[:16])
+        for user_id in decisions.audience(decision_id):
+            if create(user_id, "decision_review", title, body, dedupe_key=dedupe,
+                      project_id=head["project_id"], decision_id=decision_id):
+                sent += 1
+    return sent
 
 
 def slack_daily_summary():
