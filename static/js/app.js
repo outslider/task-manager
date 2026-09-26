@@ -105,17 +105,22 @@ function actingBanner() {
   };
   tick();
   setInterval(tick, 20000);
+  const preview = store.acting.preview;
   return el('div', { class: 'acting-banner', role: 'status' },
     icon('eye', { size: 16 }),
-    el('span', {},
-      el('strong', { text: `${store.user.name} さん` }),
-      el('span', { text: `として表示中（見るだけ・${store.acting.by} さんの代理表示）` })),
+    preview
+      ? el('span', {},
+        el('strong', { text: 'プレビュー：' }),
+        el('span', { text: `「${preview.project}」を${preview.organization ? `${preview.organization} の` : ''}社外ユーザーとして表示中（見るだけ）` }))
+      : el('span', {},
+        el('strong', { text: `${store.user.name} さん` }),
+        el('span', { text: `として表示中（見るだけ・${store.acting.by} さんの代理表示）` })),
     left,
     el('button', {
       class: 'btn btn-sm acting-stop',
       onClick: async () => {
         await api.post('/api/auth/act/stop');
-        location.hash = '#/admin/users';
+        location.hash = preview ? `#/p/${preview.project_id}/tasks` : '#/admin/users';
         location.reload();
       },
     }, '自分の表示に戻る'));

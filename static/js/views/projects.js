@@ -323,6 +323,15 @@ export async function render(container) {
       tabs: project
         ? el('div', {},
           tabTable,
+          el('div', { style: { margin: '10px 0' } },
+            el('button', {
+              class: 'btn btn-sm', type: 'button',
+              onClick: async () => {
+                const { openGuestPreview } = await import('./members.js');
+                openGuestPreview(project);
+              },
+            }, '👁 社外ユーザーとしてプレビュー'),
+            el('span', { class: 'hint', text: '　保存したあとの見え方を、社外ユーザーの立場で確かめられます' })),
           el('div', { class: 'hint',
             text: '「使う」を外したタブは、このプロジェクトの画面から隠れます。'
               + '社外ユーザーに見せないタブは、画面だけでなくデータも社外ユーザーには閉じます'

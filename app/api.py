@@ -269,6 +269,13 @@ def project_tabs_out(project, user):
     return project
 
 
+def guest_stats(stats, project):
+    """社外ユーザーに返す数。見せていないタブの数（未解決の課題の件数など）は 0 にする。"""
+    if "issues" not in (project.get("tabs") or []):
+        stats = dict(stats, open_issues=0)
+    return stats
+
+
 def hide_project_secrets(project, role):
     """Slack の Webhook URL は、知っていれば誰でもそのチャンネルに投稿できる合い言葉。
     設定を変えられるプロジェクト管理者（と管理者）にだけ返し、ほかの人には有無だけ渡す。"""
@@ -745,7 +752,8 @@ def whoami(ctx):
     acting = None
     if ctx.actor:
         acting = {"by": ctx.actor["name"],
-                  "until": ctx.user["_acting_until"].isoformat(sep=" ", timespec="seconds")}
+                  "until": ctx.user["_acting_until"].isoformat(sep=" ", timespec="seconds"),
+                  "preview": ctx.user.get("_preview")}
     return json_response({
         "user": own_user(ctx.user),
         "unread": notify.unread_count(ctx.user["id"]),
@@ -768,9 +776,44 @@ def start_acting(ctx):
     if auth.is_admin(target):
         raise bad_request("管理者アカウントは代理表示できません")
     until = auth.start_acting(ctx.session_token, actor, target)
-    logins.record("act_start", target, "", ctx.ip, ctx.user_agent,
-                  label="{}（{} が代理表示）".format(target["name"], actor["name"]))
+    # 記録は管理者の側にだけ残す（相手の人の「最近のログイン」には出さない）
+    logins.record("act_start", actor, "", ctx.ip, ctx.user_agent,
+                  label="{} → {} として表示".format(actor["name"], target["name"]))
     return json_response({"ok": True, "until": until.isoformat(sep=" ", timespec="seconds")})
+
+
+@route("GET", r"/api/projects/(\d+)/preview")
+def preview_options(ctx, project_id):
+    """プレビューで想定できる会社。このプロジェクトに社外ユーザーがいる会社を先に並べる。"""
+    user = me(ctx)
+    project_or_404(user, project_id, "owner")
+    here = {r["organization_id"] for r in db.query(
+        "SELECT DISTINCT u.organization_id FROM users u JOIN project_members pm "
+        "ON pm.principal_type='user' AND pm.principal_id=u.id "
+        "WHERE pm.project_id=%s AND u.role='guest' AND u.organization_id IS NOT NULL", (project_id,))}
+    orgs = [dict(o, in_project=o["id"] in here)
+            for o in db.query("SELECT id, name FROM organizations ORDER BY name")]
+    orgs.sort(key=lambda o: (not o["in_project"], o["name"]))
+    return json_response({"organizations": orgs})
+
+
+@route("POST", r"/api/projects/(\d+)/preview")
+def start_preview(ctx, project_id):
+    """プロジェクト管理者が、このプロジェクトを社外ユーザー（指定の会社）としてどう見えるか確かめる。
+    実在の人ではなく、このプロジェクトだけに入っている社外ユーザーとして表示する（見るだけ・30 分）。"""
+    user = me(ctx)
+    project = project_or_404(user, project_id, "owner")
+    org_id = as_int(ctx.body.get("organization_id"))
+    org_name = ""
+    if org_id:
+        org_name = db.scalar("SELECT name FROM organizations WHERE id=%s", (org_id,), default="")
+        if not org_name:
+            raise bad_request("会社が見つかりません")
+    auth.start_preview(ctx.session_token, project_id, org_id)
+    logins.record("act_start", user, "", ctx.ip, ctx.user_agent,
+                  label="{} → 「{}」を社外ユーザー{}として表示".format(
+                      user["name"], project["name"], "（{}）".format(org_name) if org_name else ""))
+    return json_response({"ok": True})
 
 
 @route("POST", r"/api/auth/act/stop")
@@ -1401,7 +1444,7 @@ def list_projects(ctx):
         hide_project_secrets(p, p["my_role"])
         if auth.is_guest(user):
             # 未完了チケットの数は、自分の会社のものだけで数える
-            p["stats"] = dict(p["stats"], open_tickets=guest_counts.get(p["id"], 0))
+            p["stats"] = guest_stats(dict(p["stats"], open_tickets=guest_counts.get(p["id"], 0)), p)
     return json_response({"projects": projects})
 
 
@@ -1463,6 +1506,7 @@ def get_project(ctx, project_id):
     project["stats"] = dict(project_stats([project_id]).get(project_id, EMPTY_STATS))
     if auth.is_guest(user):
         project["stats"]["open_tickets"] = guest_open_tickets(user, [project_id]).get(project_id, 0)
+        project["stats"] = guest_stats(project["stats"], project)
     return json_response({"project": project,
                           "member_users": project_member_users(project_id)})
 

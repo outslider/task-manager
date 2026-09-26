@@ -302,3 +302,35 @@ function showInitialPassword(email, password) {
     footer: (close) => [el('button', { class: 'btn btn-primary', onClick: () => close(true) }, '控えました')],
   });
 }
+
+/** プロジェクト管理者の「社外ユーザー（〇〇社）として、このプロジェクトを見る」。見るだけ・30 分。 */
+export async function openGuestPreview(project) {
+  const data = await api.get(`/api/projects/${project.id}/preview`);
+  const orgs = data.organizations || [];
+  const select = el('select', { class: 'select' },
+    ...orgs.map((o) => el('option', { value: o.id }, o.in_project ? `${o.name}（このプロジェクトに参加中）` : o.name)),
+    el('option', { value: '' }, '会社を指定しない'));
+  const ok = await openModal({
+    title: `「${project.name}」を社外ユーザーとして見る`,
+    build: () => el('div', {},
+      el('p', { class: 'page-sub',
+        text: '実在の人ではなく、このプロジェクトだけに「コメント可」で入っている社外ユーザーとして画面を表示します。' }),
+      el('div', { class: 'field' }, el('label', { text: 'どの会社の人として見るか' }), select,
+        el('div', { class: 'hint', text: 'チケットは、その会社のものだけが見えます。' })),
+      el('ul', { class: 'preview-notes' },
+        el('li', { text: '見るだけです。変更・コメント・起票はできません' }),
+        el('li', { text: '社外ユーザーに見せていないタブ・社内のみの添付やメモ・ほかの会社のチケットは出ません' }),
+        el('li', { text: 'このプロジェクトの外（ほかのプロジェクトなど）は見えません' }),
+        el('li', { text: '30 分で自動的に自分の表示に戻ります' }))),
+    footer: (close) => [
+      el('button', { class: 'btn', onClick: () => close(false) }, 'キャンセル'),
+      el('button', { class: 'btn btn-primary', onClick: () => close(true) }, '社外ユーザーとして見る'),
+    ],
+  });
+  if (!ok) return;
+  try {
+    await api.post(`/api/projects/${project.id}/preview`, { organization_id: select.value ? Number(select.value) : null });
+    location.hash = `#/p/${project.id}/tasks`;
+    location.reload();
+  } catch (error) { toast(error.message, 'error'); }
+}

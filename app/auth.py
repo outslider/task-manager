@@ -65,11 +65,17 @@ def user_for_token(token: str):
     本人（管理者）の行を "_actor" に入れる。"""
     if not token:
         return None
-    session = db.query_one("SELECT user_id, acting_as, acting_until FROM sessions "
-                           "WHERE token=%s AND expires_at > %s", (token, db.now()))
+    session = db.query_one("SELECT user_id, acting_as, acting_until, preview_project, preview_org "
+                           "FROM sessions WHERE token=%s AND expires_at > %s", (token, db.now()))
     if not session:
         return None
     row = _clean(db.query_one(_USER_BY, (session["user_id"], db.today())))
+    if row and session["preview_project"]:
+        preview = _preview_user(row, session)
+        if preview:
+            return preview
+        stop_acting(token, row, None, reason="expired_act")
+        return row
     if not row or not session["acting_as"]:
         return row
     target = _clean(db.query_one(_USER_BY, (session["acting_as"], db.today())))
@@ -81,6 +87,42 @@ def user_for_token(token: str):
     target["_actor"] = row
     target["_acting_until"] = session["acting_until"]
     return target
+
+
+PREVIEW_ROLE = "commenter"
+
+
+def _preview_user(actor, session):
+    """プロジェクト管理者のプレビュー用の、実在しない社外ユーザー。
+    そのプロジェクトだけに「コメント可」で入っている、指定の会社の人として扱う。"""
+    project_id = session["preview_project"]
+    if (not session["acting_until"] or session["acting_until"] <= db.now()
+            or project_role(actor, project_id) != "owner"):
+        return None
+    project = db.query_one("SELECT id, name FROM projects WHERE id=%s", (project_id,))
+    if not project:
+        return None
+    org = db.query_one("SELECT id, name FROM organizations WHERE id=%s",
+                       (session["preview_org"],)) if session["preview_org"] else None
+    return {
+        "id": 0, "email": "", "role": "guest", "is_active": 1, "expires_on": None,
+        "name": "{} の社外ユーザー".format(org["name"]) if org else "社外ユーザー",
+        "organization_id": org["id"] if org else None,
+        "avatar_color": "#98a2b3", "email_notify": 0, "mfa_on": False, "nav_order": "",
+        "ui_theme": actor.get("ui_theme", "auto"), "ui_accent": actor.get("ui_accent", ""),
+        "ui_project_tint": actor.get("ui_project_tint", 1),
+        "_preview_project": project_id, "_preview": {
+            "project": project["name"], "project_id": project_id,
+            "organization": org["name"] if org else ""},
+        "_actor": actor, "_acting_until": session["acting_until"],
+    }
+
+
+def start_preview(token, project_id, org_id):
+    until = db.now() + timedelta(minutes=ACT_MINUTES)
+    db.execute("UPDATE sessions SET acting_as=NULL, preview_project=%s, preview_org=%s, "
+               "acting_until=%s WHERE token=%s", (project_id, org_id, until, token))
+    return until
 
 
 def _clean(row):
@@ -100,16 +142,23 @@ def start_acting(token, actor, target):
 def stop_acting(token, actor, target, reason="", ip="", user_agent=""):
     """代理表示を終える。終わったことも履歴に残す。"""
     from . import logins
-    session = db.query_one("SELECT acting_as FROM sessions WHERE token=%s", (token,))
-    if not session or not session["acting_as"]:
+    session = db.query_one("SELECT acting_as, preview_project FROM sessions WHERE token=%s", (token,))
+    if not session or not (session["acting_as"] or session["preview_project"]):
         return
-    if not db.execute("UPDATE sessions SET acting_as=NULL, acting_until=NULL "
-                      "WHERE token=%s AND acting_as IS NOT NULL", (token,)):
+    if not db.execute("UPDATE sessions SET acting_as=NULL, preview_project=NULL, preview_org=NULL, "
+                      "acting_until=NULL WHERE token=%s "
+                      "AND (acting_as IS NOT NULL OR preview_project IS NOT NULL)", (token,)):
         return
-    target = target or db.query_one("SELECT id, name FROM users WHERE id=%s", (session["acting_as"],))
-    if target:
-        logins.record("act_end", target, reason, ip, user_agent,
-                      label="{}（{} の代理表示）".format(target["name"], actor["name"]))
+    if session["preview_project"]:
+        name = db.scalar("SELECT name FROM projects WHERE id=%s", (session["preview_project"],),
+                         default="") or "（削除されたプロジェクト）"
+        label = "{} → 「{}」を社外ユーザーとして表示".format(actor["name"], name)
+    else:
+        target = target if target and target.get("id") else db.query_one(
+            "SELECT id, name FROM users WHERE id=%s", (session["acting_as"],))
+        label = "{} → {} として表示".format(actor["name"], target["name"] if target else "（削除された人）")
+    # 記録は表示した側（管理者・プロジェクト管理者）にだけ残す
+    logins.record("act_end", actor, reason, ip, user_agent, label=label)
 
 
 def purge_expired_sessions():
@@ -230,6 +279,8 @@ def project_role(user, project_id):
     """Strongest role the user holds on a project, directly or via a group."""
     if not user or project_id is None:
         return None
+    if user.get("_preview_project"):
+        return PREVIEW_ROLE if int(project_id) == user["_preview_project"] else None
     if is_admin(user):
         return "owner"
     proj = db.query_one("SELECT owner_id FROM projects WHERE id=%s", (project_id,))
@@ -260,6 +311,8 @@ def project_roles(user, project_ids):
     ids = [i for i in project_ids if i]
     if not user or not ids:
         return {}
+    if user.get("_preview_project"):
+        return {i: PREVIEW_ROLE for i in ids if int(i) == user["_preview_project"]}
     if is_admin(user):
         return {i: "owner" for i in ids}
     scope = tuple(ids)
@@ -290,6 +343,8 @@ def has_project_access(user, project_id, minimum="viewer") -> bool:
 
 def visible_project_ids(user):
     """Project ids the user may at least view."""
+    if user.get("_preview_project"):
+        return [user["_preview_project"]]
     if is_admin(user):
         return [r["id"] for r in db.query("SELECT id FROM projects")]
     rows = db.query(

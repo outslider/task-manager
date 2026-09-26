@@ -83,7 +83,17 @@ function projectHero(project, nav) {
       el('div', { class: 'proj-hero-stats' },
         chips.length ? el('div', { class: 'hero-chips' }, ...chips) : null,
         stats.total ? progressRing(stats.done || 0, stats.total) : null,
-        memberButton(project))),
+        memberButton(project),
+        project.my_role === 'owner' && !store.acting
+          ? el('button', {
+            class: 'hero-members hero-preview', type: 'button',
+            title: '社外ユーザーにこのプロジェクトがどう見えるか確かめる（見るだけ）',
+            onClick: async () => {
+              const { openGuestPreview } = await import('./members.js');
+              openGuestPreview(project);
+            },
+          }, icon('eye', { size: 14 }), el('span', { text: '社外の見え方' }))
+          : null)),
     nav);
 }
 
