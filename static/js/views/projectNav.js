@@ -11,6 +11,7 @@ const TABS = [
   { key: 'workload', label: '負荷', icon: 'gauge' },
   { key: 'bottlenecks', label: 'ボトルネック', icon: 'block' },
   { key: 'issues', label: '課題', icon: 'pin' },
+  { key: 'decisions', label: '決定', icon: 'scale' },
 ];
 
 export function projectTabs(projectId, active) {
@@ -40,6 +41,13 @@ export function projectTabs(projectId, active) {
     (tab.count ?? counts[tab.key])
       ? el('span', { class: 'count', text: String(tab.count ?? counts[tab.key]) })
       : null)));
+  // タブが横にはみ出すとき（スマホ）でも、いま開いているタブが見えるように寄せる
+  requestAnimationFrame(() => {
+    const active = nav.querySelector('.proj-tab.active');
+    if (active && nav.scrollWidth > nav.clientWidth) {
+      nav.scrollLeft = Math.max(0, active.offsetLeft - (nav.clientWidth - active.offsetWidth) / 2);
+    }
+  });
   return project ? projectHero(project, nav) : nav;
 }
 

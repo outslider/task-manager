@@ -369,6 +369,91 @@ DDL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
+    CREATE TABLE IF NOT EXISTS decisions (
+        id            INT AUTO_INCREMENT PRIMARY KEY,
+        project_id    INT NOT NULL,
+        seq           INT NOT NULL,                        -- プロジェクト内の番号（D-12）
+        title         VARCHAR(300) NOT NULL,
+        status        VARCHAR(12)  NOT NULL DEFAULT 'draft', -- draft|decided|review|superseded|withdrawn
+        what          TEXT,                                -- 何を決めたか
+        why           TEXT,                                -- なぜ（理由・根拠）
+        decided_on    DATE NULL,
+        category      VARCHAR(60)  NOT NULL DEFAULT '',
+        guest_visible TINYINT(1)   NOT NULL DEFAULT 0,     -- 社外ユーザーにも見せる
+        supersedes_id INT NULL,                            -- この決定が置き換えた、前の決定
+        version       INT NOT NULL DEFAULT 1,
+        created_by    INT NULL,
+        updated_by    INT NULL,
+        created_at    DATETIME NOT NULL,
+        updated_at    DATETIME NOT NULL,
+        UNIQUE KEY uq_decision_seq (project_id, seq),
+        KEY idx_decision_status (project_id, status),
+        CONSTRAINT fk_decision_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        CONSTRAINT fk_decision_supersedes FOREIGN KEY (supersedes_id) REFERENCES decisions(id) ON DELETE SET NULL,
+        CONSTRAINT fk_decision_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+        CONSTRAINT fk_decision_updater FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS decision_people (
+        decision_id INT NOT NULL,
+        user_id     INT NOT NULL,
+        PRIMARY KEY (decision_id, user_id),
+        CONSTRAINT fk_dp_decision FOREIGN KEY (decision_id) REFERENCES decisions(id) ON DELETE CASCADE,
+        CONSTRAINT fk_dp_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS decision_options (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        decision_id INT NOT NULL,
+        sort_order  INT NOT NULL DEFAULT 0,
+        title       VARCHAR(300) NOT NULL,
+        detail      TEXT,
+        adopted     TINYINT(1) NOT NULL DEFAULT 0,          -- 1 採用 / 0 却下
+        reason      TEXT,                                   -- 採用・却下の理由
+        KEY idx_do_decision (decision_id, sort_order),
+        CONSTRAINT fk_do_decision FOREIGN KEY (decision_id) REFERENCES decisions(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS decision_premises (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        decision_id INT NOT NULL,
+        sort_order  INT NOT NULL DEFAULT 0,
+        text        VARCHAR(500) NOT NULL,
+        review_on   DATE NULL,                              -- 見直す日
+        broken      TINYINT(1) NOT NULL DEFAULT 0,          -- この前提は崩れた
+        KEY idx_dpr_decision (decision_id, sort_order),
+        CONSTRAINT fk_dpr_decision FOREIGN KEY (decision_id) REFERENCES decisions(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS decision_links (
+        decision_id INT NOT NULL,
+        kind        VARCHAR(10) NOT NULL,                   -- task | issue
+        target_id   INT NOT NULL,
+        PRIMARY KEY (decision_id, kind, target_id),
+        KEY idx_dl_target (kind, target_id),
+        CONSTRAINT fk_dl_decision FOREIGN KEY (decision_id) REFERENCES decisions(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS decision_versions (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        decision_id INT NOT NULL,
+        version     INT NOT NULL,
+        snapshot    MEDIUMTEXT NOT NULL,                    -- その版の中身（JSON）
+        changes     VARCHAR(500) NOT NULL DEFAULT '',       -- 変わった項目
+        reason      TEXT,                                   -- 変えた理由
+        changed_by  INT NULL,
+        created_at  DATETIME NOT NULL,
+        UNIQUE KEY uq_decision_version (decision_id, version),
+        CONSTRAINT fk_dv_decision FOREIGN KEY (decision_id) REFERENCES decisions(id) ON DELETE CASCADE,
+        CONSTRAINT fk_dv_user FOREIGN KEY (changed_by) REFERENCES users(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
     CREATE TABLE IF NOT EXISTS user_mfa (
         user_id    INT PRIMARY KEY,
         secret     VARCHAR(64) NOT NULL,                -- 認証アプリと共有する鍵（base32）。画面には一度しか出さない

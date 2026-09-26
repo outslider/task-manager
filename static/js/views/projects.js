@@ -168,7 +168,7 @@ export async function render(container) {
     // タブの出し分け。「使う」は全員向け（画面をすっきりさせるため）、「社外にも見せる」は
     // 社外ユーザー向け（見せないものはサーバーでも閉じる）。タスクはいつも出す
     const TAB_CHOICES = [['gantt', 'ガント'], ['workload', '負荷'], ['bottlenecks', 'ボトルネック'],
-      ['issues', '課題'], ['tickets', 'チケット']];
+      ['issues', '課題'], ['decisions', '決定'], ['tickets', 'チケット']];
     const hiddenNow = new Set(project?.tabs_hidden || []);
     const guestNow = new Set(project?.guest_tabs || ['tasks', 'gantt', 'issues', 'tickets']);
     const tabRows = TAB_CHOICES.map(([key, label]) => {

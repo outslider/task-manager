@@ -9,7 +9,8 @@ from urllib.parse import quote
 
 import pymysql
 
-from . import (auth, db, graph, holidays, llm, logins, meetings, mentions, mfa, nlp, notify, prefs,
+from . import (auth, db, decisions, graph, holidays, llm, logins, meetings, mentions, mfa, nlp,
+               notify, prefs,
                recurrence, slack, taxonomy, templates, tickets, trash, workload)
 from .config import MAX_UPLOAD_BYTES, UPLOAD_DIR
 from .http_util import (HttpError, as_bool, as_date, as_datetime, as_int, bad_request,
@@ -93,6 +94,7 @@ def route(method, pattern):
 GUEST_ALLOWED = [(method, re.compile("^" + pattern + "$")) for method, pattern in (
     ("POST", r"/api/auth/login"), ("POST", r"/api/auth/logout"), ("GET", r"/api/auth/me"),
     ("POST", r"/api/auth/act/stop"),   # 管理者が社外ユーザーとして見ているときに、自分へ戻る
+    ("GET", r"/api/projects/\d+/decisions"), ("GET", r"/api/decisions/\d+"),
     ("POST", r"/api/auth/password"), ("PATCH", r"/api/auth/profile"),
     ("GET", r"/api/auth/mfa"), ("POST", r"/api/auth/mfa/(setup|enable|disable|recovery-codes)"),
     ("GET", r"/api/auth/logins"),
@@ -2690,6 +2692,16 @@ def search(ctx):
         "SELECT id, name, description, color FROM projects "
         " WHERE id IN %s AND (name LIKE %s OR description LIKE %s) ORDER BY archived, name "
         " LIMIT %s", (scope, like, like, limit))
+    decision_where = "d.project_id IN %s AND (d.title LIKE %s OR d.what LIKE %s OR d.why LIKE %s)"
+    decision_scope = tuple(auth.tab_project_ids(user, "decisions")) or (0,)
+    if auth.is_guest(user):
+        decision_where += " AND d.guest_visible=1 AND d.status<>'draft'"
+    decision_rows = db.query(
+        "SELECT d.id, d.seq, d.title, d.status, d.decided_on, d.project_id, p.name AS project_name "
+        "  FROM decisions d JOIN projects p ON p.id = d.project_id WHERE " + decision_where
+        + " ORDER BY d.decided_on DESC LIMIT %s", (decision_scope, like, like, like, limit))
+    for row in decision_rows:
+        row["status_label"] = decisions.STATUS_LABEL.get(row["status"], row["status"])
     todos = [] if ctx.actor else db.query(
         "SELECT id, title, due_date, is_done FROM todos "
         " WHERE user_id=%s AND (title LIKE %s OR note LIKE %s) "
@@ -2713,6 +2725,8 @@ def search(ctx):
         groups.append({"kind": "task", "label": "タスク", "icon": "✓", "items": tasks})
     if issues:
         groups.append({"kind": "issue", "label": "課題", "icon": "📌", "items": issues})
+    if decision_rows:
+        groups.append({"kind": "decision", "label": "決定", "icon": "⚖️", "items": decision_rows})
     if todos:
         groups.append({"kind": "todo", "label": "マイ ToDo", "icon": "📝", "items": todos})
     if ticket_rows:
@@ -4148,6 +4162,313 @@ def daily_update(ctx):
 
 
 # --------------------------------------------------------------------------
+# 意思決定ログ
+# --------------------------------------------------------------------------
+
+DECISION_LIST_LIMIT = 500
+
+
+def decision_guest_ok(user, row):
+    """社外ユーザーに見せてよい決定か：タブを見せていて、「社外にも見せる」付きで、検討中でない。"""
+    return (auth.guest_tab_open(user, row["project_id"], "decisions")
+            and bool(row["guest_visible"]) and row["status"] != "draft")
+
+
+def decision_or_404(user, decision_id, minimum="viewer"):
+    row = db.query_one("SELECT id, project_id, seq, title, status, guest_visible FROM decisions "
+                       "WHERE id=%s", (decision_id,))
+    role = auth.project_role(user, row["project_id"]) if row else None
+    if not row or role is None or (auth.is_guest(user) and not decision_guest_ok(user, row)):
+        raise not_found("決定が見つかりません")
+    if auth.ROLE_ORDER.get(role, 0) < auth.ROLE_ORDER[minimum]:
+        raise forbidden("決定を記録・変更できるのは、このプロジェクトの編集者以上です")
+    return row, role
+
+
+def _decision_ref(row):
+    return {"id": row["id"], "seq": row["seq"], "title": row["title"], "status": row["status"],
+            "status_label": decisions.STATUS_LABEL.get(row["status"], row["status"])}
+
+
+@route("GET", r"/api/projects/(\d+)/decisions")
+def list_decisions(ctx, project_id):
+    user = me(ctx)
+    project_or_404(user, project_id)
+    require_tab(user, project_id, "decisions")
+    where, params = ["d.project_id=%s"], [project_id]
+    if auth.is_guest(user):
+        where.append("d.guest_visible=1 AND d.status<>'draft'")
+    rows = db.query(
+        "SELECT d.id, d.seq, d.title, d.status, d.what, d.why, d.decided_on, d.category, "
+        "       d.guest_visible, d.supersedes_id, d.version, d.updated_at, "
+        "       (SELECT COUNT(*) FROM decision_options o WHERE o.decision_id=d.id) AS option_count, "
+        "       (SELECT COUNT(*) FROM decision_options o WHERE o.decision_id=d.id AND o.adopted=0) "
+        "           AS rejected_count, "
+        "       (SELECT COUNT(*) FROM decision_premises r WHERE r.decision_id=d.id) AS premise_count, "
+        "       (SELECT COUNT(*) FROM decision_premises r WHERE r.decision_id=d.id AND r.broken=1) "
+        "           AS broken_count "
+        "  FROM decisions d WHERE " + " AND ".join(where)
+        + " ORDER BY (d.status='draft') DESC, d.decided_on DESC, d.seq DESC LIMIT %s",
+        tuple(params + [DECISION_LIST_LIMIT]))
+    ids = [r["id"] for r in rows]
+    people = {}
+    if ids:
+        for p in db.query("SELECT dp.decision_id, u.id, u.name, u.avatar_color FROM decision_people dp "
+                          "JOIN users u ON u.id = dp.user_id WHERE dp.decision_id IN %s ORDER BY u.name",
+                          (tuple(ids),)):
+            people.setdefault(p.pop("decision_id"), []).append(p)
+    by_id = {r["id"]: r for r in rows}
+    for row in rows:
+        row["people"] = people.get(row["id"], [])
+        row["status_label"] = decisions.STATUS_LABEL.get(row["status"], row["status"])
+        row["guest_visible"] = bool(row["guest_visible"])
+        older = by_id.get(row["supersedes_id"])
+        row["supersedes"] = _decision_ref(older) if older else None
+        row["superseded_by"] = [_decision_ref(r) for r in rows if r["supersedes_id"] == row["id"]]
+    return json_response({"decisions": rows,
+                          "categories": sorted({r["category"] for r in rows if r["category"]})})
+
+
+def _decision_input(ctx, project_id, current=None):
+    """画面から来た中身を整える。渡されなかった項目は今の値のまま。"""
+    body, cur = ctx.body, current or {}
+    out = {}
+    out["title"] = (str(body.get("title", cur.get("title", ""))) or "").strip()[:300]
+    if not out["title"]:
+        raise bad_request("件名を入れてください")
+    status = body.get("status", cur.get("status", "draft"))
+    if status not in decisions.STATUSES:
+        raise bad_request("状態の指定が正しくありません")
+    out["status"] = status
+    out["what"] = str(body.get("what", cur.get("what") or ""))[:20000]
+    out["why"] = str(body.get("why", cur.get("why") or ""))[:20000]
+    decided = as_date(body["decided_on"]) if "decided_on" in body else (
+        cur["decided_on"].isoformat() if cur.get("decided_on") else None)
+    if status != "draft" and not decided:
+        decided = db.today().isoformat()
+    out["decided_on"] = decided
+    out["category"] = str(body.get("category", cur.get("category") or "")).strip()[:60]
+    out["guest_visible"] = as_bool(body["guest_visible"]) if "guest_visible" in body else bool(
+        cur.get("guest_visible"))
+    supersedes = as_int(body["supersedes_id"]) if "supersedes_id" in body else cur.get("supersedes_id")
+    if supersedes:
+        target = db.query_one("SELECT id, project_id FROM decisions WHERE id=%s", (supersedes,))
+        if not target or target["project_id"] != project_id:
+            raise bad_request("置き換える決定は、同じプロジェクトのものを選んでください")
+        if cur.get("id") and (supersedes == cur["id"] or decisions.chain_contains(supersedes, cur["id"])):
+            raise bad_request("置き換えの関係が輪になってしまいます")
+    out["supersedes_id"] = supersedes or None
+
+    if "people" in body:
+        ids = []
+        for uid in body.get("people") or []:
+            uid = as_int(uid)
+            if uid and uid not in ids:
+                ensure_member(uid, project_id, "決めた人")
+                ids.append(uid)
+        out["people"] = ids
+    else:
+        out["people"] = [p["id"] for p in cur.get("people", [])]
+    if "options" in body:
+        options = body.get("options") or []
+        if not isinstance(options, list) or len(options) > 30:
+            raise bad_request("検討した案は 30 件までです")
+        out["options"] = [{"title": str(o.get("title") or "").strip()[:300],
+                           "detail": str(o.get("detail") or "")[:5000],
+                           "adopted": as_bool(o.get("adopted")),
+                           "reason": str(o.get("reason") or "")[:5000]}
+                          for o in options if str(o.get("title") or "").strip()]
+    else:
+        out["options"] = cur.get("options", [])
+    if "premises" in body:
+        premises = body.get("premises") or []
+        if not isinstance(premises, list) or len(premises) > 30:
+            raise bad_request("前提条件は 30 件までです")
+        out["premises"] = [{"text": str(p.get("text") or "").strip()[:500],
+                            "review_on": as_date(p.get("review_on")),
+                            "broken": as_bool(p.get("broken"))}
+                           for p in premises if str(p.get("text") or "").strip()]
+    else:
+        out["premises"] = cur.get("premises", [])
+    links = body.get("links") if "links" in body else cur.get("links", {"tasks": [], "issues": []})
+    links = links or {}
+    task_ids = sorted({as_int(t) for t in links.get("tasks") or [] if as_int(t)})
+    issue_ids = sorted({as_int(i) for i in links.get("issues") or [] if as_int(i)})
+    if task_ids and db.scalar("SELECT COUNT(*) AS c FROM tasks WHERE id IN %s AND project_id=%s "
+                              "AND is_heading=0", (tuple(task_ids), project_id)) != len(task_ids):
+        raise bad_request("関連に選べるのは、このプロジェクトのタスクだけです")
+    if issue_ids and db.scalar("SELECT COUNT(*) AS c FROM issues WHERE id IN %s AND project_id=%s",
+                               (tuple(issue_ids), project_id)) != len(issue_ids):
+        raise bad_request("関連に選べるのは、このプロジェクトの課題だけです")
+    out["links"] = {"tasks": task_ids, "issues": issue_ids}
+    return out
+
+
+def _write_decision(decision_id, data, user_id):
+    db.execute(
+        "UPDATE decisions SET title=%s, status=%s, what=%s, why=%s, decided_on=%s, category=%s, "
+        "guest_visible=%s, supersedes_id=%s, updated_by=%s, updated_at=%s WHERE id=%s",
+        (data["title"], data["status"], data["what"], data["why"], data["decided_on"], data["category"],
+         1 if data["guest_visible"] else 0, data["supersedes_id"], user_id, db.now(), decision_id))
+    db.execute("DELETE FROM decision_people WHERE decision_id=%s", (decision_id,))
+    if data["people"]:
+        db.executemany("INSERT INTO decision_people(decision_id, user_id) VALUES(%s,%s)",
+                       [(decision_id, uid) for uid in data["people"]])
+    db.execute("DELETE FROM decision_options WHERE decision_id=%s", (decision_id,))
+    if data["options"]:
+        db.executemany(
+            "INSERT INTO decision_options(decision_id, sort_order, title, detail, adopted, reason) "
+            "VALUES(%s,%s,%s,%s,%s,%s)",
+            [(decision_id, i, o["title"], o["detail"], 1 if o["adopted"] else 0, o["reason"])
+             for i, o in enumerate(data["options"])])
+    db.execute("DELETE FROM decision_premises WHERE decision_id=%s", (decision_id,))
+    if data["premises"]:
+        db.executemany(
+            "INSERT INTO decision_premises(decision_id, sort_order, text, review_on, broken) "
+            "VALUES(%s,%s,%s,%s,%s)",
+            [(decision_id, i, p["text"], p["review_on"], 1 if p["broken"] else 0)
+             for i, p in enumerate(data["premises"])])
+    db.execute("DELETE FROM decision_links WHERE decision_id=%s", (decision_id,))
+    rows = [(decision_id, "task", t) for t in data["links"]["tasks"]] + \
+        [(decision_id, "issue", i) for i in data["links"]["issues"]]
+    if rows:
+        db.executemany("INSERT INTO decision_links(decision_id, kind, target_id) VALUES(%s,%s,%s)", rows)
+
+
+def _supersede(old_id, new_row, user_id):
+    """新しい決定が前の決定を置き換えたら、前の決定を「置き換え済み」にして、理由付きの版を残す。"""
+    old = decisions.load(old_id)
+    if not old or old["status"] in ("superseded", "withdrawn"):
+        return
+    before = decisions.snapshot(old)
+    db.execute("UPDATE decisions SET status='superseded', version=version+1, updated_by=%s, "
+               "updated_at=%s WHERE id=%s", (user_id, db.now(), old_id))
+    after = decisions.snapshot(decisions.load(old_id))
+    decisions.record_version(old_id, old["version"] + 1, after, decisions.changed_fields(before, after),
+                             "D-{}「{}」に置き換えられたため".format(new_row["seq"], new_row["title"]), user_id)
+
+
+@route("POST", r"/api/projects/(\d+)/decisions")
+def create_decision(ctx, project_id):
+    user = me(ctx)
+    project_or_404(user, project_id, "editor")
+    data = _decision_input(ctx, project_id)
+    with db.transaction():
+        seq = (db.scalar("SELECT COALESCE(MAX(seq), 0) AS m FROM decisions WHERE project_id=%s "
+                         "FOR UPDATE", (project_id,), default=0) or 0) + 1
+        decision_id = db.insert(
+            "INSERT INTO decisions(project_id, seq, title, created_by, updated_by, created_at, updated_at) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s)",
+            (project_id, seq, data["title"], user["id"], user["id"], db.now(), db.now()))
+        _write_decision(decision_id, data, user["id"])
+        row = decisions.load(decision_id)
+        decisions.record_version(decision_id, 1, decisions.snapshot(row), ["作成"],
+                                 ctx.body.get("reason") or "", user["id"])
+        if data["supersedes_id"] and data["status"] == "decided":
+            _supersede(data["supersedes_id"], row, user["id"])
+    return json_response({"decision": _decision_out(user, decision_id)}, 201)
+
+
+@route("PATCH", r"/api/decisions/(\d+)")
+def update_decision(ctx, decision_id):
+    """中身を変える。決めたあと（決定・見直し中・置き換え済み・取り消し）なら、変えた理由が要る。"""
+    user = me(ctx)
+    row, _role = decision_or_404(user, decision_id, "editor")
+    current = decisions.load(decision_id)
+    data = _decision_input(ctx, row["project_id"], current)
+    reason = str(ctx.body.get("reason") or "").strip()[:5000]
+    before = decisions.snapshot(current)
+    with db.transaction():
+        _write_decision(decision_id, data, user["id"])
+        fresh = decisions.load(decision_id)
+        after = decisions.snapshot(fresh)
+        changes = decisions.changed_fields(before, after)
+        if not changes:
+            raise bad_request("変更がありません")
+        if current["status"] in decisions.SETTLED and not reason:
+            raise bad_request("決めたあとに変えるときは、変えた理由を書いてください")
+        version = current["version"] + 1
+        db.execute("UPDATE decisions SET version=%s WHERE id=%s", (version, decision_id))
+        decisions.record_version(decision_id, version, after, changes, reason, user["id"])
+        if (data["supersedes_id"] and data["status"] == "decided"
+                and (data["supersedes_id"] != current["supersedes_id"] or current["status"] != "decided")):
+            _supersede(data["supersedes_id"], fresh, user["id"])
+    return json_response({"decision": _decision_out(user, decision_id)})
+
+
+def _decision_out(user, decision_id):
+    row = decisions.load(decision_id)
+    row["status_label"] = decisions.STATUS_LABEL.get(row["status"], row["status"])
+    return row
+
+
+@route("GET", r"/api/decisions/(\d+)")
+def get_decision(ctx, decision_id):
+    user = me(ctx)
+    row, role = decision_or_404(user, decision_id)
+    decision = _decision_out(user, decision_id)
+    guest = auth.is_guest(user)
+    project = db.query_one("SELECT id, name, color FROM projects WHERE id=%s", (row["project_id"],))
+    links = decision["links"]
+    tasks = db.query("SELECT id, title, status, due_date FROM tasks WHERE id IN %s AND is_heading=0 "
+                     "ORDER BY sort_order, id", (tuple(links["tasks"]) or (0,),))
+    issues = []
+    if not guest or auth.guest_tab_open(user, row["project_id"], "issues"):
+        issues = db.query("SELECT id, seq, title, status FROM issues WHERE id IN %s ORDER BY seq",
+                          (tuple(links["issues"]) or (0,),))
+    related = db.query("SELECT id, project_id, seq, title, status, guest_visible FROM decisions "
+                       "WHERE id=%s OR supersedes_id=%s", (decision["supersedes_id"] or 0, decision_id))
+    if guest:
+        related = [r for r in related if decision_guest_ok(user, r)]
+    supersedes = next((_decision_ref(r) for r in related if r["id"] == decision["supersedes_id"]), None)
+    superseded_by = [_decision_ref(r) for r in related if r["id"] != decision["supersedes_id"]]
+    if guest:
+        decision.pop("supersedes_id", None)
+    out = {
+        "decision": decision, "project": project, "my_role": role,
+        "tasks": tasks, "issues": issues, "supersedes": supersedes, "superseded_by": superseded_by,
+    }
+    if not guest:
+        # 版の履歴は社内だけ（変えた理由に社内の事情が書かれることがあるため）
+        out["versions"] = db.query(
+            "SELECT v.version, v.changes, v.reason, v.created_at, u.name AS changed_by_name "
+            "FROM decision_versions v LEFT JOIN users u ON u.id = v.changed_by "
+            "WHERE v.decision_id=%s ORDER BY v.version DESC", (decision_id,))
+        for version in out["versions"]:
+            version["created_at"] = version["created_at"].isoformat(sep=" ", timespec="minutes")
+        creator = db.query_one("SELECT u.name, d.created_at FROM decisions d LEFT JOIN users u "
+                               "ON u.id = d.created_by WHERE d.id=%s", (decision_id,))
+        out["created_by_name"] = creator["name"] if creator else ""
+    return json_response(out)
+
+
+@route("GET", r"/api/decisions/(\d+)/versions/(\d+)")
+def get_decision_version(ctx, decision_id, version):
+    user = me(ctx)
+    decision_or_404(user, decision_id)
+    if auth.is_guest(user):
+        raise not_found("決定が見つかりません")
+    row = db.query_one("SELECT snapshot, version, changes, reason, created_at FROM decision_versions "
+                       "WHERE decision_id=%s AND version=%s", (decision_id, version))
+    if not row:
+        raise not_found("その版はありません")
+    snap = json.loads(row["snapshot"])
+    snap["status_label"] = decisions.STATUS_LABEL.get(snap.get("status"), snap.get("status"))
+    return json_response({"version": row["version"], "snapshot": snap, "changes": row["changes"],
+                          "reason": row["reason"],
+                          "created_at": row["created_at"].isoformat(sep=" ", timespec="minutes")})
+
+
+@route("DELETE", r"/api/decisions/(\d+)")
+def delete_decision(ctx, decision_id):
+    """消すのはプロジェクト管理者だけ（ふだんは「取り消し」にして残す）。"""
+    user = me(ctx)
+    row, _role = decision_or_404(user, decision_id, "owner")
+    db.execute("DELETE FROM decisions WHERE id=%s", (decision_id,))
+    return json_response({"ok": True})
+
+
+# --------------------------------------------------------------------------
 # settings / admin
 # --------------------------------------------------------------------------
 
@@ -4242,6 +4563,7 @@ def meta(ctx):
         "slack_has_default": bool(db.get_setting("slack_webhook_url", "").strip()),
         "markers": [{"value": v, "char": ch, "label": label} for v, ch, label in MARKERS],
         "project_themes": list(PROJECT_THEMES),
+        "decision_statuses": [{"value": k, "label": v} for k, v in decisions.STATUS_LABEL.items()],
         "creatable_account_roles": [] if auth.is_guest(user)
         else [r for r in owner_creatable_roles(user) if r != "admin"],
         "project_colors": list(PROJECT_COLORS),

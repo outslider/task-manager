@@ -99,6 +99,10 @@ function hit(kind, item, input) {
         const { openIssueDetail } = await import('./issueDetail.js');
         openIssueDetail(item.issue_id, { onChange });
       }
+    } else if (kind === 'decision') {
+      closeAllOverlays();
+      const { openDecisionDetail } = await import('./decisionDetail.js');
+      openDecisionDetail(item.id, { onChange });
     } else if (kind === 'todo') {
       location.hash = '#/todos';
     } else if (KIND_ROUTE[kind]) {
@@ -143,6 +147,14 @@ function hit(kind, item, input) {
         el('span', { text: item.queue_name || '' }),
         item.on_behalf_of ? el('span', { text: ` · 依頼元 ${item.on_behalf_of}` }) : null,
         item.assignee_name ? el('span', { text: ` · ${item.assignee_name}` }) : null));
+    return node;
+  }
+  if (kind === 'decision') {
+    fill(node,
+      el('span', { class: 'search-title', text: `D-${item.seq} ${item.title}` }),
+      el('span', { class: 'search-sub',
+        text: `${item.project_name || ''} · ${item.status_label || ''}`
+          + (item.decided_on ? ` · ${formatDate(item.decided_on)}` : '') }));
     return node;
   }
   if (kind === 'todo') {

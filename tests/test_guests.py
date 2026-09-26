@@ -384,8 +384,9 @@ class TestProjectTabs(GuestTestCase):
 
     def test_defaults(self):
         self.assertEqual(self.my_tabs(self.g), ["tasks", "gantt", "issues", "tickets"])
+        # 「決定」は社内には出るが、社外ユーザーには見せると決めるまで出ない
         self.assertEqual(self.my_tabs(self.admin),
-                         ["tasks", "gantt", "workload", "bottlenecks", "issues", "tickets"])
+                         ["tasks", "gantt", "workload", "bottlenecks", "issues", "decisions", "tickets"])
         project = self.admin.get("/api/projects/{}".format(self.project["id"]))[1]["project"]
         self.assertEqual(project["guest_tabs"], ["tasks", "gantt", "issues", "tickets"])
         # 設定そのものはプロジェクト管理者にだけ

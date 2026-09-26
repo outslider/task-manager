@@ -218,9 +218,10 @@ def is_guest(user) -> bool:
 
 
 # プロジェクトの中のタブ。タスクはプロジェクトの入口なので、いつも出す。
-PROJECT_TABS = ("tasks", "gantt", "workload", "bottlenecks", "issues", "tickets")
+PROJECT_TABS = ("tasks", "gantt", "workload", "bottlenecks", "issues", "decisions", "tickets")
 TAB_LABEL = {"tasks": "タスク", "gantt": "ガント", "workload": "負荷",
-             "bottlenecks": "ボトルネック", "issues": "課題", "tickets": "チケット"}
+             "bottlenecks": "ボトルネック", "issues": "課題", "decisions": "決定",
+             "tickets": "チケット"}
 # 社外ユーザーに見せるタブの初期値。「見せるものを並べる」形なので、あとからタブを
 # 足しても社外ユーザーには勝手に見えない。負荷（担当者ごとの工数）はどうしても見せない。
 GUEST_TABS_DEFAULT = "tasks,gantt,issues,tickets"

@@ -293,7 +293,7 @@ export function setHeader(title, actions = []) {
   document.title = `${title} — ${store.ui.app_name || 'タスク管理'}`;
 }
 
-const PROJECT_TABS = ['tasks', 'gantt', 'workload', 'bottlenecks', 'issues'];
+const PROJECT_TABS = ['tasks', 'gantt', 'workload', 'bottlenecks', 'issues', 'decisions'];
 const LAST_TAB_KEY = 'tm.lastProjectTab';
 
 /** 直前に開いていたプロジェクト内の画面。既定はタスク一覧。 */
@@ -349,6 +349,7 @@ const ROUTES = [
   [/^#\/gantt$/, () => ({ view: 'gantt', projectId: null })],
   [/^#\/p\/(\d+)\/bottlenecks$/, (m) => ({ view: 'bottlenecks', projectId: Number(m[1]) })],
   [/^#\/p\/(\d+)\/issues$/, (m) => ({ view: 'issues', projectId: Number(m[1]) })],
+  [/^#\/p\/(\d+)\/decisions$/, (m) => ({ view: 'decisions', projectId: Number(m[1]) })],
   [/^#\/p\/(\d+)\/workload$/, (m) => ({ view: 'workload', projectId: Number(m[1]) })],
   [/^#\/workload$/, () => ({ view: 'workload' })],
   [/^#\/issues$/, () => ({ view: 'issues' })],
@@ -390,6 +391,7 @@ const LOADERS = {
   gantt: () => import('./views/gantt.js'),
   bottlenecks: () => import('./views/bottlenecks.js'),
   issues: () => import('./views/issues.js'),
+  decisions: () => import('./views/decisions.js'),
   workload: () => import('./views/workload.js'),
   links: () => import('./views/links.js'),
   tickets: () => import('./views/tickets.js'),
