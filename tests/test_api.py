@@ -5,11 +5,14 @@ Runs against a real MariaDB/MySQL database (TM_TEST_DB_NAME, default
 
     python -m unittest discover -s tests -v
 """
+import atexit
 import datetime
 import json
 import os
+import shutil
 import socket
 import sys
+import tempfile
 import threading
 import unittest
 import urllib.error
@@ -31,11 +34,18 @@ os.environ.setdefault("TM_DB_PASSWORD", "tmapp_dev_pw")
 os.environ.setdefault("TM_SECURE_COOKIE", "0")
 os.environ.setdefault("TM_ADMIN_EMAIL", "admin@test.local")
 os.environ.setdefault("TM_ADMIN_PASSWORD", "admin-test-pw")
+# 添付ファイルは一時フォルダへ。本番と同じ data/uploads に書くと、テスト用 DB を消したあとに
+# どこからも参照されないファイルが本番の置き場（とバックアップ）に残ってしまう
+if "TM_DATA_DIR" not in os.environ:
+    os.environ["TM_DATA_DIR"] = tempfile.mkdtemp(prefix="tm-test-data-")
+    atexit.register(shutil.rmtree, os.environ["TM_DATA_DIR"], True)
 
 from app import auth, config, db, http_util, notify, prefs, taxonomy  # noqa: E402
 import server as server_module  # noqa: E402
 
 ADMIN = ("admin@test.local", "admin-test-pw")
+assert config.UPLOAD_DIR != os.path.join(config.BASE_DIR, "data", "uploads"), \
+    "テストが本番の添付の置き場を使おうとしています"
 
 
 def this_week(offset_days=0):

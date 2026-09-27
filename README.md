@@ -130,6 +130,7 @@ vi config.ini          # DB 接続情報とポートを記入
 | `TM_HOST` / `TM_PORT` | `0.0.0.0` / `8080` | 待ち受けアドレス |
 | `TM_BASE_PATH` | （空） | サブディレクトリ公開時のパス（例 `/tasks`） |
 | `TM_MAX_UPLOAD` | `26214400` | 添付ファイル上限（バイト） |
+| `TM_DATA_DIR` | `data`（アプリの下） | 添付ファイルの置き場（この下の `uploads/`） |
 | `TM_SECURE_COOKIE` | `0` | HTTPS 公開時は `1` |
 | `TM_ADMIN_EMAIL` / `TM_ADMIN_PASSWORD` | `admin@example.com` / 自動生成 | 初期管理者 |
 
@@ -1974,6 +1975,8 @@ TM_DB_PASSWORD='アプリ用ユーザーのパスワード' .venv/bin/python -m 
 テストは `config.ini` を読まず、環境変数と既定値だけで動きます（`TM_DB_NAME`
 既定 `task_manager_test`、`TM_DB_USER` 既定 `tmapp`）。実行のたびにテスト用
 データベースの中身は作り直されるので、本番の DB 名を指定しないでください。
+添付ファイルは実行ごとの一時フォルダ（`TM_DATA_DIR`）に書き、終わると消します。
+本番の `data/uploads` には書きません（書こうとするとテストが止まります）。
 
 ### API の概要
 

@@ -8,7 +8,8 @@ import configparser
 import os
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+# 添付ファイルなどの置き場。テストは TM_DATA_DIR で一時フォルダに向け、本番の添付と混ぜない
+DATA_DIR = os.environ.get("TM_DATA_DIR") or os.path.join(BASE_DIR, "data")
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 CONFIG_FILE = os.environ.get("TM_CONFIG", os.path.join(BASE_DIR, "config.ini"))
