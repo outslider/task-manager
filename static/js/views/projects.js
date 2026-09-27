@@ -327,12 +327,10 @@ export async function render(container) {
           el('div', { style: { margin: '10px 0' } },
             el('button', {
               class: 'btn btn-sm', type: 'button',
-              onClick: async () => {
-                const { openGuestPreview } = await import('./members.js');
-                openGuestPreview(project);
-              },
-            }, '👁 社外ユーザーとしてプレビュー'),
-            el('span', { class: 'hint', text: '　保存したあとの見え方を、社外ユーザーの立場で確かめられます' })),
+              // 見え方は保存済みの設定で決まるので、いま変えたチェックを先に保存する
+              onClick: async () => { if (await save()) closeModal('preview'); },
+            }, '👁 保存して社外ユーザーとしてプレビュー'),
+            el('span', { class: 'hint', text: '　いまの設定を保存してから、社外ユーザーの立場で見え方を確かめます' })),
           el('div', { class: 'hint',
             text: '「使う」を外したタブは、このプロジェクトの画面から隠れます。'
               + '社外ユーザーに見せないタブは、画面だけでなくデータも社外ユーザーには閉じます'
@@ -352,10 +350,45 @@ export async function render(container) {
     }
     showPane('basic');
 
+    /** 設定を保存する。保存できたら true。 */
+    const save = async () => {
+      const payload = {
+        name: name.value.trim(),
+        description: description.value,
+        color: look.color,
+        theme: look.theme,
+        icon: look.icon,
+        owner_id: Number(ownerSelect.value),
+        slack_webhook_url: slack.value.trim(),
+        notify_enabled: notifyEnabled.checked,
+        slack_events: perProjectEvents.checked
+          ? slackEventBoxes.filter(({ box }) => box.checked).map(({ event }) => event.value)
+          : [],
+      };
+      if (project) {
+        payload.archived = archived.checked;
+        payload.tabs_hidden = tabRows.filter((row) => !row.use.checked).map((row) => row.key);
+        payload.guest_tabs = ['tasks', ...tabRows
+          .filter((row) => row.use.checked && row.guest.checked && row.key !== 'workload')
+          .map((row) => row.key)];
+      }
+      if (!payload.name) { toast('プロジェクト名を入力してください', 'error'); return false; }
+      try {
+        if (project) await api.patch(`/api/projects/${project.id}`, payload);
+        else await api.post('/api/projects', payload);
+        toast('保存しました', 'ok');
+        return true;
+      } catch (error) {
+        toast(error.message, 'error');
+        return false;
+      }
+    };
+    let closeModal = () => {};
+
     const result = await openModal({
       title: project ? 'プロジェクト設定' : '新規プロジェクト',
       wide: true,
-      build: () => el('div', {}, paneTabs, paneHost),
+      build: (close) => { closeModal = close; return el('div', {}, paneTabs, paneHost); },
       footer: (close) => [
         project
           ? el('button', {
@@ -373,39 +406,15 @@ export async function render(container) {
         el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
         el('button', {
           class: 'btn btn-primary',
-          onClick: async () => {
-            const payload = {
-              name: name.value.trim(),
-              description: description.value,
-              color: look.color,
-              theme: look.theme,
-              icon: look.icon,
-              owner_id: Number(ownerSelect.value),
-              slack_webhook_url: slack.value.trim(),
-              notify_enabled: notifyEnabled.checked,
-              slack_events: perProjectEvents.checked
-                ? slackEventBoxes.filter(({ box }) => box.checked).map(({ event }) => event.value)
-                : [],
-            };
-            if (project) {
-              payload.archived = archived.checked;
-              payload.tabs_hidden = tabRows.filter((row) => !row.use.checked).map((row) => row.key);
-              payload.guest_tabs = ['tasks', ...tabRows
-                .filter((row) => row.use.checked && row.guest.checked && row.key !== 'workload')
-                .map((row) => row.key)];
-            }
-            if (!payload.name) { toast('プロジェクト名を入力してください', 'error'); return; }
-            try {
-              if (project) await api.patch(`/api/projects/${project.id}`, payload);
-              else await api.post('/api/projects', payload);
-              toast('保存しました', 'ok');
-              close('saved');
-            } catch (error) { toast(error.message, 'error'); }
-          },
+          onClick: async () => { if (await save()) close('saved'); },
         }, '保存'),
       ],
     });
     if (result) reload();
+    if (result === 'preview') {
+      const { openGuestPreview } = await import('./members.js');
+      openGuestPreview(project);
+    }
   }
 
   async function manageMembers(project) {
