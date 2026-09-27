@@ -8,7 +8,7 @@ import {
   avatar, debounce, downloadBlob, dueClass, dueLabel, el, fill,
   formatDate, skeleton, today, toISO,
 } from '../util.js';
-import { iconLabel } from '../icons.js';
+import { icon, iconLabel } from '../icons.js';
 import { issueCategoryChip, option } from './pickers.js';
 import { projectTabs } from './projectNav.js';
 import { openIssueForm } from './issueForm.js';
@@ -119,7 +119,7 @@ export async function render(container, route) {
     fill(rowsHost, ...(loaded.length
       ? loaded.map(issueRow)
       : [el('div', { class: 'empty' },
-        el('div', { class: 'big', text: '📌' }),
+        el('div', { class: 'big' }, icon('pin')),
         state.q || state.status !== 'open' || state.category
           ? '条件に一致する課題がありません'
           : '課題は登録されていません',
@@ -178,18 +178,25 @@ export async function render(container, route) {
     el('div', { class: 'cell-mut cell-hide-sm', style: { fontSize: '12px' } },
       issue.task_count
         ? el('span', {
+          class: 'meta-count',
           title: `関連タスク ${issue.task_count} 件（未完了 ${issue.open_task_count} 件）`,
-        }, `🔗 ${issue.open_task_count}/${issue.task_count}`)
+        }, icon('link', { size: 13 }), `${issue.open_task_count}/${issue.task_count}`)
         : '—'),
     el('div', { class: 'issue-sub' },
       el('span', { class: `badge ${issue.status}`, text: ISSUE_STATUS_LABEL[issue.status] }),
       issueCategoryChip(issue.category, { small: true }),
       el('span', { class: `sev sev-${issue.severity}`, text: `影響度 ${SEVERITY_LABEL[issue.severity]}` }),
-      issue.owner_name ? el('span', { text: `👤 ${issue.owner_name}` }) : null,
-      issue.due_date
-        ? el('span', { class: `cell-due ${overdueClass}`, text: `📅 ${formatDate(issue.due_date)}` })
+      issue.owner_name
+        ? el('span', { class: 'meta-count' }, icon('user', { size: 13 }), issue.owner_name)
         : null,
-      issue.task_count ? el('span', { text: `🔗 ${issue.open_task_count}/${issue.task_count}` }) : null));
+      issue.due_date
+        ? el('span', { class: `meta-count cell-due ${overdueClass}` },
+          icon('calendar', { size: 13 }), formatDate(issue.due_date))
+        : null,
+      issue.task_count
+        ? el('span', { class: 'meta-count' },
+          icon('link', { size: 13 }), `${issue.open_task_count}/${issue.task_count}`)
+        : null));
   }
 
   async function createIssue() {

@@ -5,10 +5,11 @@ import { store } from '../store.js';
 import { linkify } from './mention.js';
 import { clear, el, fill, formatDateTime, skeleton, toast } from '../util.js';
 import { openTaskDetail } from './taskDetail.js';
+import { icon } from '../icons.js';
 
 const TYPE_ICON = {
-  overdue: '🔥', due_soon: '⏳', assigned: '👤', comment: '💬', digest: '📋', mentioned: '📣',
-  decision_review: '⚖️',
+  overdue: 'flame', due_soon: 'hourglass', assigned: 'user', comment: 'message', digest: 'clipboard',
+  mentioned: 'at', decision_review: 'scale',
 };
 
 export async function render(container) {
@@ -43,7 +44,7 @@ export async function render(container) {
     clear(listHost);
     if (data.notifications.length === 0) {
       listHost.append(el('div', { class: 'empty' },
-        el('div', { class: 'big', text: '🔔' }), '通知はありません'));
+        el('div', { class: 'big' }, icon('bell')), '通知はありません'));
       return;
     }
     for (const item of data.notifications) {
@@ -79,7 +80,7 @@ export async function render(container) {
       },
     },
     el('span', { class: 'dot' }),
-    el('span', { text: TYPE_ICON[item.type] || '•' }),
+    el('span', {}, TYPE_ICON[item.type] ? icon(TYPE_ICON[item.type], { size: 16 }) : '•'),
     el('div', { class: 'notif-body' },
       el('div', { class: 'notif-title', text: item.title }),
       ...summarize(item.body),

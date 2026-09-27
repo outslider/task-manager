@@ -6,6 +6,7 @@ import { avatar, el, fill, toast } from '../util.js';
 import { option } from './pickers.js';
 import { projectTabs } from './projectNav.js';
 import { openTaskDetail } from './taskDetail.js';
+import { icon } from '../icons.js';
 
 export async function render(container, route) {
   const projectId = route.projectId || null;
@@ -64,7 +65,7 @@ export async function render(container, route) {
           rows.length
             ? el('div', { class: 'wl-wrap' }, table(weeks, rows, capacity, showHours))
             : el('div', { class: 'empty' },
-              el('div', { class: 'big', text: '🗓' }), '期間の入ったタスクがありません'))),
+              el('div', { class: 'big' }, icon('calendar')), '期間の入ったタスクがありません'))),
 
       unscheduled.length
         ? el('div', { class: 'card', style: { marginTop: '14px' } },

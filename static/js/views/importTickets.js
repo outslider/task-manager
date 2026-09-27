@@ -22,7 +22,7 @@ export async function openTicketImport() {
 
   const queueSelect = el('select', { class: 'select' },
     ...open.map((q) => option(q.id,
-      `${q.icon || '📮'} ${q.name}${q.project_name ? `（${q.project_name}）` : ''}`)));
+      `${q.icon ? `${q.icon} ` : ''}${q.name}${q.project_name ? `（${q.project_name}）` : ''}`)));
   const paste = el('textarea', {
     class: 'textarea', rows: 6, spellcheck: 'false',
     placeholder: 'Excel で範囲を選んでコピーし、ここに貼り付けます（見出し行も含めて構いません）',

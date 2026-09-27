@@ -11,7 +11,7 @@ import {
 import { icon } from '../icons.js';
 import { option } from './pickers.js';
 
-const SCOPE_ICON = { project: '📁', tasks: '🧩' };
+const SCOPE_ICON = { project: 'folder', tasks: 'blocks' };
 
 /**
  * 雛形の一覧。使う・名前を変える・消すができる。
@@ -42,7 +42,9 @@ export async function openTemplates({ scope = '', project = null, onApplied } = 
     el('div', { style: { minWidth: 0 } },
       el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center',
         flexWrap: 'wrap' } },
-      el('strong', { text: `${SCOPE_ICON[tpl.scope] || ''} ${tpl.name}` }),
+      el('strong', {},
+        SCOPE_ICON[tpl.scope] ? icon(SCOPE_ICON[tpl.scope], { size: 15, class: 'ico-inline' }) : null,
+        tpl.name),
       el('span', { class: 'badge doing', text: `${tpl.task_count} タスク` }),
       el('span', { class: 'badge',
         text: tpl.scope === 'project' ? 'プロジェクト一式' : 'タスクのかたまり' })),

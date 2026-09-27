@@ -122,7 +122,7 @@ export async function render(container) {
       ? found : found.filter((link) => (link.category || UNCATEGORIZED) === state.category);
     if (!links.length) {
       fill(listHost, el('div', { class: 'card' }, el('div', { class: 'empty' },
-        el('div', { class: 'big', text: '🔗' }),
+        el('div', { class: 'big' }, icon('link')),
         el('div', { text: state.query ? '一致するリンクがありません' : 'まだリンクがありません' }),
         state.query || addButton.hidden
           ? null

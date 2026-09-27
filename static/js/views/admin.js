@@ -4,12 +4,13 @@ import { setHeader } from '../app.js';
 import { store } from '../store.js';
 import { avatar, clear, confirmDialog, el, fill, formatDateTime, openModal, popupMenu, toast } from '../util.js';
 import { ACCENT_PRESETS, applyAccent } from '../theme.js';
+import { icon as lineIcon } from '../icons.js';
 import { iconPicker } from './pickers.js';
 
 export async function render(container, route) {
   if (!store.isAdmin()) {
     fill(container, el('div', { class: 'card' },
-      el('div', { class: 'empty' }, el('div', { class: 'big', text: '🔒' }),
+      el('div', { class: 'empty' }, el('div', { class: 'big' }, lineIcon('lock')),
         'このページは管理者のみ利用できます')));
     return;
   }
@@ -116,7 +117,7 @@ async function renderUsers(container) {
             class: 'btn btn-sm', title: 'パスワード再発行・2FA解除・削除',
             onClick: (event) => popupMenu(event.currentTarget, (item) => [
               user.is_active && user.role !== 'admin' && user.id !== store.user.id
-                ? item('👁 この人として見る（見るだけ）', () => actAs(user)) : null,
+                ? item([lineIcon('eye', { size: 15 }), 'この人として見る（見るだけ）'], () => actAs(user)) : null,
               item('パスワードを再発行', () => resetPassword(user)),
               user.mfa_enabled ? item('多要素認証を解除', () => resetMfa(user)) : null,
               item('削除', () => removeUser(user), true),
@@ -289,7 +290,7 @@ async function renderGroups(container) {
     clear(grid);
     if (data.groups.length === 0) {
       grid.append(el('div', { class: 'card' },
-        el('div', { class: 'empty' }, el('div', { class: 'big', text: '🏷️' }), 'グループがありません')));
+        el('div', { class: 'empty' }, el('div', { class: 'big' }, lineIcon('tag')), 'グループがありません')));
     }
     for (const group of data.groups) {
       grid.append(el('div', { class: 'card' },
@@ -902,12 +903,12 @@ async function renderQueues(container) {
     clear(grid);
     if (!queues.length) {
       grid.append(el('div', { class: 'card' },
-        el('div', { class: 'empty' }, el('div', { class: 'big', text: '📮' }), '窓口がありません')));
+        el('div', { class: 'empty' }, el('div', { class: 'big' }, lineIcon('ticket')), '窓口がありません')));
     }
     for (const queue of queues) {
       grid.append(el('div', { class: `card${queue.is_active ? '' : ' is-muted'}` },
         el('div', { class: 'card-head' },
-          el('h2', {}, `${queue.icon || '📮'} ${queue.name}`),
+          el('h2', {}, queue.icon ? `${queue.icon} ` : lineIcon('ticket', { size: 16 }), queue.name),
           queue.is_active
             ? el('span', { class: 'badge', text: `未完了 ${queue.open_count}` })
             : el('span', { class: 'badge blocked', text: '受付停止' })),
@@ -917,8 +918,8 @@ async function renderQueues(container) {
             el('span', { class: 'legend-swatch',
               style: { background: queue.color, width: '14px', height: '14px' } }),
             queue.project_id
-              ? el('span', { class: 'badge',
-                text: `📁 ${queue.project_name}${queue.project_archived ? '（終了）' : ''}` })
+              ? el('span', { class: 'badge' }, lineIcon('folder', { size: 12 }),
+                `${queue.project_name}${queue.project_archived ? '（終了）' : ''}`)
               : el('span', { class: 'hint', text: 'プロジェクトの紐づけなし' }),
             el('span', { class: 'hint', text: `全 ${queue.ticket_count} 件` })),
           el('div', { class: 'hint', style: { margin: '8px 0 4px' },
@@ -963,7 +964,7 @@ async function renderQueues(container) {
       ...meta.kinds.map((k) => el('option', {
         value: k.value,
         selected: (queue?.default_kind || 'request') === k.value ? true : null,
-      }, `${k.icon} ${k.label}`)));
+      }, k.label)));
     // 分類は窓口ごと。行を足したり消したりして、保存でまとめて反映する。
     const cats = (queue?.categories || []).map((c) => ({ ...c }));
     const catHost = el('div', { class: 'queue-cats' });
@@ -1023,7 +1024,7 @@ async function renderQueues(container) {
         ? (project.value
           ? 'この窓口のチケットは、そのプロジェクトのメンバー（と管理者）だけに見えます。'
             + '一覧・検索・集計のどこにも出ません。'
-          : '⚠ 先に上でプロジェクトを選んでください。')
+          : '先に上でプロジェクトを選んでください。')
         : 'この窓口のチケットは、ログインしている人なら誰でも読めます。';
       visNote.style.color = limited && !project.value ? 'var(--danger)' : '';
     };

@@ -7,6 +7,7 @@ import { api } from '../api.js';
 import { categorySelect, option, userSelect } from './pickers.js';
 import { el, fill, openModal, toast } from '../util.js';
 import { aiMark, engineBadge } from '../ai.js';
+import { icon, iconLabel } from '../icons.js';
 
 const IMPORTANCE = [[0, '低'], [1, '中'], [2, '高'], [3, '最重要']];
 
@@ -27,7 +28,7 @@ export async function openMemoDialog(project) {
   const readButton = el('button', {
     class: 'btn btn-primary',
     onClick: () => read(),
-  }, '🔍 やることを拾う', aiMark());
+  }, iconLabel('search', 'やることを拾う', 15), aiMark());
   const engineHost = el('span', {});
 
   async function read() {
@@ -54,13 +55,13 @@ export async function openMemoDialog(project) {
       toast(error.message, 'error');
     }
     readButton.disabled = false;
-    fill(readButton, '🔍 やることを拾う', aiMark());
+    fill(readButton, iconLabel('search', 'やることを拾う', 15), aiMark());
   }
 
   function draw() {
     if (!state.rows.length) {
       fill(listHost, el('div', { class: 'empty' },
-        el('div', { class: 'big', text: '🗒️' }),
+        el('div', { class: 'big' }, icon('note')),
         state.read ? 'やることらしい記述が見つかりませんでした' : ''));
       summary.textContent = '';
       return;

@@ -5,7 +5,7 @@ import { setHeader } from '../app.js';
 import { store } from '../store.js';
 import { avatar, el, fill, formatDate, openModal, toast } from '../util.js';
 import { AI_NOTE, aiEnabled, aiMark, engineBadge } from '../ai.js';
-import { iconLabel } from '../icons.js';
+import { icon, iconLabel } from '../icons.js';
 import { projectTabs } from './projectNav.js';
 import { openDecisionDetail, statusBadge } from './decisionDetail.js';
 import { openDecisionForm } from './decisionForm.js';
@@ -218,7 +218,7 @@ export async function render(container, route) {
     const rows = visible();
     if (!rows.length) {
       fill(host, el('div', { class: 'empty' },
-        el('div', { class: 'big', text: '⚖️' }),
+        el('div', { class: 'big' }, icon('scale')),
         all.length ? '条件に合う決定はありません'
           : 'まだ決定の記録がありません。「何を・なぜ・誰が決めたか」を残しておくと、あとから方針の理由をたどれます。',
         cross && !all.length && !store.isGuest()

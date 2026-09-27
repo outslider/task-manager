@@ -8,14 +8,15 @@ import { clear, dueClass, el, fill, formatDate, formatDateTime, toast } from '..
 import { openTaskDetail } from './taskDetail.js';
 import { openIssueDetail } from './issueDetail.js';
 import { openTicketDetail } from './ticketDetail.js';
+import { icon } from '../icons.js';
 
 const BUCKETS = [
-  { key: 'overdue', label: '期限超過', tone: 'overdue', icon: '🔥' },
-  { key: 'today', label: '本日期限', tone: 'soon', icon: '📌' },
-  { key: 'soon', label: 'まもなく期限', tone: 'soon', icon: '⏳' },
+  { key: 'overdue', label: '期限超過', tone: 'overdue', icon: 'flame' },
+  { key: 'today', label: '本日期限', tone: 'soon', icon: 'pin' },
+  { key: 'soon', label: 'まもなく期限', tone: 'soon', icon: 'hourglass' },
   // 今日の判断には要らないので、既定ではたたんでおく
-  { key: 'no_due', label: '期限未設定', tone: '', icon: '❓', folded: true },
-  { key: 'later', label: '先の予定', tone: '', icon: '🗓', folded: true },
+  { key: 'no_due', label: '期限未設定', tone: '', icon: 'help', folded: true },
+  { key: 'later', label: '先の予定', tone: '', icon: 'calendar', folded: true },
 ];
 /** 停滞と完了ぶんは「今日やること」ではないので、件数だけ見せて既定ではたたむ。 */
 const STALE_KEY = 'stale';
@@ -79,8 +80,9 @@ export async function render(container) {
         el('div', { class: 'home-hero-sub' },
           headline(),
           data.streak > 0
-            ? el('span', { class: 'hero-chip', style: { marginLeft: '8px' },
-              text: `🔥 ${data.streak}日連続チェックイン` })
+            ? el('span', { class: 'hero-chip', style: { marginLeft: '8px' } },
+              icon('flame', { size: 13, class: 'ico-inline' }),
+              `${data.streak}日連続チェックイン`)
             : null))),
     el('div', { class: 'grid daily-stats', style: { marginBottom: '14px' } },
       statCard('期限超過', counts.overdue, counts.overdue ? 'danger' : '', 'overdue'),
@@ -104,7 +106,7 @@ export async function render(container) {
     const list = data.tickets || [];
     return el('div', { class: 'card daily-bucket kind-ticket' },
       el('div', { class: 'card-head' },
-        el('h2', {}, '🎫 自分が担当のチケット'),
+        el('h2', {}, icon('ticket', { size: 16 }), '自分が担当のチケット'),
         counts.tickets ? el('span', { class: 'badge', text: `${counts.tickets} 件` }) : null,
         data.unclaimed_tickets
           ? el('span', { class: 'badge warn-badge',
@@ -145,7 +147,10 @@ export async function render(container) {
           })
           : null),
         el('div', { class: 'page-sub' },
-          `${ticket.queue_icon || '📮'} ${ticket.queue_name}`
+          ticket.queue_icon
+            ? `${ticket.queue_icon} `
+            : icon('ticket', { size: 13, class: 'ico-inline' }),
+          ticket.queue_name
           + (ticket.on_behalf_of ? ` ・ 依頼元 ${ticket.on_behalf_of}` : ''))),
       el('div', { class: 'daily-controls' },
         ticket.category_label
@@ -236,14 +241,14 @@ export async function render(container) {
     if (!urgent.length && !later.length) {
       listHost.append(el('div', { class: 'card' },
         el('div', { class: 'empty' },
-          el('div', { class: 'big', text: '🎉' }),
+          el('div', { class: 'big' }, icon('sparkle')),
           '対応が必要なものはありません。お疲れさまです！')));
     }
   }
 
   /** 片付いたぶん。振り返り用なので、既定ではたたんでおく。 */
   function doneCard() {
-    return foldableCard(DONE_KEY, '✅ 直近7日で完了したタスク',
+    return foldableCard(DONE_KEY, 'done', '直近7日で完了したタスク',
       counts.done, 'kind-done',
       () => data.recently_done.map((task) => el('div', { class: 'daily-item' },
         el('div', {},
@@ -260,12 +265,12 @@ export async function render(container) {
   }
 
   /** 見出しを押すと開け閉めできるまとまり。開いたかどうかは次回も引き継ぐ。 */
-  function foldableCard(key, title, count, tone, buildItems) {
+  function foldableCard(key, iconName, title, count, tone, buildItems) {
     const closed = folded.has(key);
     const head = el('div', { class: 'card-head foldable' },
       el('h2', {},
         el('span', { class: 'fold-mark', text: closed ? '▶' : '▼' }),
-        ` ${title}`),
+        ' ', icon(iconName, { size: 16 }), title),
       el('span', { class: 'badge', text: `${count} 件` }));
     head.addEventListener('click', () => {
       if (folded.has(key)) folded.delete(key); else folded.add(key);
@@ -280,7 +285,7 @@ export async function render(container) {
 
   /** 止まっているタスク。開始日がまだのものはサーバー側で除いてある。 */
   function staleCard() {
-    return foldableCard(STALE_KEY, '💤 1週間以上動きのないタスク',
+    return foldableCard(STALE_KEY, 'moon', '1週間以上動きのないタスク',
       counts.stale, 'kind-task', () => [...data.stale.map(taskItem),
         moreLine(data.stale.length, counts.stale, '#/mytasks')]);
   }
@@ -288,7 +293,7 @@ export async function render(container) {
   function issueCard() {
     return el('div', { class: 'card daily-bucket kind-issue' },
         el('div', { class: 'card-head' },
-          el('h2', {}, '📌 自分が対応者の課題'),
+          el('h2', {}, icon('pin', { size: 16 }), '自分が対応者の課題'),
           el('span', { class: 'badge', text: `${counts.issues} 件` })),
         el('div', { class: 'card-body tight' },
           ...data.issues.map((issue) => el('div', {
@@ -320,7 +325,7 @@ export async function render(container) {
   function reviewCard() {
     return el('div', { class: 'card daily-bucket kind-decision' },
       el('div', { class: 'card-head' },
-        el('h2', {}, '⚖️ 前提の見直し日が来た決定'),
+        el('h2', {}, icon('scale', { size: 16 }), '前提の見直し日が来た決定'),
         el('span', { class: 'badge', text: `${data.decision_reviews.length} 件` })),
       el('div', { class: 'card-body tight' },
         ...data.decision_reviews.map((d) => el('div', { class: 'daily-item' },
@@ -341,7 +346,7 @@ export async function render(container) {
   function todoCard() {
     return el('div', { class: 'card daily-bucket kind-todo' },
         el('div', { class: 'card-head' },
-          el('h2', {}, '📝 マイ ToDo'),
+          el('h2', {}, icon('note', { size: 16 }), 'マイ ToDo'),
           el('a', { class: 'btn btn-sm', href: '#/todos' }, '一覧を開く')),
         el('div', { class: 'card-body tight' },
           ...data.todos.map((todo) => el('div', { class: 'daily-item' },
@@ -361,7 +366,8 @@ export async function render(container) {
               }),
               el('span', { text: todo.title })),
             todo.recurrence_id
-              ? el('span', { class: 'todo-repeat', title: '繰り返しから出た ToDo', text: '🔁' })
+              ? el('span', { class: 'todo-repeat', title: '繰り返しから出た ToDo' },
+                icon('repeat', { size: 13 }))
               : null,
             todo.due_date
               ? el('span', {
@@ -380,7 +386,7 @@ export async function render(container) {
     const head = el('div', { class: 'card-head foldable' },
       el('h2', {},
         el('span', { class: 'fold-mark', text: closed ? '▶' : '▼' }),
-        ` ${bucket.icon} ${bucket.label}`),
+        ' ', icon(bucket.icon, { size: 16 }), bucket.label),
       el('span', { class: `badge ${bucket.tone}`.trim(), text: `${items.length} 件` }));
     head.addEventListener('click', () => {
       if (folded.has(bucket.key)) folded.delete(bucket.key);
@@ -498,7 +504,7 @@ export async function render(container) {
             event.currentTarget.classList.toggle('active', !extra.hidden);
             if (!extra.hidden) noteBox.focus();
           },
-        }, '💬')));
+        }, icon('message', { size: 15 }))));
     return row;
   }
 

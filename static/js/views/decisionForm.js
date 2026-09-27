@@ -2,6 +2,7 @@
 import { api } from '../api.js';
 import { store } from '../store.js';
 import { el, fill, openModal, toast } from '../util.js';
+import { icon } from '../icons.js';
 import { chipPicker } from './pickers.js';
 
 const SETTLED = ['decided', 'review', 'superseded', 'withdrawn'];
@@ -48,7 +49,9 @@ export async function openDecisionForm({ projectId, decision = null, decisions =
   const meetingHost = el('div', {});
   const drawMeeting = () => fill(meetingHost, meeting
     ? el('div', { class: 'decision-meeting-pick' },
-      el('span', { text: `📅 ${meeting.title}${meeting.on ? `（${meeting.on.replace(/-/g, '/')} の回）` : ''}` }),
+      el('span', {},
+        icon('calendar', { size: 13, class: 'ico-inline' }),
+        `${meeting.title}${meeting.on ? `（${meeting.on.replace(/-/g, '/')} の回）` : ''}`),
       el('button', { type: 'button', class: 'btn btn-sm', onClick: () => { meeting = null; drawMeeting(); } }, '外す'))
     : el('span', { class: 'hint', text: '（なし）定例会議の回の画面から「決定として記録」で書き始めると入ります' }));
   drawMeeting();

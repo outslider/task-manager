@@ -8,7 +8,7 @@ import {
 import {
   avatar, clear, confirmDialog, debounce, dueClass, dueLabel, el, fill, formatDate, popupMenu, toast,
 } from '../util.js';
-import { iconLabel } from '../icons.js';
+import { icon, iconLabel } from '../icons.js';
 import { HEADING_LEVEL_LABEL, headingLevel, sectionize } from '../outline.js';
 import { aiMark } from '../ai.js';
 import { openTaskForm } from './taskForm.js';
@@ -272,7 +272,7 @@ export async function render(container, route) {
     clear(rowsHost);
     if (rows.length === 0) {
       rowsHost.append(el('div', { class: 'empty' },
-        el('div', { class: 'big', text: '📋' }),
+        el('div', { class: 'big' }, icon('clipboard')),
         !data.tasks.some((t) => !t.is_heading) && !state.query
           ? 'まだタスクがありません' : '条件に一致するタスクがありません',
         canEdit && data.tasks.length === 0
@@ -372,7 +372,8 @@ export async function render(container, route) {
       },
     },
     el('span', { class: 'fold-mark', text: open ? '▼' : '▶' }),
-    el('strong', { text: `⚠ 依存関係と日程が矛盾しています（${conflicts.length} 件）` }),
+    el('strong', {}, icon('alert', { size: 13, class: 'ico-inline' }),
+      `依存関係と日程が矛盾しています（${conflicts.length} 件）`),
     el('span', { class: 'hint', text: open ? '' : 'クリックで内訳を表示' }));
     fill(alerts, el('div', { class: 'warn-box danger' }, head,
       open
@@ -439,8 +440,10 @@ export async function render(container, route) {
       el('span', { class: 'task-title', text: task.title, title: task.title }),
       ...dependencyBadges(task),
       el('span', { class: 'task-meta-icons' },
-        task.comment_count ? el('span', { title: 'コメント' }, `💬${task.comment_count}`) : null,
-        task.attachment_count ? el('span', { title: '添付' }, `📎${task.attachment_count}`) : null,
+        task.comment_count ? el('span', { class: 'meta-count', title: 'コメント' },
+          icon('message', { size: 13 }), String(task.comment_count)) : null,
+        task.attachment_count ? el('span', { class: 'meta-count', title: '添付' },
+          icon('clip', { size: 13 }), String(task.attachment_count)) : null,
         task.child_count ? el('span', { title: '子タスク' }, `${task.leaf_done}/${task.leaf_total}`) : null)),
     el('div', { class: 'cell-hide-sm' },
       task.category ? categoryChip(task.category, { small: true }) : el('span', { class: 'cell-mut', text: '—' })),
@@ -472,10 +475,10 @@ export async function render(container, route) {
     el('div', { class: 'task-sub' },
       el('span', { class: `badge ${task.status}`, text: STATUS_LABEL[task.status] }),
       task.category ? categoryChip(task.category, { small: true }) : null,
-      task.assignee_id ? el('span', { text: `👤 ${task.assignee_name}` }) : null,
+      task.assignee_id ? el('span', {}, icon('user', { size: 13, class: 'ico-inline' }), task.assignee_name) : null,
       task.due_date
         ? el('span', { class: `cell-due ${dueClass(task.due_date, task.status)}`,
-          text: `📅 ${formatDate(task.due_date)}` })
+        }, icon('calendar', { size: 13, class: 'ico-inline' }), formatDate(task.due_date))
         : null,
       el('span', { text: `${progress}%` })));
 
@@ -522,13 +525,13 @@ export async function render(container, route) {
   function headingMenu(anchor, task) {
     const current = headingLevel(task);
     popupMenu(anchor, (item) => [
-      item('✏️ 名前を変える', () => renameHeading(task)),
+      item([icon('pencil', { size: 15 }), '名前を変える'], () => renameHeading(task)),
       ...[1, 2, 3].filter((level) => level !== current).map((level) => item(
         `${level < current ? '⇤' : '⇥'} ${HEADING_LEVEL_LABEL[level]}にする`,
         () => setHeadingLevel(task, level))),
       ...hierarchyMenuItems(task, item).filter((node) => !/子タスク|親タスク/.test(node.textContent)),
       item('＋ この下にタスクを追加', () => addTaskAfter(task)),
-      item('🗑 見出しを削除', async () => {
+      item([icon('trash', { size: 15 }), '見出しを削除'], async () => {
         const { undoToast } = await import('../util.js');
         // 見出しを消しても、その下のタスクはそのまま残る（区切りが 1 本消えるだけ）
         const result = await api.del(`/api/tasks/${task.id}`);
@@ -667,13 +670,13 @@ export async function render(container, route) {
       out.push(el('span', {
         class: 'badge blocking', style: { flex: 'none' },
         title: `このタスクが終わらないと ${task.blocks_open} 件が進められません`,
-      }, `⛔ ${task.blocks_open}`));
+      }, icon('block', { size: 12 }), String(task.blocks_open)));
     }
     if (task.is_blocked) {
       out.push(el('span', {
         class: 'badge blocked-by', style: { flex: 'none' },
         title: `先行タスク ${task.blocked_by_open} 件が未完了です`,
-      }, `⏳ 待ち`));
+      }, icon('hourglass', { size: 12 }), '待ち'));
     }
     if (task.is_critical && task.status !== 'done') {
       out.push(el('span', {
@@ -792,26 +795,26 @@ export async function render(container, route) {
   /* ---- row menu ---- */
   function rowMenu(anchor, task) {
     popupMenu(anchor, (menuItem) => [
-    menuItem('👁 詳細を開く', () => openTaskDetail(task.id, { onChange: reload })),
+    menuItem([icon('eye', { size: 15 }), '詳細を開く'], () => openTaskDetail(task.id, { onChange: reload })),
     menuItem('＋ 子タスクを追加', () => addTask(task.id)),
-    menuItem('🔖 この下に見出しを追加', () => addHeading(task)),
+    menuItem([icon('bookmark', { size: 15 }), 'この下に見出しを追加'], () => addHeading(task)),
     ...hierarchyMenuItems(task, menuItem),
-    menuItem('✏️ 編集', async () => {
+    menuItem([icon('pencil', { size: 15 }), '編集'], async () => {
       const saved = await openTaskForm({
         project, task, tasks: data.tasks, deps: data.deps, members: data.members });
       if (saved) reload();
     }),
-    menuItem('📄 複製', async () => {
+    menuItem([icon('copy', { size: 15 }), '複製'], async () => {
       const result = await api.post(`/api/tasks/${task.id}/duplicate`, {});
       toast(result.created > 1
         ? `${result.created} 件を複製しました` : '複製しました', 'ok');
       reload();
     }),
-    menuItem('🧩 雛形として保存', async () => {
+    menuItem([icon('blocks', { size: 15 }), '雛形として保存'], async () => {
       const { openSaveTemplate } = await import('./templates.js');
       await openSaveTemplate({ task });
     }),
-    menuItem('🔁 定例にする', async () => {
+    menuItem([icon('repeat', { size: 15 }), '定例にする'], async () => {
       const { openRecurrenceForm } = await import('./recurrence.js');
       if (await openRecurrenceForm(project, null, task)) {
         toast('定例タスクとして登録しました', 'ok');
@@ -821,7 +824,7 @@ export async function render(container, route) {
       await api.patch(`/api/tasks/${task.id}`, { status: task.status === 'done' ? 'doing' : 'done' });
       reload();
     }),
-    menuItem('🗑 削除', async () => {
+    menuItem([icon('trash', { size: 15 }), '削除'], async () => {
       const { confirmDialog, undoToast } = await import('../util.js');
       if (!await confirmDialog(
         `「${task.title}」を削除しますか？（子タスクも削除されます）\n`

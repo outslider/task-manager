@@ -8,7 +8,7 @@ import {
   formatBytes, formatDate, formatDateTime, openDrawer, openModal, skeleton, toast,
   undoToast,
 } from '../util.js';
-import { icon } from '../icons.js';
+import { icon, iconLabel } from '../icons.js';
 import { issueCategorySelect, userSelect } from './pickers.js';
 import { openIssueForm, taskPicker } from './issueForm.js';
 import { memoEditor, openTaskDetail } from './taskDetail.js';
@@ -69,7 +69,7 @@ async function renderDetail(instance, issueId, onChange) {
           });
           if (saved) reload();
         },
-      }, '✏️')
+      }, icon('pencil', { size: 16 }))
       : null,
     canEdit
       ? el('button', {
@@ -121,14 +121,15 @@ async function renderDetail(instance, issueId, onChange) {
   const daysLeft = stillOpen ? dueDelta(issue.due_date) : null;
   if (daysLeft !== null && daysLeft < 0) {
     body.append(el('div', { class: 'warn-box danger' },
-      `⏰ 対応期限を ${-daysLeft} 日超過しています。`));
+      icon('clock', { size: 15 }), `対応期限を ${-daysLeft} 日超過しています。`));
   } else if (daysLeft !== null && daysLeft <= 3) {
     body.append(el('div', { class: 'warn-box' },
-      daysLeft === 0 ? '⏰ 対応期限は本日です。' : `⏰ 対応期限まであと ${daysLeft} 日です。`));
+      icon('clock', { size: 15 }),
+      daysLeft === 0 ? '対応期限は本日です。' : `対応期限まであと ${daysLeft} 日です。`));
   }
   if (issue.open_task_count) {
     body.append(el('div', { class: 'warn-box' },
-      `📌 この課題に紐づく未完了タスクが ${issue.open_task_count} 件あります。`));
+      icon('pin', { size: 15 }), `この課題に紐づく未完了タスクが ${issue.open_task_count} 件あります。`));
   }
 
   body.append(el('div', { class: 'detail-grid' },
@@ -202,7 +203,9 @@ async function renderDetail(instance, issueId, onChange) {
     el('span', { class: 'kind-tag ticket', text: 'チケット' }),
     el('span', { class: 'issue-no', text: `#${ticket.id}` }),
     el('span', { class: 'name', text: ticket.title }),
-    el('span', { class: 'size', text: `${ticket.queue_icon || '📮'} ${ticket.queue_name}` }),
+    el('span', { class: 'size' },
+      ticket.queue_icon ? `${ticket.queue_icon} ` : icon('ticket', { size: 13, class: 'ico-inline' }),
+      ticket.queue_name),
     ticket.on_behalf_of ? el('span', { class: 'size', text: ticket.on_behalf_of }) : null)));
   }
 
@@ -225,14 +228,14 @@ async function renderDetail(instance, issueId, onChange) {
           });
           if (saved) reload();
         },
-      }, '⚖️ 決定として記録') : null));
+      }, ...iconLabel('scale', '決定として記録', 14)) : null));
     const { decisionRows } = await import('./decisionDetail.js');
     body.append(...decisionRows(linkedDecisions, reload));
   }
 
   /* ---- attachments ---- */
   body.append(sectionTitle(`リンク・ファイル (${attachments.length})`,
-    canEdit ? el('button', { class: 'btn btn-sm', onClick: () => addLink(issue, reload) }, '🔗 リンク') : null));
+    canEdit ? el('button', { class: 'btn btn-sm', onClick: () => addLink(issue, reload) }, ...iconLabel('link', 'リンク', 14)) : null));
   if (canEdit) body.append(dropzone(issue, reload));
   body.append(...attachments.map((att) => attachmentRow(att, canEdit, reload)));
 
@@ -304,7 +307,7 @@ function commentRow(comment, reload, members) {
 function attachmentRow(att, canEdit, reload) {
   const isFile = att.kind === 'file';
   return el('div', { class: 'att-item' },
-    el('span', { text: isFile ? '📎' : '🔗' }),
+    icon(isFile ? 'clip' : 'link', { size: 15 }),
     el('a', {
       class: 'name', href: isFile ? url(`/api/attachments/${att.id}/download`) : att.url,
       target: '_blank', rel: 'noopener noreferrer', text: att.name,

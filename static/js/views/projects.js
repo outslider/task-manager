@@ -3,7 +3,7 @@ import { api } from '../api.js';
 import { projectTile, setHeader } from '../app.js';
 import { store } from '../store.js';
 import { avatar, clear, confirmDialog, el, fill, openModal, toast } from '../util.js';
-import { iconLabel } from '../icons.js';
+import { icon, iconLabel } from '../icons.js';
 import { projectColors } from '../theme.js';
 import { openMembers } from './members.js';
 
@@ -48,7 +48,7 @@ export async function render(container) {
     if (visible.length === 0) {
       grid.append(el('div', { class: 'card' },
         el('div', { class: 'empty' },
-          el('div', { class: 'big', text: '📁' }),
+          el('div', { class: 'big' }, icon('folder')),
           'プロジェクトがありません',
           el('div', { style: { marginTop: '12px' } },
             el('button', { class: 'btn btn-primary', onClick: () => editProject(null) },
@@ -85,10 +85,10 @@ export async function render(container) {
             ? el('span', { class: 'badge overdue', text: `期限超過 ${stats.overdue}` })
             : null,
           stats.blocked
-            ? el('span', { class: 'badge blocking', text: `⛔ 待ち ${stats.blocked}` })
+            ? el('span', { class: 'badge blocking' }, icon('block', { size: 12 }), `待ち ${stats.blocked}`)
             : null,
           stats.open_issues
-            ? el('span', { class: 'badge pending', text: `📌 課題 ${stats.open_issues}` })
+            ? el('span', { class: 'badge pending' }, icon('pin', { size: 12 }), `課題 ${stats.open_issues}`)
             : null,
           stats.milestones
             ? el('span', { class: 'badge', text: `◆ ${stats.milestones}` })
@@ -333,7 +333,7 @@ export async function render(container) {
               class: 'btn btn-sm', type: 'button',
               // 見え方は保存済みの設定で決まるので、いま変えたチェックを先に保存する
               onClick: async () => { if (await save()) closeModal('preview'); },
-            }, '👁 保存して社外ユーザーとしてプレビュー'),
+            }, icon('eye', { size: 15, class: 'ico-inline' }), '保存して社外ユーザーとしてプレビュー'),
             el('span', { class: 'hint', text: '　いまの設定を保存してから、社外ユーザーの立場で見え方を確かめます' })),
           el('div', { class: 'hint',
             text: '「使う」を外したタブは、このプロジェクトの画面から隠れます'

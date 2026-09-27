@@ -37,11 +37,11 @@ export async function openTicketForm({ ticket = null, queues = null } = {}) {
       f.queue = el('select', { class: 'select' },
         ...open.map((q) => option(
           q.id,
-          `${q.icon || '📮'} ${q.name}${q.project_name ? `（${q.project_name}）` : ''}`,
+          `${q.icon ? `${q.icon} ` : ''}${q.name}${q.project_name ? `（${q.project_name}）` : ''}`,
           String(ticket?.queue_id || open[0].id) === String(q.id))));
       const queueOf = () => open.find((q) => String(q.id) === f.queue.value) || open[0];
       f.kind = el('select', { class: 'select' },
-        ...meta.kinds.map((k) => option(k.value, `${k.icon} ${k.label}`,
+        ...meta.kinds.map((k) => option(k.value, k.label,
           (ticket?.kind || queueOf().default_kind || 'request') === k.value)));
       // 分類は窓口ごとに違う。窓口が変わったら選択肢ごと入れ替える。
       const categoryHost = el('div', {});

@@ -458,7 +458,7 @@ async function renderRoute() {
   if (store.acting && ACTING_CLOSED.has(route.view)) {
     setHeader('代理表示中');
     fill(shell.content, el('div', { class: 'card' },
-      el('div', { class: 'empty' }, el('div', { class: 'big', text: '🔒' }),
+      el('div', { class: 'empty' }, el('div', { class: 'big' }, icon('lock')),
         '代理表示中は、この画面を開けません（本人だけの画面・設定を変える画面のため）')));
     return;
   }
@@ -480,7 +480,7 @@ async function renderRoute() {
       }
       setHeader(store.project(route.projectId)?.name || 'プロジェクト');
       fill(shell.content, el('div', { class: 'card' },
-        el('div', { class: 'empty' }, el('div', { class: 'big', text: '🗂️' }),
+        el('div', { class: 'empty' }, el('div', { class: 'big' }, icon('folder')),
           'このプロジェクトには、開ける画面がありません')));
       return;
     }
@@ -490,7 +490,7 @@ async function renderRoute() {
   if (!loader) {
     setHeader('ページが見つかりません');
     fill(shell.content, el('div', { class: 'card' },
-      el('div', { class: 'empty' }, el('div', { class: 'big', text: '🧭' }),
+      el('div', { class: 'empty' }, el('div', { class: 'big' }, icon('compass')),
         'このページは存在しません')));
     return;
   }
@@ -510,7 +510,7 @@ async function renderRoute() {
     if (token !== renderToken) return;
     console.error(error);
     fill(view, el('div', { class: 'card' },
-      el('div', { class: 'empty' }, el('div', { class: 'big', text: '⚠️' }),
+      el('div', { class: 'empty' }, el('div', { class: 'big' }, icon('alert')),
         error.message || '読み込みに失敗しました')));
   } finally {
     if (token === renderToken) setLoading(false);

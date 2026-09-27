@@ -7,6 +7,7 @@ import { setHeader } from '../app.js';
 import { store } from '../store.js';
 import { confirmDialog, dueClass, el, fill, formatDate, toast } from '../util.js';
 import { openTodoRecurrences } from './todoRecurrence.js';
+import { icon, iconLabel } from '../icons.js';
 
 export async function render(container) {
   setHeader('マイ ToDo');
@@ -38,7 +39,7 @@ export async function render(container) {
           el('button', {
             class: 'btn btn-sm', title: '決まった日に出てくる ToDo を登録する',
             onClick: () => openTodoRecurrences({ onChange: load }),
-          }, '🔁 繰り返し'),
+          }, iconLabel('repeat', '繰り返し', 15)),
           el('label', { class: 'check' }, doneToggle, el('span', { text: '完了も表示' })))),
       el('div', { class: 'card-body' },
         el('p', { class: 'page-sub',
@@ -80,7 +81,7 @@ export async function render(container) {
   function draw(openCount) {
     if (!state.todos.length) {
       fill(list, el('div', { class: 'empty' },
-        el('div', { style: { fontSize: '28px' } }, '📝'),
+        el('div', { style: { fontSize: '28px' } }, icon('note', { size: 28 })),
         el('div', { text: state.includeDone ? 'ToDo はまだありません' : '未完了の ToDo はありません' })));
       summary.textContent = '';
       return;
@@ -107,18 +108,19 @@ export async function render(container) {
       check, title,
       // 繰り返しから出てきたものは、消しても次回また出ることが分かるようにしておく
       todo.recurrence_id
-        ? el('span', { class: 'todo-repeat', title: '繰り返しから出た ToDo', text: '🔁' })
+        ? el('span', { class: 'todo-repeat', title: '繰り返しから出た ToDo' },
+          icon('repeat', { size: 13 }))
         : null,
       due,
       el('div', { class: 'todo-actions' },
         el('button', {
           class: 'icon-btn', title: '期限を設定',
           onClick: () => editDue(),
-        }, '📅'),
+        }, icon('calendar', { size: 15 })),
         el('button', {
           class: 'icon-btn', title: 'プロジェクトのタスクにする',
           onClick: () => promote(todo),
-        }, '📁'),
+        }, icon('folder', { size: 15 })),
         el('button', {
           class: 'icon-btn', title: '削除',
           onClick: async () => {
@@ -127,7 +129,7 @@ export async function render(container) {
             await api.del(`/api/todos/${todo.id}`);
             load();
           },
-        }, '🗑')));
+        }, icon('trash', { size: 15 }))));
 
     function startEdit() {
       const field = el('input', { class: 'input', value: todo.title, maxlength: 300 });

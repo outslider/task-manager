@@ -8,6 +8,7 @@ import {
 } from '../util.js';
 import { openTaskDetail } from './taskDetail.js';
 import { categoryChip } from './pickers.js';
+import { icon } from '../icons.js';
 
 export async function render(container) {
   const state = {
@@ -116,13 +117,15 @@ export async function render(container) {
     clear(listHost);
     if (shown.length === 0) {
       listHost.append(el('div', { class: 'empty' },
-        el('div', { class: 'big', text: '🔍' }), '条件に一致するタスクがありません'));
+        el('div', { class: 'big' }, icon('search')), '条件に一致するタスクがありません'));
       return;
     }
     // 時期ごとにまとめて出す。「いつごろ詰まっているか」が一覧からも分かるように
     for (const bucket of bucketize(shown)) {
       listHost.append(el('div', { class: 'period-head' },
-        el('span', { text: `${bucket.icon} ${bucket.label}` }),
+        el('span', {},
+          bucket.icon ? icon(bucket.icon, { size: 14, class: 'ico-inline' }) : '— ',
+          bucket.label),
         el('span', { class: `badge ${bucket.tone}`.trim(), text: `${bucket.items.length} 件` })));
       for (const task of bucket.items) listHost.append(row(task));
     }
@@ -142,13 +145,13 @@ export async function render(container) {
     const endOfNext = addDays(endOfWeek, 7);
     const inMonth = addDays(now, 30);
     const defs = [
-      { key: 'overdue', label: '期限超過', icon: '🔥', tone: 'overdue' },
-      { key: 'today', label: '今日', icon: '📌', tone: 'soon' },
-      { key: 'week', label: '今週中', icon: '🗓', tone: '' },
-      { key: 'next', label: '来週', icon: '🗓', tone: '' },
-      { key: 'month', label: '1か月以内', icon: '📆', tone: '' },
-      { key: 'later', label: 'それ以降', icon: '🕰', tone: '' },
-      { key: 'none', label: '期限なし', icon: '—', tone: '' },
+      { key: 'overdue', label: '期限超過', icon: 'flame', tone: 'overdue' },
+      { key: 'today', label: '今日', icon: 'pin', tone: 'soon' },
+      { key: 'week', label: '今週中', icon: 'calendar', tone: '' },
+      { key: 'next', label: '来週', icon: 'calendar', tone: '' },
+      { key: 'month', label: '1か月以内', icon: 'calendar', tone: '' },
+      { key: 'later', label: 'それ以降', icon: 'clock', tone: '' },
+      { key: 'none', label: '期限なし', icon: null, tone: '' },
     ];
     const pick = (task) => {
       const due = parseDate(task.due_date);
@@ -245,15 +248,23 @@ export async function render(container) {
       el('span', { class: 'task-title', text: task.title, title: task.title }),
       task.blocks_direct
         ? el('span', { class: 'badge blocking', style: { flex: 'none' },
-          title: `後続 ${task.blocks_direct} 件` }, `⛔ ${task.blocks_direct}`)
+          title: `後続 ${task.blocks_direct} 件` },
+          icon('block', { size: 13, class: 'ico-inline' }), String(task.blocks_direct))
         : null,
       task.blocked_by_open && task.status !== 'done'
         ? el('span', { class: 'badge blocked-by', style: { flex: 'none' },
-          title: `先行 ${task.blocked_by_open} 件が未完了` }, '⏳ 待ち')
+          title: `先行 ${task.blocked_by_open} 件が未完了` },
+          icon('hourglass', { size: 13, class: 'ico-inline' }), '待ち')
         : null,
       el('span', { class: 'task-meta-icons' },
-        task.comment_count ? el('span', {}, `💬${task.comment_count}`) : null,
-        task.attachment_count ? el('span', {}, `📎${task.attachment_count}`) : null)),
+        task.comment_count
+          ? el('span', { class: 'meta-count' },
+            icon('message', { size: 13 }), String(task.comment_count))
+          : null,
+        task.attachment_count
+          ? el('span', { class: 'meta-count' },
+            icon('clip', { size: 13 }), String(task.attachment_count))
+          : null)),
     state.scope === 'mine'
       ? null
       : el('div', { class: 'cell-hide-sm' },
@@ -283,8 +294,8 @@ export async function render(container) {
       task.category ? categoryChip(task.category, { small: true }) : null,
       el('span', { text: task.project_name }),
       task.due_date
-        ? el('span', { class: `cell-due ${dueClass(task.due_date, task.status)}`,
-          text: `📅 ${formatDate(task.due_date)}` })
+        ? el('span', { class: `cell-due ${dueClass(task.due_date, task.status)}` },
+          icon('calendar', { size: 13, class: 'ico-inline' }), formatDate(task.due_date))
         : null,
       el('span', { text: `${taskProgress(task)}%` })));
   }

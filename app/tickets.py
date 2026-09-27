@@ -10,10 +10,11 @@
 from . import auth, db
 
 # value, 表示名, 記号
+# 3 つ目は画面の線のアイコンの名前（static/js/icons.js）
 KINDS = [
-    ("request", "依頼", "📋"),
-    ("question", "問い合わせ", "💬"),
-    ("incident", "障害", "🚨"),
+    ("request", "依頼", "clipboard"),
+    ("question", "問い合わせ", "message"),
+    ("incident", "障害", "alert"),
 ]
 KIND_VALUES = {k for k, _l, _i in KINDS}
 KIND_LABEL = {k: l for k, l, _i in KINDS}

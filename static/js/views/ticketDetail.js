@@ -8,7 +8,7 @@ import {
   avatar, confirmDialog, debounce, dueClass, dueDelta, el, fill, formatBytes, formatDate,
   formatDateTime, openDrawer, openModal, skeleton, toast, undoToast,
 } from '../util.js';
-import { icon } from '../icons.js';
+import { icon, iconLabel } from '../icons.js';
 import { categorySelect, chipPicker, option, userSelect } from './pickers.js';
 import { memoEditor, openTaskDetail } from './taskDetail.js';
 import { openIssueDetail } from './issueDetail.js';
@@ -63,14 +63,15 @@ async function renderDetail(instance, ticketId, onChange) {
   const head = el('div', { class: 'drawer-head' },
     el('div', { style: { minWidth: 0, flex: 1 } },
       el('div', { class: 'breadcrumb' },
-        `${ticket.queue_icon || '📮'} ${ticket.queue_name}`
+        ticket.queue_icon ? null : icon('ticket', { size: 13, class: 'ico-inline' }),
+        `${ticket.queue_icon ? `${ticket.queue_icon} ` : ''}${ticket.queue_name}`
         + (ticket.queue_project_name ? ` （${ticket.queue_project_name}）` : '')
         + ` ・ チケット #${ticket.id}`),
       el('h2', { text: ticket.title, style: { whiteSpace: 'normal' } })),
     guest ? null : el('button', {
       class: 'icon-btn', title: '編集',
       onClick: async () => { if (await openTicketForm({ ticket })) reload(); },
-    }, '✏️'),
+    }, icon('pencil', { size: 16 })),
     data.can_delete
       ? el('button', {
         class: 'icon-btn', title: '削除',
@@ -100,7 +101,7 @@ async function renderDetail(instance, ticketId, onChange) {
   const kindSelect = el('select', {
     class: 'select',
     onChange: (event) => patch({ kind: event.target.value }),
-  }, ...meta.kinds.map((k) => option(k.value, `${k.icon} ${k.label}`, ticket.kind === k.value)));
+  }, ...meta.kinds.map((k) => option(k.value, k.label, ticket.kind === k.value)));
 
   // 分類はその窓口に登録されているときだけ出す
   const queueCats = (data.queue_categories || []);
@@ -143,13 +144,15 @@ async function renderDetail(instance, ticketId, onChange) {
   const daysLeft = stillOpen ? dueDelta(ticket.due_date) : null;
   if (daysLeft !== null && daysLeft < 0) {
     body.append(el('div', { class: 'warn-box danger' },
-      `⏰ 期限を ${-daysLeft} 日超過しています。`));
+      icon('clock', { size: 15 }), `期限を ${-daysLeft} 日超過しています。`));
   } else if (daysLeft !== null && daysLeft <= 3) {
     body.append(el('div', { class: 'warn-box' },
-      daysLeft === 0 ? '⏰ 期限は本日です。' : `⏰ 期限まであと ${daysLeft} 日です。`));
+      icon('clock', { size: 15 }),
+      daysLeft === 0 ? '期限は本日です。' : `期限まであと ${daysLeft} 日です。`));
   }
   if (stillOpen && !ticket.assignee_id) {
-    body.append(el('div', { class: 'warn-box', text: '👤 担当がまだ決まっていません。' }));
+    body.append(el('div', { class: 'warn-box' },
+      icon('user', { size: 15 }), '担当がまだ決まっていません。'));
   }
   if (ticket.open_task_count) {
     body.append(el('div', { class: 'warn-box',
@@ -271,14 +274,14 @@ async function renderDetail(instance, ticketId, onChange) {
       class: 'att-item', style: { cursor: 'pointer' },
       onClick: () => openIssueDetail(issue.id, { onChange: reload }),
     },
-    el('span', { text: '📌' }),
+    icon('pin', { size: 15 }),
     el('span', { class: 'name', text: `#${issue.seq} ${issue.title}` }),
     el('span', { class: 'size', text: issue.project_name }))));
   }
 
   /* ---- 添付 ---- */
   body.append(sectionTitle(`リンク・ファイル (${attachments.length})`,
-    el('button', { class: 'btn btn-sm', onClick: () => addLink(ticket, reload) }, '🔗 リンク')));
+    el('button', { class: 'btn btn-sm', onClick: () => addLink(ticket, reload) }, ...iconLabel('link', 'リンク', 14))));
   body.append(dropzone(ticket, reload));
   body.append(...attachments.map((att) => attachmentRow(att, reload,
     !guest || att.uploaded_by === store.user?.id)));
@@ -530,7 +533,7 @@ function commentRow(comment, reload, people) {
 function attachmentRow(att, reload, canRemove = true) {
   const isFile = att.kind === 'file';
   return el('div', { class: `att-item${att.is_internal ? ' internal' : ''}` },
-    el('span', { text: isFile ? '📎' : '🔗' }),
+    icon(isFile ? 'clip' : 'link', { size: 15 }),
     el('a', {
       class: 'name', href: isFile ? url(`/api/attachments/${att.id}/download`) : att.url,
       target: '_blank', rel: 'noopener noreferrer', text: att.name,

@@ -4,6 +4,7 @@ import { store } from '../store.js';
 import { el, fill, openModal, toast } from '../util.js';
 import { categorySelect } from './pickers.js';
 import { aiMark, engineBadge } from '../ai.js';
+import { icon } from '../icons.js';
 
 /**
  * 大きなタスクを子タスクに割る提案を出し、選んだものを登録する。
@@ -62,7 +63,7 @@ export async function openSubtaskSuggestions(task, { onChange } = {}) {
       : state.items.length
         ? state.items.map(row)
         : [el('div', { class: 'empty' },
-          el('div', { class: 'big', text: '🤔' }), '分解の候補を作れませんでした')]));
+          el('div', { class: 'big' }, icon('help')), '分解の候補を作れませんでした')]));
   };
 
   const row = (item, index) => {

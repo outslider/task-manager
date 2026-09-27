@@ -4,6 +4,7 @@
  * 数字はそのまま CSV に落とせるようにしておく。 */
 import { api } from '../api.js';
 import { avatar, downloadBlob, el, fill, formatSpan, toISO } from '../util.js';
+import { icon } from '../icons.js';
 
 const UNITS = [
   { value: 'day', label: '日次', spans: [7, 14, 30, 60] },
@@ -30,7 +31,7 @@ export async function ticketStats({ queueId = '', onBack } = {}) {
       el('option', { value: '', selected: state.queue_id ? null : true }, 'すべての窓口'),
       ...queues.map((q) => el('option', {
         value: q.id, selected: String(state.queue_id) === String(q.id) ? true : null,
-      }, `${q.icon || '📮'} ${q.name}`)));
+      }, `${q.icon ? `${q.icon} ` : ''}${q.name}`)));
     picker.addEventListener('change', () => {
       state.queue_id = picker.value;
       load();
@@ -202,7 +203,7 @@ export async function ticketStats({ queueId = '', onBack } = {}) {
         el('span', { class: 'dot', style: { background: row.color } }),
         el('span', { text: row.name }))),
       table('種別ごと', data.by_kind, (row) =>
-        el('span', { text: `${row.icon} ${row.label}` })));
+        el('span', {}, row.icon ? icon(row.icon, { size: 14, class: 'ico-inline' }) : null, row.label)));
   }
 
   function exportCsv() {

@@ -4,6 +4,7 @@ import { AI_NOTE, aiBadge, aiMark } from '../ai.js';
 import { setHeader } from '../app.js';
 import { STATUS_LABEL, category, store } from '../store.js';
 import { dueClass, el, fill, formatDate } from '../util.js';
+import { icon } from '../icons.js';
 import { openTaskDetail } from './taskDetail.js';
 import { categoryChip } from './pickers.js';
 import { projectTabs } from './projectNav.js';
@@ -72,13 +73,13 @@ export async function render(container, route) {
 
       el('div', { class: 'card' },
         el('div', { class: 'card-head' },
-          el('h2', {}, '⛔ ボトルネック（影響の大きい順）'),
+          el('h2', {}, icon('block', { size: 16 }), 'ボトルネック（影響の大きい順）'),
           el('span', { class: 'badge', text: `${bottlenecks.length} 件` })),
         el('div', { class: 'card-body tight' },
           bottlenecks.length
             ? el('div', {}, ...bottlenecks.map(bottleneckRow))
             : el('div', { class: 'empty' },
-              el('div', { class: 'big', text: '🎉' }),
+              el('div', { class: 'big' }, icon('sparkle')),
               '止まっているタスクはありません'))));
   }
 
@@ -177,12 +178,12 @@ export async function render(container, route) {
 
   function conflictCard(conflicts) {
     return el('div', { class: 'card', style: { marginBottom: '14px' } },
-      el('div', { class: 'card-head' }, el('h2', {}, '⚠ 依存関係と日程の矛盾')),
+      el('div', { class: 'card-head' }, el('h2', {}, icon('alert', { size: 16 }), '依存関係と日程の矛盾')),
       el('div', { class: 'card-body' },
         el('div', { class: 'page-sub',
           text: '先行タスクの期限が、後続タスクの開始日より後になっています。日程かカテゴリ順序の見直しが必要です。' }),
         ...conflicts.map((c) => el('div', { class: 'att-item' },
-          el('span', { text: '⚠' }),
+          el('span', {}, icon('alert', { size: 15 })),
           el('span', { class: 'name' },
             el('a', {
               href: '#',
@@ -207,7 +208,7 @@ export async function render(container, route) {
 
   function chainCard(chain) {
     return el('div', { class: 'card', style: { marginBottom: '14px' } },
-      el('div', { class: 'card-head' }, el('h2', {}, '🔗 クリティカルパス')),
+      el('div', { class: 'card-head' }, el('h2', {}, icon('route', { size: 16 }), 'クリティカルパス')),
       el('div', { class: 'card-body' },
         el('div', { class: 'page-sub',
           text: 'この連なりのどれか1つでも遅れると、プロジェクト全体の完了が同じだけ遅れます。' }),

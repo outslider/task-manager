@@ -47,7 +47,7 @@ async function draw(instance, decisionId, onChange) {
         const saved = await openDecisionForm({ projectId: d.project_id, decision: d, decisions: list.decisions });
         if (saved) reload();
       },
-    }, '✏️') : null,
+    }, icon('pencil', { size: 16 })) : null,
     data.my_role === 'owner' && !store.acting ? el('button', {
       class: 'icon-btn', title: '削除',
       onClick: async () => {
@@ -91,7 +91,7 @@ async function draw(instance, decisionId, onChange) {
     d.meeting ? section('決めた場', el('button', {
       type: 'button', class: 'decision-link',
       onClick: () => { instance.close(); location.hash = `#/p/${d.project_id}/gantt`; },
-    }, `📅 ${d.meeting.title}`, d.meeting.on ? el('span', { class: 'cell-mut', text: `　${formatDate(d.meeting.on)} の回` }) : null)) : null,
+    }, icon('calendar', { size: 13, class: 'ico-inline' }), d.meeting.title, d.meeting.on ? el('span', { class: 'cell-mut', text: `　${formatDate(d.meeting.on)} の回` }) : null)) : null,
     section(`検討した案（${d.options.length}）`, d.options.length
       ? el('div', { class: 'decision-options' }, ...d.options.map((o) => el('div', { class: `decision-option ${o.adopted ? 'adopted' : 'rejected'}` },
         el('div', { class: 'decision-option-head' },
@@ -116,7 +116,7 @@ async function draw(instance, decisionId, onChange) {
         ...data.issues.map((i) => el('button', {
           type: 'button', class: 'decision-link',
           onClick: async () => { const { openIssueDetail } = await import('./issueDetail.js'); openIssueDetail(i.id); },
-        }, `📌 #${i.seq} `, i.title, el('span', { class: 'cell-mut', text: `　${ISSUE_STATUS_LABEL[i.status] || i.status}` }))))
+        }, icon('pin', { size: 13, class: 'ico-inline' }), `#${i.seq} `, i.title, el('span', { class: 'cell-mut', text: `　${ISSUE_STATUS_LABEL[i.status] || i.status}` }))))
       : muted('（なし）')),
     data.versions ? section('変更履歴', versionList(d, data)) : null);
 

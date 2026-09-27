@@ -74,7 +74,7 @@ async function renderDetail(instance, taskId, onChange) {
           });
           if (saved) reload();
         },
-      }, '✏️')
+      }, icon('pencil', { size: 16 }))
       : null,
     canEdit
       ? el('button', {
@@ -299,7 +299,9 @@ async function renderDetail(instance, taskId, onChange) {
     el('span', { class: 'kind-tag ticket', text: 'チケット' }),
     el('span', { class: 'issue-no', text: `#${ticket.id}` }),
     el('span', { class: 'name', text: ticket.title }),
-    el('span', { class: 'size', text: `${ticket.queue_icon || '📮'} ${ticket.queue_name}` }),
+    el('span', { class: 'size' },
+      ticket.queue_icon ? `${ticket.queue_icon} ` : icon('ticket', { size: 13, class: 'ico-inline' }),
+      ticket.queue_name),
     ticket.on_behalf_of ? el('span', { class: 'size', text: ticket.on_behalf_of }) : null)));
   }
 
@@ -328,7 +330,8 @@ async function renderDetail(instance, taskId, onChange) {
 
   /* ---- attachments ---- */
   body.append(sectionTitle(`リンク・ファイル (${attachments.length})`,
-    canEdit ? el('button', { class: 'btn btn-sm', onClick: () => addLink(task, reload) }, '🔗 リンク') : null));
+    canEdit ? el('button', { class: 'btn btn-sm', onClick: () => addLink(task, reload) },
+      icon('link', { size: 13, class: 'ico-inline' }), 'リンク') : null));
   if (canEdit) body.append(dropzone(task, reload));
   body.append(...attachments.map((att) => attachmentRow(att, canEdit, reload)));
 
@@ -377,20 +380,20 @@ async function renderDetail(instance, taskId, onChange) {
 function warnings(task, metrics, conflicts) {
   const box = el('div', {});
   if (metrics.is_blocked) {
-    box.append(el('div', { class: 'warn-box' },
-      `⏳ 先行タスク ${metrics.blocked_by_open} 件が未完了のため、まだ着手できません。`));
+    box.append(el('div', { class: 'warn-box' }, icon('hourglass', { size: 15 }),
+      `先行タスク ${metrics.blocked_by_open} 件が未完了のため、まだ着手できません。`));
   }
   if (metrics.blocks_open > 0) {
-    box.append(el('div', { class: 'warn-box' },
-      `⛔ このタスクが終わらないと ${metrics.blocks_open} 件のタスクが進められません。`
+    box.append(el('div', { class: 'warn-box' }, icon('block', { size: 15 }),
+      `このタスクが終わらないと ${metrics.blocks_open} 件のタスクが進められません。`
       + (metrics.is_critical ? ' クリティカルパス上にあります。' : '')));
   } else if (metrics.is_critical && task.status !== 'done') {
-    box.append(el('div', { class: 'warn-box' },
-      '🔗 クリティカルパス上のタスクです。遅れるとプロジェクト全体が同じだけ遅れます。'));
+    box.append(el('div', { class: 'warn-box' }, icon('route', { size: 15 }),
+      'クリティカルパス上のタスクです。遅れるとプロジェクト全体が同じだけ遅れます。'));
   }
   for (const conflict of conflicts) {
-    box.append(el('div', { class: 'warn-box danger' },
-      `⚠ 「${conflict.depends_on_title}」の期限が「${conflict.task_title}」の開始日より `
+    box.append(el('div', { class: 'warn-box danger' }, icon('alert', { size: 15 }),
+      `「${conflict.depends_on_title}」の期限が「${conflict.task_title}」の開始日より `
       + `${conflict.overlap_days} 日あとです。日程が矛盾しています。`));
   }
   return box;
@@ -432,7 +435,7 @@ function attachmentRow(att, canEdit, reload) {
     target: '_blank', rel: 'noopener noreferrer', text: att.name,
   });
   return el('div', { class: 'att-item' },
-    el('span', { text: isFile ? '📎' : '🔗' }),
+    el('span', {}, icon(isFile ? 'clip' : 'link', { size: 15 })),
     label,
     isFile ? el('span', { class: 'size', text: formatBytes(att.size) }) : null,
     canEdit

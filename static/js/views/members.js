@@ -3,6 +3,7 @@
 import { api } from '../api.js';
 import { store } from '../store.js';
 import { avatar, el, fill, openModal, toast } from '../util.js';
+import { icon } from '../icons.js';
 
 const ROLE_RANK = { viewer: 1, commenter: 2, editor: 3, owner: 4 };
 const GUEST_MAX_ROLE = 'commenter';
@@ -96,7 +97,7 @@ export async function openMembers(projectId) {
     return el('div', { class: 'att-item member-row' },
       row.type === 'user'
         ? avatar(row.obj, 'sm')
-        : el('span', { class: 'avatar sm', style: { background: '#98a2b3' } }, '👥'),
+        : el('span', { class: 'avatar sm', style: { background: '#98a2b3' } }, icon('users', { size: 12 })),
       el('div', { class: 'name' },
         el('div', {}, row.name,
           owner ? el('span', { class: 'owner-badge', text: 'プロジェクト管理者' }) : null,
@@ -128,7 +129,7 @@ export async function openMembers(projectId) {
         },
       },
       row.type === 'user' ? avatar(row.obj, 'sm')
-        : el('span', { class: 'avatar sm', style: { background: '#98a2b3' } }, '👥'),
+        : el('span', { class: 'avatar sm', style: { background: '#98a2b3' } }, icon('users', { size: 12 })),
       el('span', { class: 'member-cand-name' },
         el('span', { text: row.name }),
         row.guest ? el('span', { class: 'guest-badge', text: '社外' }) : null,

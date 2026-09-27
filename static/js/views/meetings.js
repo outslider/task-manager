@@ -8,6 +8,7 @@ import {
   confirmDialog, el, fill, formatDate, openModal, parseDate, toast, today, toISO,
 } from '../util.js';
 import { markerChar, store } from '../store.js';
+import { iconLabel } from '../icons.js';
 import { option } from './pickers.js';
 import { buildTree } from './tasks.js';
 
@@ -410,7 +411,7 @@ export async function openOccurrenceDialog(meeting, occurrence) {
                 });
                 if (saved) toast(`D-${saved.seq} を記録しました（決定タブで見られます）`, 'ok');
               },
-            }, '⚖️ 決定として記録'))
+            }, ...iconLabel('scale', '決定として記録', 14)))
           : null,
         el('div', { class: 'field' }, el('label', { text: 'メモ（理由など）' }), f.note),
         el('div', { class: 'field' },

@@ -6,6 +6,7 @@ import {
   skeleton, toast, today, toISO,
 } from '../util.js';
 import { categorySelect, option, userSelect } from './pickers.js';
+import { icon } from '../icons.js';
 
 const WEEKDAYS = ['月', '火', '水', '木', '金', '土', '日'];
 const MAX_DEPTH = 8;
@@ -24,7 +25,7 @@ export async function openRecurrenceManager(project, { onChange } = {}) {
       fill(listHost, ...(data.recurrences.length
         ? data.recurrences.map(row)
         : [el('div', { class: 'empty' },
-          el('div', { class: 'big', text: '🔁' }),
+          el('div', { class: 'big' }, icon('repeat')),
           '定例タスクは登録されていません',
           el('div', { class: 'hint', style: { marginTop: '8px' },
             text: '毎週の議事録、月末の締め作業などを登録しておくと自動で起票されます。' }))]));

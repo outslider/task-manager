@@ -9,6 +9,7 @@ import {
   skeleton, toast, today, toISO,
 } from '../util.js';
 import { option } from './pickers.js';
+import { icon } from '../icons.js';
 
 const WEEKDAYS = ['月', '火', '水', '木', '金', '土', '日'];
 // ToDo は「毎月◯日」が一番多いので、それを先頭に置いておく
@@ -34,7 +35,7 @@ export async function openTodoRecurrences({ onChange } = {}) {
       fill(listHost, ...(data.recurrences.length
         ? data.recurrences.map(row)
         : [el('div', { class: 'empty' },
-          el('div', { class: 'big', text: '🔁' }),
+          el('div', { class: 'big' }, icon('repeat')),
           '繰り返しの ToDo はまだありません',
           el('div', { class: 'hint', style: { marginTop: '8px' },
             text: '毎月1日の締め作業、毎週金曜の週報など、'

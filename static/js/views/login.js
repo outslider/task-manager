@@ -2,6 +2,7 @@
    Also the "forgot password" request and the reset page the mail links to. */
 import { api } from '../api.js';
 import { el, fill } from '../util.js';
+import { icon } from '../icons.js';
 import { brandLockup } from '../brand.js';
 
 function errorBox() {
@@ -162,7 +163,8 @@ function renderRecovery(root, onSuccess, prefill = '') {
         const data = await api.post('/api/auth/recovery', { email: email.value.trim() });
         page(root,
           el('div', { class: 'login-done' },
-            el('div', { class: 'login-done-icon', 'aria-hidden': 'true', text: data.via === 'mail' ? '✉' : '✓' }),
+            el('div', { class: 'login-done-icon', 'aria-hidden': 'true' },
+              data.via === 'mail' ? icon('mail') : '✓'),
             el('p', { text: data.message })),
           el('button', { class: 'btn btn-block', onClick: () => renderLogin(root, onSuccess) }, 'ログインに戻る'));
       } catch (err) {

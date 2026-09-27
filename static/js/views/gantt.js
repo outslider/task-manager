@@ -1870,12 +1870,14 @@ export function buildGanttSvg({
       'font-weight': hasChildren || row.lead ? 650 : 400,
       fill: task.status === 'done' ? colors.muted : colors.text,
       text: (task.is_milestone ? `${markerChar(task)} ` : '')
-        + (task.blocks_open && task.status !== 'done' ? '⛔ ' : '') + label
+        + label
         + (row.collapsed && task.child_count ? ` (${task.child_count})` : ''),
     });
     if (interactive) {
       nameNode.style.cursor = 'pointer';
-      nameNode.appendChild(svgEl('title', { text: task.title }));
+      nameNode.appendChild(svgEl('title', {
+        text: task.title + (task.blocks_open && task.status !== 'done' ? '（後続が待機）' : ''),
+      }));
       nameNode.addEventListener('click', () => openTask(task.id));
     }
     namesG.appendChild(nameNode);
@@ -2012,8 +2014,8 @@ export function buildGanttSvg({
     group.appendChild(svgEl('title', {
       text: `${task.title}\n${formatSpan(startISO, dueISO, { sep: ' 〜 ' })}  進捗 ${progress}%`
         + (assigneeName(task) ? `\n担当: ${assigneeName(task)}` : '')
-        + (task.blocks_open ? `\n⛔ 後続 ${task.blocks_open} 件が待機` : '')
-        + (critical ? '\n🔗 クリティカルパス上' : ''),
+        + (task.blocks_open ? `\n後続 ${task.blocks_open} 件が待機` : '')
+        + (critical ? '\nクリティカルパス上' : ''),
     }));
     if (interactive) {
       group.style.cursor = 'pointer';

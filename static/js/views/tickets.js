@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store } from '../store.js';
 import { avatar, dueClass, el, fill, formatDate, skeleton } from '../util.js';
+import { icon, iconLabel } from '../icons.js';
 import { openTicketDetail } from './ticketDetail.js';
 import { openTicketForm } from './ticketForm.js';
 
@@ -41,7 +42,7 @@ export async function render(container, route) {
         const { openTicketImport } = await import('./importTickets.js');
         if (await openTicketImport()) { drawQueues(); load(); }
       },
-    }, '⬆ 取り込み'),
+    }, ...iconLabel('upload', '取り込み')),
     el('button', { class: 'btn btn-primary', onClick: () => create() }, '＋ チケットを起票'),
   ]);
 
@@ -71,7 +72,7 @@ export async function render(container, route) {
   ], state.status, (value) => { state.status = value; load(); });
 
   const kindSelect = select([
-    ['', '種別: すべて'], ...meta.kinds.map((k) => [k.value, `${k.icon} ${k.label}`]),
+    ['', '種別: すべて'], ...meta.kinds.map((k) => [k.value, k.label]),
   ], state.kind, (value) => { state.kind = value; load(); });
 
   // 社外ユーザーに見えるのは自分の会社のチケットだけなので、担当での絞り込みは要らない
@@ -149,7 +150,9 @@ export async function render(container, route) {
       tab('', 'すべての窓口', queues.reduce((n, q) => n + q.open_count, 0)),
       ...queues
         .filter((q) => q.is_active || String(state.queue_id) === String(q.id) || q.ticket_count)
-        .map((q) => tab(q.id, `${q.icon || '📮'} ${q.name}`, q.open_count, q.project_name)));
+        .map((q) => tab(q.id,
+          q.icon ? `${q.icon} ${q.name}` : [icon('ticket', { size: 13, class: 'ico-inline' }), q.name],
+          q.open_count, q.project_name)));
     drawCategoryFilter();
   }
 
@@ -182,7 +185,7 @@ export async function render(container, route) {
       : `${data.matched} 件`;
     if (!state.loaded.length) {
       fill(listHost, el('div', { class: 'empty' },
-        el('div', { class: 'big', text: '🎫' }),
+        el('div', { class: 'big' }, icon('ticket')),
         state.q || state.kind || state.scope || state.category_id || state.status !== 'open'
           ? '条件に合うチケットがありません'
           : '未対応のチケットはありません'));
@@ -229,7 +232,7 @@ export async function render(container, route) {
         : null,
       guest ? null : el('button', {
         class: 'btn btn-sm', onClick: () => { state.view = 'stats'; drawView(); },
-      }, '📊 集計を見る'));
+      }, ...iconLabel('bars', '集計を見る', 14)));
   }
 
   function row(ticket) {
@@ -242,7 +245,7 @@ export async function render(container, route) {
     el('div', { class: 'ticket-no', text: `#${ticket.id}` }),
     el('div', { class: 'ticket-main' },
       el('div', { class: 'ticket-title-line' },
-        el('span', { class: 'ticket-kind', title: kind.label, text: kind.icon }),
+        el('span', { class: 'ticket-kind', title: kind.label }, icon(kind.icon, { size: 14 })),
         el('span', { class: 'ticket-title', text: ticket.title, title: ticket.title }),
         ticket.priority >= 2
           ? el('span', { class: `prio p${ticket.priority}`,
@@ -253,7 +256,8 @@ export async function render(container, route) {
             text: `✓ ${ticket.open_task_count}/${ticket.task_count}` })
           : null,
         ticket.issue_count
-          ? el('span', { class: 'badge', title: '関連課題', text: `📌 ${ticket.issue_count}` })
+          ? el('span', { class: 'badge', title: '関連課題' },
+            icon('pin', { size: 12 }), String(ticket.issue_count))
           : null,
         ticket.category_label
           ? el('span', { class: 'cat-tag sm', title: ticket.category_label },
@@ -261,10 +265,13 @@ export async function render(container, route) {
             el('span', { text: ticket.category_label }))
           : null,
         ticket.comment_count
-          ? el('span', { class: 'ticket-meta-icon', text: `💬${ticket.comment_count}` })
+          ? el('span', { class: 'ticket-meta-icon' },
+            icon('message', { size: 13 }), String(ticket.comment_count))
           : null),
       el('div', { class: 'ticket-sub' },
-        el('span', { style: { color: ticket.queue_color }, text: `${ticket.queue_icon || '📮'} ${ticket.queue_name}` }),
+        el('span', { style: { color: ticket.queue_color } },
+          ticket.queue_icon ? `${ticket.queue_icon} ` : icon('ticket', { size: 13, class: 'ico-inline' }),
+          ticket.queue_name),
         ticket.on_behalf_of ? el('span', { text: `依頼元: ${ticket.on_behalf_of}` }) : null,
         el('span', { text: `起票: ${ticket.requester_name || '不明'}` }))),
     el('div', { class: 'cell-hide-sm' },

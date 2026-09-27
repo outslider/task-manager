@@ -1600,7 +1600,7 @@ input[type="color"].input {
 .ticket-no { font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .ticket-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .ticket-title-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.ticket-kind { flex: none; }
+.ticket-kind { flex: none; display: inline-flex; color: var(--text-muted); }
 .ticket-title {
   font-weight: 560; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -2484,3 +2484,12 @@ h1, h2, h3, h4 { font-weight: 700; letter-spacing: -.01em; }
   .home-hero { padding: 12px 14px; }
   .home-hero h1 { font-size: 16px; }
 }
+
+/* ---- 線のアイコン（絵文字の置き換え）の置き方 ---- */
+.ico-inline { display: inline-block; vertical-align: -2px; margin-right: 4px; flex: none; }
+.empty .big { display: flex; justify-content: center; color: var(--text-faint); opacity: .8; }
+.empty .big .ico-svg { width: 34px; height: 34px; stroke-width: 1.5; }
+.warn-box > .ico-svg:first-child, .warn-box > .ico-inline:first-child { vertical-align: -3px; margin-right: 6px; }
+.task-meta-icons > span, .ticket-meta-icon, .meta-count { display: inline-flex; align-items: center; gap: 2px; }
+.popup-menu .nav-item .ico-svg { color: var(--text-muted); }
+.login-done-icon .ico-svg { width: 28px; height: 28px; }

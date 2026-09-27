@@ -148,7 +148,7 @@ export async function openQuickAdd({ projectId = null, onCreated } = {}) {
   });
 
   const created = await openModal({
-    title: '⚡ クイック追加',
+    title: 'クイック追加',
     wide: true,
     build: () => el('div', {},
       el('p', { class: 'page-sub',
