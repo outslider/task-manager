@@ -288,3 +288,100 @@ class TestSecondStage(DecisionCase):
         # 下書きを返すだけで、記録はしない
         self.assertEqual(db.scalar("SELECT COUNT(*) AS c FROM decisions WHERE project_id=%s",
                                    (self.pid,)), 0)
+
+
+class TestAcrossProjects(DecisionCase):
+    """左メニューの「決定」：見られる全プロジェクトの決定を横断で並べる。"""
+
+    def setUp(self):
+        super().setUp()
+        self.other = self.make_project("全社の決定")
+        self.member, email = self.make_user("社内の人")
+        self.admin.put("/api/projects/{}/members".format(self.pid), {"members": [
+            {"principal_type": "user", "principal_id": self.member["id"], "role": "viewer"}]})
+        self.member_client = self.client_for(email)
+
+    def test_lists_decisions_of_every_visible_project(self):
+        self.create(title="PJの決定")
+        status, data = self.admin.post("/api/projects/{}/decisions".format(self.other["id"]),
+                                       {"title": "全社の決定事項", "status": "decided"})
+        self.assertEqual(status, 201, data)
+        rows = self.admin.get("/api/decisions")[1]
+        titles = {(r["title"], r["project_name"]) for r in rows["decisions"]}
+        self.assertIn(("PJの決定", "決めるPJ"), titles)
+        self.assertIn(("全社の決定事項", "全社の決定"), titles)
+        self.assertTrue(all(p["can_edit"] for p in rows["projects"]))
+        # 参加していないプロジェクトの決定は出ない。閲覧者は記録先に選べない
+        mine = self.member_client.get("/api/decisions")[1]
+        self.assertEqual([r["title"] for r in mine["decisions"]], ["PJの決定"])
+        self.assertEqual([(p["name"], p["can_edit"]) for p in mine["projects"]], [("決めるPJ", False)])
+
+    def test_guests_only_see_what_is_opened(self):
+        status, data = self.admin.post("/api/users", {
+            "name": "社外", "email": "g-across-{}@test.local".format(self.pid), "role": "guest",
+            "organization": "協力会社X", "password": "userpassword"})
+        guest = data["user"]
+        self.admin.put("/api/projects/{}/members".format(self.pid), {"members": [
+            {"principal_type": "user", "principal_id": guest["id"], "role": "commenter"}]})
+        client = self.client_for(guest["email"])
+        self.create(title="社外にも見せる", guest_visible=True)
+        self.create(title="社内だけ")
+        self.create(title="検討中", status="draft", guest_visible=True)
+        # 決定のタブを見せていないうちは、何も無い（左メニューにも出ない）
+        self.assertEqual(client.get("/api/decisions")[1]["decisions"], [])
+        self.assertIn("decisions", client.get("/api/auth/me")[1]["nav_off"])
+        self.admin.patch("/api/projects/{}".format(self.pid), {"guest_tabs": ["tasks", "decisions"]})
+        data = client.get("/api/decisions")[1]
+        self.assertEqual([r["title"] for r in data["decisions"]], ["社外にも見せる"])
+        self.assertFalse(any(p["can_edit"] for p in data["projects"]))
+        self.assertNotIn("decisions", client.get("/api/auth/me")[1]["nav_off"])
+
+    def test_menu_disappears_when_no_project_uses_decisions(self):
+        self.assertNotIn("decisions", self.member_client.get("/api/auth/me")[1]["nav_off"])
+        self.admin.patch("/api/projects/{}".format(self.pid), {"tabs_hidden": ["decisions"]})
+        self.assertIn("decisions", self.member_client.get("/api/auth/me")[1]["nav_off"])
+        # 決定のタブを使っていないプロジェクトは、記録先の候補に出さない
+        self.assertEqual(self.admin.get("/api/decisions")[1]["projects"][0]["name"], "全社の決定")
+        self.assertNotIn(self.pid, [p["id"] for p in self.admin.get("/api/decisions")[1]["projects"]])
+
+    def test_archived_projects_are_left_out(self):
+        self.create(title="古い決定")
+        self.admin.patch("/api/projects/{}".format(self.pid), {"archived": True})
+        self.assertNotIn("古い決定", [r["title"] for r in self.admin.get("/api/decisions")[1]["decisions"]])
+
+
+class TestTasksTabCanBeHidden(DecisionCase):
+    """決定だけを記録するプロジェクトのために、タスクのタブも「使う」を外せる。"""
+
+    def tabs(self, client=None):
+        rows = (client or self.admin).get("/api/projects")[1]["projects"]
+        return next(p for p in rows if p["id"] == self.pid)["tabs"]
+
+    def test_tasks_can_be_hidden(self):
+        status, data = self.admin.patch("/api/projects/{}".format(self.pid), {
+            "tabs_hidden": ["tasks", "gantt", "workload", "bottlenecks", "issues", "tickets"]})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(self.tabs(), ["decisions"])
+        # 画面から隠れるだけで、タスクのデータは閉じない
+        self.assertEqual(self.admin.get("/api/projects/{}/tasks".format(self.pid))[0], 200)
+
+    def test_one_tab_must_remain(self):
+        status, data = self.admin.patch("/api/projects/{}".format(self.pid),
+                                        {"tabs_hidden": ["tasks", "gantt", "workload", "bottlenecks",
+                                                         "issues", "decisions", "tickets"]})
+        self.assertEqual(status, 400)
+        self.assertIn("1 つは", data["error"])
+
+    def test_guests_lose_the_tasks_tab_too(self):
+        status, data = self.admin.post("/api/users", {
+            "name": "社外", "email": "g-tasks-{}@test.local".format(self.pid), "role": "guest",
+            "organization": "協力会社T", "password": "userpassword"})
+        guest = data["user"]
+        self.admin.put("/api/projects/{}/members".format(self.pid), {"members": [
+            {"principal_type": "user", "principal_id": guest["id"], "role": "commenter"}]})
+        client = self.client_for(guest["email"])
+        self.assertIn("tasks", self.tabs(client))
+        self.admin.patch("/api/projects/{}".format(self.pid),
+                         {"tabs_hidden": ["tasks"], "guest_tabs": ["tasks", "gantt"]})
+        self.assertEqual(self.tabs(client), ["gantt"])
+

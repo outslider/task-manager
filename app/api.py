@@ -94,7 +94,7 @@ def route(method, pattern):
 GUEST_ALLOWED = [(method, re.compile("^" + pattern + "$")) for method, pattern in (
     ("POST", r"/api/auth/login"), ("POST", r"/api/auth/logout"), ("GET", r"/api/auth/me"),
     ("POST", r"/api/auth/act/stop"),   # 管理者が社外ユーザーとして見ているときに、自分へ戻る
-    ("GET", r"/api/projects/\d+/decisions"), ("GET", r"/api/decisions/\d+"),
+    ("GET", r"/api/projects/\d+/decisions"), ("GET", r"/api/decisions/\d+"), ("GET", r"/api/decisions"),
     ("POST", r"/api/auth/password"), ("PATCH", r"/api/auth/profile"),
     ("GET", r"/api/auth/mfa"), ("POST", r"/api/auth/mfa/(setup|enable|disable|recovery-codes)"),
     ("GET", r"/api/auth/logins"),
@@ -259,9 +259,9 @@ def project_tabs_out(project, user):
     guest_tabs = auth.parse_tabs(project.get("guest_tabs"))
     if auth.is_guest(user):
         project["tabs"] = [t for t in auth.PROJECT_TABS
-                           if auth.tab_open_for(user, t, hidden, guest_tabs)]
+                           if auth.tab_open_for(user, t, hidden, guest_tabs) and t not in hidden]
     else:
-        project["tabs"] = [t for t in auth.PROJECT_TABS if t == "tasks" or t not in hidden]
+        project["tabs"] = [t for t in auth.PROJECT_TABS if t not in hidden]
     if project.get("my_role") == "owner":
         project["tabs_hidden"] = sorted(hidden)
         project["guest_tabs"] = [t for t in auth.PROJECT_TABS if t in guest_tabs]
@@ -771,12 +771,12 @@ def guest_nav_off(user):
     画面は出さない。開いても空になるだけで、「何か隠されている」ように見えるため。
     社内の人は、プロジェクトの「使う」を外したタブと、プロジェクトにひとつも入っていない場合が対象。"""
     if auth.is_guest(user):
-        off = [key for key in ("issues", "gantt") if not auth.tab_project_ids(user, key)]
+        off = [key for key in ("issues", "gantt", "decisions") if not auth.tab_project_ids(user, key)]
     else:
         ids = tuple(auth.visible_project_ids(user))
         rows = db.query("SELECT tabs_hidden FROM projects WHERE id IN %s AND archived=0",
                         (ids,)) if ids else []
-        off = [key for key in ("issues", "gantt")
+        off = [key for key in ("issues", "gantt", "decisions")
                if not any(key not in auth.parse_tabs(r["tabs_hidden"]) for r in rows)]
     if auth.is_guest(user):
         ids = auth.visible_project_ids(user)
@@ -1573,12 +1573,13 @@ def update_project(ctx, project_id):
             wanted = ctx.body[key]
             if not isinstance(wanted, list) or any(t not in auth.PROJECT_TABS for t in wanted):
                 raise bad_request("タブの指定が正しくありません")
-            # タスクはプロジェクトの入口なので隠せない。負荷は社外ユーザーには見せない
+            # 負荷は社外ユーザーには見せない。タスクは、使っている限り社外ユーザーにも出す
             chosen = [t for t in auth.PROJECT_TABS if t in wanted
-                      and not (key == "tabs_hidden" and t == "tasks")
                       and not (key == "guest_tabs" and t in auth.GUEST_TABS_NEVER)]
             if key == "guest_tabs" and "tasks" not in chosen:
                 chosen.insert(0, "tasks")
+            if key == "tabs_hidden" and len(chosen) == len(auth.PROJECT_TABS):
+                raise bad_request("使うタブを 1 つは残してください")
             fields.append(key + "=%s")
             params.append(",".join(chosen))
     if "owner_id" in ctx.body:
@@ -4261,24 +4262,19 @@ def _decision_ref(row):
             "status_label": decisions.STATUS_LABEL.get(row["status"], row["status"])}
 
 
-@route("GET", r"/api/projects/(\d+)/decisions")
-def list_decisions(ctx, project_id):
-    user = me(ctx)
-    project_or_404(user, project_id)
-    require_tab(user, project_id, "decisions")
-    where, params = ["d.project_id=%s"], [project_id]
-    if auth.is_guest(user):
-        where.append("d.guest_visible=1 AND d.status<>'draft'")
+def _decision_rows(where, params):
+    """決定の一覧（カードに出す分）。where は d（決定）と p（プロジェクト）で書く。"""
     rows = db.query(
-        "SELECT d.id, d.seq, d.title, d.status, d.what, d.why, d.decided_on, d.category, "
+        "SELECT d.id, d.project_id, d.seq, d.title, d.status, d.what, d.why, d.decided_on, d.category, "
         "       d.guest_visible, d.supersedes_id, d.version, d.updated_at, d.people_extra, "
+        "       p.name AS project_name, p.color AS project_color, "
         "       (SELECT COUNT(*) FROM decision_options o WHERE o.decision_id=d.id) AS option_count, "
         "       (SELECT COUNT(*) FROM decision_options o WHERE o.decision_id=d.id AND o.adopted=0) "
         "           AS rejected_count, "
         "       (SELECT COUNT(*) FROM decision_premises r WHERE r.decision_id=d.id) AS premise_count, "
         "       (SELECT COUNT(*) FROM decision_premises r WHERE r.decision_id=d.id AND r.broken=1) "
         "           AS broken_count "
-        "  FROM decisions d WHERE " + " AND ".join(where)
+        "  FROM decisions d JOIN projects p ON p.id = d.project_id WHERE " + " AND ".join(where)
         + " ORDER BY (d.status='draft') DESC, d.decided_on DESC, d.seq DESC LIMIT %s",
         tuple(params + [DECISION_LIST_LIMIT]))
     ids = [r["id"] for r in rows]
@@ -4297,8 +4293,52 @@ def list_decisions(ctx, project_id):
         older = by_id.get(row["supersedes_id"])
         row["supersedes"] = _decision_ref(older) if older else None
         row["superseded_by"] = [_decision_ref(r) for r in rows if r["supersedes_id"] == row["id"]]
+    return rows
+
+
+@route("GET", r"/api/projects/(\d+)/decisions")
+def list_decisions(ctx, project_id):
+    user = me(ctx)
+    project_or_404(user, project_id)
+    require_tab(user, project_id, "decisions")
+    where, params = ["d.project_id=%s"], [project_id]
+    if auth.is_guest(user):
+        where.append("d.guest_visible=1 AND d.status<>'draft'")
+    rows = _decision_rows(where, params)
     return json_response({"decisions": rows,
                           "categories": sorted({r["category"] for r in rows if r["category"]})})
+
+
+@route("GET", r"/api/decisions")
+def list_all_decisions(ctx):
+    """見られる全プロジェクトの決定（左メニューの「決定」）。
+
+    プロジェクトに属さない決定は、「全社の決定」のようなプロジェクトを作って記録する。
+    ここではそれも含めて横断で並べ、プロジェクトで絞れるようにする。"""
+    user = me(ctx)
+    ids = auth.tab_project_ids(user, "decisions")
+    projects = db.query("SELECT id, name, color, tabs_hidden FROM projects WHERE id IN %s AND archived=0 "
+                        "ORDER BY name", (tuple(ids),)) if ids else []
+    roles = auth.project_roles(user, [p["id"] for p in projects])
+    choices = []
+    for p in projects:
+        uses = "decisions" not in auth.parse_tabs(p.pop("tabs_hidden"))
+        p["can_edit"] = uses and roles.get(p["id"]) in ("owner", "editor") and not auth.is_guest(user)
+        p["uses_decisions"] = uses
+        choices.append(p)
+    if not choices:
+        return json_response({"decisions": [], "categories": [], "projects": []})
+    where, params = ["d.project_id IN %s"], [tuple(p["id"] for p in choices)]
+    if auth.is_guest(user):
+        where.append("d.guest_visible=1 AND d.status<>'draft'")
+    rows = _decision_rows(where, params)
+    have = {r["project_id"] for r in rows}
+    return json_response({
+        "decisions": rows,
+        "categories": sorted({r["category"] for r in rows if r["category"]}),
+        # 絞り込みと「決定を記録」の行き先の候補。決定タブを使っているか、決定が 1 件でもあるもの
+        "projects": [p for p in choices if p["uses_decisions"] or p["id"] in have],
+    })
 
 
 def _decision_input(ctx, project_id, current=None):

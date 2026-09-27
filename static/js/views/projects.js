@@ -97,12 +97,15 @@ export async function render(container) {
           el('i', { style: { width: `${percent}%` } })),
         memberStrip(project, isOwner),
         el('div', { style: { display: 'flex', gap: '6px', marginTop: '12px', flexWrap: 'wrap' } },
-          el('a', { class: 'btn btn-sm', href: `#/p/${project.id}/tasks` }, 'タスク'),
+          (!project.tabs || project.tabs.includes('tasks'))
+            ? el('a', { class: 'btn btn-sm', href: `#/p/${project.id}/tasks` }, 'タスク') : null,
           // 使っていないタブ（社外ユーザーに見せていないタブ）への近道は出さない
           (!project.tabs || project.tabs.includes('gantt'))
             ? el('a', { class: 'btn btn-sm', href: `#/p/${project.id}/gantt` }, 'ガント') : null,
           (!project.tabs || project.tabs.includes('issues'))
             ? el('a', { class: 'btn btn-sm', href: `#/p/${project.id}/issues` }, '課題') : null,
+          (project.tabs?.includes('decisions') && !project.tabs.includes('tasks'))
+            ? el('a', { class: 'btn btn-sm', href: `#/p/${project.id}/decisions` }, '決定') : null,
           isOwner
             ? el('button', { class: 'btn btn-sm', onClick: () => manageMembers(project) }, 'メンバー')
             : null,
@@ -168,17 +171,18 @@ export async function render(container) {
     syncSlackEvents();
     // タブの出し分け。「使う」は全員向け（画面をすっきりさせるため）、「社外にも見せる」は
     // 社外ユーザー向け（見せないものはサーバーでも閉じる）。タスクはいつも出す
-    const TAB_CHOICES = [['gantt', 'ガント'], ['workload', '負荷'], ['bottlenecks', 'ボトルネック'],
+    const TAB_CHOICES = [['tasks', 'タスク'], ['gantt', 'ガント'], ['workload', '負荷'], ['bottlenecks', 'ボトルネック'],
       ['issues', '課題'], ['decisions', '決定'], ['tickets', 'チケット']];
     const hiddenNow = new Set(project?.tabs_hidden || []);
     const guestNow = new Set(project?.guest_tabs || ['tasks', 'gantt', 'issues', 'tickets']);
     const tabRows = TAB_CHOICES.map(([key, label]) => {
       const use = el('input', { type: 'checkbox', checked: hiddenNow.has(key) ? null : true });
+      // タスクは、使っている限り社外ユーザーにも出す（入口なので）
       const guest = el('input', {
-        type: 'checkbox', checked: guestNow.has(key) && key !== 'workload' ? true : null,
-        disabled: key === 'workload' ? true : null,
+        type: 'checkbox', checked: (guestNow.has(key) || key === 'tasks') && key !== 'workload' ? true : null,
+        disabled: ['workload', 'tasks'].includes(key) ? true : null,
       });
-      const sync = () => { guest.disabled = key === 'workload' || !use.checked; };
+      const sync = () => { guest.disabled = ['workload', 'tasks'].includes(key) || !use.checked; };
       use.addEventListener('change', sync);
       sync();
       return { key, label, use, guest };
@@ -187,12 +191,12 @@ export async function render(container) {
       el('thead', {}, el('tr', {},
         el('th', { text: 'タブ' }), el('th', { text: '使う' }), el('th', { text: '社外ユーザーにも見せる' }))),
       el('tbody', {},
-        el('tr', {}, el('td', { text: 'タスク' }), el('td', { text: '常に' }), el('td', { text: '常に' })),
         ...tabRows.map((row) => el('tr', {},
           el('td', { text: row.label }),
           el('td', {}, row.use),
           el('td', {}, row.guest,
-            row.key === 'workload' ? el('span', { class: 'hint', text: ' 担当者の工数が並ぶため見せません' }) : null)))));
+            row.key === 'workload' ? el('span', { class: 'hint', text: ' 担当者の工数が並ぶため見せません' }) : null,
+            row.key === 'tasks' ? el('span', { class: 'hint', text: ' 使うときは常に見せます' }) : null)))));
 
     // プロジェクト管理者は社内の人だけ（社外ユーザーはコメント可まで）
     const ownerSelect = el('select', { class: 'select' },
@@ -332,7 +336,8 @@ export async function render(container) {
             }, '👁 保存して社外ユーザーとしてプレビュー'),
             el('span', { class: 'hint', text: '　いまの設定を保存してから、社外ユーザーの立場で見え方を確かめます' })),
           el('div', { class: 'hint',
-            text: '「使う」を外したタブは、このプロジェクトの画面から隠れます。'
+            text: '「使う」を外したタブは、このプロジェクトの画面から隠れます'
+              + '（タスクを外すと、プロジェクトを開いたときは使っている先頭のタブが出ます。決定だけを記録するプロジェクトなどに）。'
               + '社外ユーザーに見せないタブは、画面だけでなくデータも社外ユーザーには閉じます'
               + '（ガントはタスク一覧と同じデータなので、隠れるのは画面だけです）。' }))
         : null,
@@ -373,6 +378,10 @@ export async function render(container) {
           .map((row) => row.key)];
       }
       if (!payload.name) { toast('プロジェクト名を入力してください', 'error'); return false; }
+      if (project && !tabRows.some((row) => row.use.checked)) {
+        toast('使うタブを 1 つは残してください', 'error');
+        return false;
+      }
       try {
         if (project) await api.patch(`/api/projects/${project.id}`, payload);
         else await api.post('/api/projects', payload);

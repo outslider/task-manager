@@ -217,7 +217,8 @@ def is_guest(user) -> bool:
     return bool(user) and user.get("role") == "guest"
 
 
-# プロジェクトの中のタブ。タスクはプロジェクトの入口なので、いつも出す。
+# プロジェクトの中のタブ。どれも「使う」を外せる（決定だけを記録するプロジェクトなど）が、1 つは残す。
+# 「使う」を外すのは画面をすっきりさせるためで、タスクのデータ自体は閉じない（ガントなどが使う）。
 PROJECT_TABS = ("tasks", "gantt", "workload", "bottlenecks", "issues", "decisions", "tickets")
 TAB_LABEL = {"tasks": "タスク", "gantt": "ガント", "workload": "負荷",
              "bottlenecks": "ボトルネック", "issues": "課題", "decisions": "決定",

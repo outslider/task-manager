@@ -398,11 +398,15 @@ class TestProjectTabs(GuestTestCase):
         # 設定そのものはプロジェクト管理者にだけ
         self.assertNotIn("guest_tabs", self.g.get("/api/projects/{}".format(self.project["id"]))[1]["project"])
 
-    def test_tasks_cannot_be_hidden_and_workload_never_goes_to_guests(self):
-        self.settle(tabs_hidden=["tasks", "workload"], guest_tabs=["workload", "gantt"])
+    def test_workload_never_goes_to_guests(self):
+        self.settle(tabs_hidden=["workload"], guest_tabs=["workload", "gantt"])
         self.assertIn("tasks", self.my_tabs(self.admin))
         self.assertNotIn("workload", self.my_tabs(self.admin))
         self.assertEqual(self.my_tabs(self.g), ["tasks", "gantt"])
+        # タスクも「使う」を外せる（決定だけのプロジェクトなど）。外したら社外ユーザーにも出さない
+        self.settle(tabs_hidden=["tasks"], guest_tabs=["gantt"])
+        self.assertNotIn("tasks", self.my_tabs(self.admin))
+        self.assertEqual(self.my_tabs(self.g), ["gantt"])
         self.assertEqual(self.admin.patch("/api/projects/{}".format(self.project["id"]),
                                           {"guest_tabs": ["bogus"]})[0], 400)
 
@@ -505,18 +509,19 @@ class TestGuestNavigation(ApiTestCase):
 
     def test_only_tasks_shown_hides_the_rest(self):
         self.tabs("tasks")
-        self.assertEqual(self.off(), ["gantt", "issues", "links", "tickets"])
+        self.assertEqual(self.off(), ["decisions", "gantt", "issues", "links", "tickets"])
 
     def test_opening_tabs_brings_the_menu_back(self):
         self.tabs("tasks", "issues", "gantt")
-        self.assertEqual(self.off(), ["links", "tickets"])   # 窓口がまだ無い・見せるリンクが無い
+        self.assertEqual(self.off(), ["decisions", "links", "tickets"])   # 窓口がまだ無い・見せるリンクが無い
         self.admin.post("/api/ticket-queues", {"name": "窓口N{}".format(self.project["id"]),
                                                "project_id": self.project["id"]})
-        self.assertEqual(self.off(), ["links", "tickets"])   # チケットのタブを見せていない
+        self.assertEqual(self.off(), ["decisions", "links", "tickets"])   # チケットのタブを見せていない
         self.tabs("tasks", "issues", "gantt", "tickets")
-        self.assertEqual(self.off(), ["links"])
+        self.assertEqual(self.off(), ["decisions", "links"])
         self.admin.post("/api/links", {"title": "共有の資料", "url": "https://example.com/n",
                                        "project_id": self.project["id"], "guest_visible": True})
+        self.tabs("tasks", "issues", "gantt", "tickets", "decisions")
         self.assertEqual(self.off(), [])
 
     def test_insiders_keep_every_menu(self):

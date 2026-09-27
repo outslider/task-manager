@@ -1,4 +1,5 @@
-/* 意思決定ログ（プロジェクトの「決定」タブ）。一覧と、時系列の表示。 */
+/* 意思決定ログ。プロジェクトの「決定」タブと、左メニューの「決定」（見られる全プロジェクトの横断）。
+   一覧と、時系列の表示。 */
 import { api } from '../api.js';
 import { setHeader } from '../app.js';
 import { store } from '../store.js';
@@ -17,20 +18,50 @@ const STATUS_FILTERS = [
 
 export async function render(container, route) {
   const projectId = route.projectId;
+  const cross = !projectId;               // 左メニューの「決定」（プロジェクトを横断）
   const project = store.project(projectId);
-  const canEdit = ['owner', 'editor'].includes(project?.my_role);
   const state = {
-    q: '', status: 'live', category: '',
+    q: '', status: 'live', category: '', project: '',
     view: (() => { try { return localStorage.getItem(VIEW_KEY) || 'list'; } catch { return 'list'; } })(),
   };
-  let data = await api.get(`/api/projects/${projectId}/decisions`);
+  const url = cross ? '/api/decisions' : `/api/projects/${projectId}/decisions`;
+  let data = await api.get(url);
+  const writable = () => (data.projects || []).filter((p) => p.can_edit);
+  const canEdit = cross ? writable().length > 0 && !store.acting : ['owner', 'editor'].includes(project?.my_role);
 
   const add = async () => {
-    const saved = await openDecisionForm({ projectId, decisions: data.decisions });
+    const target = cross ? await pickProject() : projectId;
+    if (!target) return;
+    const saved = await openDecisionForm({
+      projectId: target, decisions: data.decisions.filter((d) => d.project_id === target) });
     if (saved) { await reload(); openDecisionDetail(saved.id, { onChange: reload }); }
   };
-  setHeader(`${project?.name || ''} — 決定`, [
-    canEdit ? el('button', {
+
+  /** 横断一覧から記録するときの行き先。絞り込み中のプロジェクトか、1 つしかなければそれ。 */
+  async function pickProject() {
+    const list = writable();
+    const current = list.find((p) => String(p.id) === state.project);
+    if (current) return current.id;
+    if (list.length === 1) return list[0].id;
+    const select = el('select', { class: 'select' },
+      ...list.map((p) => el('option', { value: p.id }, p.name)));
+    const ok = await openModal({
+      title: 'どのプロジェクトに記録しますか',
+      build: () => el('div', {},
+        el('div', { class: 'field' }, select),
+        el('div', { class: 'hint',
+          text: 'プロジェクトに属さない決定は、「全社の決定」のようなプロジェクトを作って記録できます'
+            + '（プロジェクト設定の「タブ」で、決定以外の「使う」を外すと決定帳として使えます）。' })),
+      footer: (close) => [
+        el('button', { class: 'btn', onClick: () => close(false) }, 'キャンセル'),
+        el('button', { class: 'btn btn-primary', onClick: () => close(true) }, '次へ'),
+      ],
+    });
+    return ok ? Number(select.value) : null;
+  }
+
+  setHeader(cross ? '決定' : `${project?.name || ''} — 決定`, [
+    canEdit && !cross ? el('button', {
       class: 'btn', title: '会議メモから、決まったことを読み取って下書きにします',
       onClick: () => fromMemo(),
     }, ...iconLabel('note', 'メモから'), aiMark()) : null,
@@ -129,23 +160,31 @@ export async function render(container, route) {
         draw();
       },
     }, label)));
+  const projectSelect = el('select', { class: 'select', style: { maxWidth: '200px' } });
+  projectSelect.addEventListener('change', () => { state.project = projectSelect.value; draw(); });
   const host = el('div', {});
   const summary = el('div', { class: 'page-sub' });
 
   fill(container,
-    projectTabs(projectId, 'decisions'),
+    cross ? null : projectTabs(projectId, 'decisions'),
     el('div', { class: 'page-head' }, el('div', { class: 'grow' }, summary)),
     el('div', { class: 'card' },
-      el('div', { class: 'toolbar decision-toolbar' }, search, statusSelect, categorySelect, viewSeg),
+      el('div', { class: 'toolbar decision-toolbar' },
+        search, cross ? projectSelect : null, statusSelect, categorySelect, viewSeg),
       el('div', { class: 'card-body' }, host)));
 
   async function reload() {
-    data = await api.get(`/api/projects/${projectId}/decisions`);
+    data = await api.get(url);
     draw();
   }
 
+  /** 横断一覧では、プロジェクトの絞り込みを先に掛けたもの。件数もこの範囲で数える。 */
+  function scoped() {
+    return state.project ? data.decisions.filter((d) => String(d.project_id) === state.project) : data.decisions;
+  }
+
   function visible() {
-    return data.decisions.filter((d) => {
+    return scoped().filter((d) => {
       if (state.status === 'live' && ['superseded', 'withdrawn'].includes(d.status)) return false;
       if (!['live', 'all'].includes(state.status) && d.status !== state.status) return false;
       if (state.category && d.category !== state.category) return false;
@@ -159,8 +198,14 @@ export async function render(container, route) {
     fill(categorySelect, el('option', { value: '' }, '分類：すべて'),
       ...cats.map((c) => el('option', { value: c, selected: state.category === c ? true : null }, c)));
     categorySelect.hidden = !cats.length;
+    if (cross) {
+      const projects = data.projects || [];
+      fill(projectSelect, el('option', { value: '' }, 'プロジェクト：すべて'),
+        ...projects.map((p) => el('option', { value: p.id, selected: state.project === String(p.id) ? true : null }, p.name)));
+      projectSelect.hidden = projects.length < 2;
+    }
     for (const b of viewSeg.children) b.classList.toggle('active', b.dataset.value === state.view);
-    const all = data.decisions;
+    const all = scoped();
     const counts = {
       decided: all.filter((d) => d.status === 'decided').length,
       review: all.filter((d) => d.status === 'review').length,
@@ -176,6 +221,10 @@ export async function render(container, route) {
         el('div', { class: 'big', text: '⚖️' }),
         all.length ? '条件に合う決定はありません'
           : 'まだ決定の記録がありません。「何を・なぜ・誰が決めたか」を残しておくと、あとから方針の理由をたどれます。',
+        cross && !all.length && !store.isGuest()
+          ? el('div', { class: 'hint', style: { marginTop: '8px' },
+            text: 'プロジェクトに属さない決定は、「全社の決定」のようなプロジェクトを作って記録できます。' })
+          : null,
         canEdit && !all.length
           ? el('div', { style: { marginTop: '12px' } }, el('button', { class: 'btn btn-primary', onClick: add }, '最初の決定を記録'))
           : null));
@@ -188,6 +237,7 @@ export async function render(container, route) {
     const open = () => openDecisionDetail(d.id, { onChange: reload });
     return el('button', { type: 'button', class: `decision-card st-${d.status}`, onClick: open },
       el('div', { class: 'decision-card-head' },
+        cross ? projectChip(d) : null,
         el('span', { class: 'decision-no', text: `D-${d.seq}` }),
         el('span', { class: 'decision-title', text: d.title }),
         statusBadge(d.status, d.status_label),
@@ -231,7 +281,8 @@ export async function render(container, route) {
     el('span', { class: 'tl-dot' }),
     el('span', { class: 'tl-date', text: d.decided_on ? formatDate(d.decided_on) : '' }),
     el('span', { class: 'tl-body' },
-      el('span', { class: 'tl-title' }, el('span', { class: 'decision-no', text: `D-${d.seq}` }), ` ${d.title}`),
+      el('span', { class: 'tl-title' }, cross ? projectChip(d) : null,
+        el('span', { class: 'decision-no', text: `D-${d.seq}` }), ` ${d.title}`),
       d.supersedes ? el('span', { class: 'tl-sub', text: `D-${d.supersedes.seq}「${d.supersedes.title}」を置き換え` }) : null,
       d.why ? el('span', { class: 'tl-sub', text: `なぜ：${firstLine(d.why)}` }) : null),
     statusBadge(d.status, d.status_label));
@@ -244,6 +295,12 @@ export async function render(container, route) {
   }
 
   draw();
+}
+
+/** 横断一覧で、どのプロジェクトの決定かを示す札。 */
+function projectChip(d) {
+  return el('span', { class: 'decision-proj', title: d.project_name },
+    el('i', { style: { background: d.project_color || '#98a2b3' } }), d.project_name);
 }
 
 function firstLine(text) {

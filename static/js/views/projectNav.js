@@ -108,7 +108,14 @@ function projectHero(project, nav) {
 /** このプロジェクトで、この画面を出してよいか（使っていないタブを URL で開いたとき用）。 */
 export function tabAllowed(projectId, key) {
   const project = store.project(projectId);
-  return !project?.tabs || key === 'tasks' || project.tabs.includes(key);
+  return !project?.tabs || project.tabs.includes(key);
+}
+
+/** プロジェクトを開いたときの最初のタブ。ふだんはタスク。タスクを使っていなければ、使っている先頭のタブ。 */
+export function projectHome(projectId) {
+  const project = store.project(projectId);
+  if (!project?.tabs || project.tabs.includes('tasks')) return 'tasks';
+  return TABS.map((tab) => tab.key).find((key) => project.tabs.includes(key)) || null;
 }
 
 /** 参加している人の顔と人数。プロジェクト管理者には、押すとメンバーの編集が開く。 */

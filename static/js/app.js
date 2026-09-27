@@ -17,6 +17,7 @@ const NAV = [
   { id: 'gantt', icon: 'chart', label: '全体ガント', hash: '#/gantt' },
   { id: 'links', icon: 'link', label: 'リンク集', hash: '#/links' },
   { id: 'issues', icon: 'pin', label: '課題', hash: '#/issues' },
+  { id: 'decisions', icon: 'scale', label: '決定', hash: '#/decisions' },
   { id: 'tickets', icon: 'ticket', label: 'チケット', hash: '#/tickets' },
   { id: 'notifications', icon: 'bell', label: '通知', hash: '#/notifications', badge: true },
   { id: 'trash', icon: 'trash', label: 'ゴミ箱', hash: '#/trash' },
@@ -358,6 +359,7 @@ const ROUTES = [
   [/^#\/p\/(\d+)$/, (m) => ({ view: 'tasks', projectId: Number(m[1]) })],
   [/^#\/task\/(\d+)$/, (m) => ({ view: 'task', taskId: Number(m[1]) })],
   [/^#\/links$/, () => ({ view: 'links' })],
+  [/^#\/decisions$/, () => ({ view: 'decisions' })],
   [/^#\/tickets(?:\?(.*))?$/, (m) => ({
     view: 'tickets',
     projectId: Number(new URLSearchParams(m[1] || '').get('project')) || null,
@@ -462,11 +464,24 @@ async function renderRoute() {
   }
 
   // プロジェクトで使っていないタブ（社外ユーザーに見せていないタブを含む）を URL で
-  // 開いたときは、タスク一覧へ回す。前に開いていたタブを覚えている場合もここに来る
-  if (route.projectId && route.view !== 'tasks') {
-    const { tabAllowed } = await import('./views/projectNav.js');
+  // 開いたときは、そのプロジェクトの最初のタブ（ふだんはタスク）へ回す。
+  // 前に開いていたタブを覚えている場合や、タスクを使っていないプロジェクトへのリンクもここに来る
+  if (route.projectId) {
+    const { tabAllowed, projectHome } = await import('./views/projectNav.js');
     if (!tabAllowed(route.projectId, route.view)) {
-      location.replace(`#/p/${route.projectId}/tasks`);
+      const home = projectHome(route.projectId);
+      if (home && home !== route.view) {
+        location.replace(`#/p/${route.projectId}/${home}`);
+        return;
+      }
+      if (!home && store.project(route.projectId)?.tabs?.includes('tickets')) {
+        location.replace(`#/tickets?project=${route.projectId}`);
+        return;
+      }
+      setHeader(store.project(route.projectId)?.name || 'プロジェクト');
+      fill(shell.content, el('div', { class: 'card' },
+        el('div', { class: 'empty' }, el('div', { class: 'big', text: '🗂️' }),
+          'このプロジェクトには、開ける画面がありません')));
       return;
     }
   }
