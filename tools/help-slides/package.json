@@ -1,0 +1,7 @@
+{
+  "name": "task-manager-help-slides",
+  "private": true,
+  "description": "ヘルプ画面の図を書き出す（開発用。本体の動作には不要）",
+  "scripts": { "render": "node render.js" },
+  "dependencies": { "puppeteer": "^24.0.0" }
+}

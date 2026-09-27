@@ -2493,3 +2493,14 @@ h1, h2, h3, h4 { font-weight: 700; letter-spacing: -.01em; }
 .task-meta-icons > span, .ticket-meta-icon, .meta-count { display: inline-flex; align-items: center; gap: 2px; }
 .popup-menu .nav-item .ico-svg { color: var(--text-muted); }
 .login-done-icon .ico-svg { width: 28px; height: 28px; }
+
+/* ---------- ヘルプ ---------- */
+.help-figure .card-body > a { display: block; }
+.help-figure img { display: block; width: 100%; height: auto; border: 1px solid var(--border); border-radius: 8px;
+  background: #fff; }
+
+.help-tips { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.help-tip { display: flex; gap: 10px; align-items: flex-start; }
+.help-tip b { font-size: 13.5px; }
+.help-tip-ico { width: 32px; height: 32px; border-radius: 8px; flex: none; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent); }

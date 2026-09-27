@@ -3,3 +3,5 @@ data/
 .venv/
 __pycache__/
 *.pyc
+tools/help-slides/node_modules/
+tools/help-slides/package-lock.json

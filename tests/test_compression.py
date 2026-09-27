@@ -57,6 +57,15 @@ class TestCompression(ApiTestCase):
         with open(os.path.join(ROOT, "static", "js", "views", "gantt.js"), "rb") as fh:
             self.assertEqual(body, fh.read())
 
+    def test_help_figures_are_served_as_is(self):
+        """ヘルプの図（PNG）はそのまま返す（圧縮しても小さくならないため）。"""
+        for name in ("relationships.png", "roles.png"):
+            status, headers, body = fetch(self.base + "/img/help/" + name, {"Accept-Encoding": "gzip"})
+            self.assertEqual(status, 200, name)
+            self.assertEqual(headers.get("Content-Type"), "image/png")
+            self.assertIsNone(headers.get("Content-Encoding"))
+            self.assertTrue(body.startswith(b"\x89PNG"), name)
+
     def test_revalidation_still_returns_304(self):
         _s, headers, _b = fetch(self.base + "/css/style.css", {"Accept-Encoding": "gzip"})
         status, headers2, body = fetch(self.base + "/css/style.css",

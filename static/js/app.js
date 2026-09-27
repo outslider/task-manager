@@ -248,6 +248,7 @@ function renderSidebar() {
           .map((item) => navItem(item, active.startsWith(item.hash))))
       : null,
     el('div', { class: 'sidebar-foot' },
+      navItem({ id: 'help', icon: 'help', label: 'ヘルプ', hash: '#/help' }, active.startsWith('#/help')),
       el('a', { class: 'nav-item', href: '#/profile', onClick: () => toggleSidebar(false) },
         el('span', {
           class: 'avatar sm',
@@ -363,6 +364,7 @@ const ROUTES = [
   [/^#\/task\/(\d+)$/, (m) => ({ view: 'task', taskId: Number(m[1]) })],
   [/^#\/links$/, () => ({ view: 'links' })],
   [/^#\/decisions$/, () => ({ view: 'decisions' })],
+  [/^#\/help$/, () => ({ view: 'help' })],
   [/^#\/tickets(?:\?(.*))?$/, (m) => ({
     view: 'tickets',
     projectId: Number(new URLSearchParams(m[1] || '').get('project')) || null,
@@ -400,6 +402,7 @@ const LOADERS = {
   decisions: () => import('./views/decisions.js'),
   workload: () => import('./views/workload.js'),
   links: () => import('./views/links.js'),
+  help: () => import('./views/help.js'),
   tickets: () => import('./views/tickets.js'),
   notifications: () => import('./views/notifications.js'),
   trash: () => import('./views/trash.js'),
