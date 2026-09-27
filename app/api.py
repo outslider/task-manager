@@ -767,14 +767,21 @@ def whoami(ctx):
 
 
 def guest_nav_off(user):
-    """社外ユーザーの左メニューから外すもの。参加しているどのプロジェクトでも見せていない画面は出さない
-    （開いても空になるだけで、「何か隠されている」ように見えるため）。社内の人は外さない。"""
-    if not auth.is_guest(user):
-        return []
-    off = [key for key in ("issues", "gantt") if not auth.tab_project_ids(user, key)]
+    """左メニューから外すもの。参加しているどのプロジェクトでも使っていない（社外ユーザーには見せていない）
+    画面は出さない。開いても空になるだけで、「何か隠されている」ように見えるため。
+    社内の人は、プロジェクトの「使う」を外したタブと、プロジェクトにひとつも入っていない場合が対象。"""
+    if auth.is_guest(user):
+        off = [key for key in ("issues", "gantt") if not auth.tab_project_ids(user, key)]
+    else:
+        ids = tuple(auth.visible_project_ids(user))
+        rows = db.query("SELECT tabs_hidden FROM projects WHERE id IN %s AND archived=0",
+                        (ids,)) if ids else []
+        off = [key for key in ("issues", "gantt")
+               if not any(key not in auth.parse_tabs(r["tabs_hidden"]) for r in rows)]
     seen, params = visible_queue_clause(user)
     if seen == "1=0" or not db.scalar(
-            "SELECT COUNT(*) AS c FROM ticket_queues q WHERE q.is_active=1 AND " + seen, params, default=0):
+            "SELECT COUNT(*) AS c FROM ticket_queues q WHERE q.is_active=1"
+            + (" AND " + seen if seen else ""), params, default=0):
         off.append("tickets")
     return off
 

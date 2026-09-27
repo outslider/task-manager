@@ -7,6 +7,7 @@
     python server.py --run-digest    # send the daily digest once and exit
 """
 import argparse
+import gzip
 import hashlib
 import logging
 import mimetypes
@@ -14,6 +15,7 @@ import os
 import posixpath
 import re
 import sys
+import threading
 from email.utils import formatdate, mktime_tz, parsedate_tz
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
@@ -37,6 +39,31 @@ STATIC_TYPES = {
     ".png": "image/png",
     ".webmanifest": "application/manifest+json",
 }
+
+
+# 圧縮して送る種類と大きさ。一覧の JSON は数 MB になることがあり、圧縮すると 1/20 ほどになる
+COMPRESSIBLE = ("application/json", "application/javascript", "text/css", "text/html",
+                "image/svg+xml", "text/plain", "application/manifest+json")
+COMPRESS_MIN_BYTES = 1024
+# 静的ファイルは中身が変わらない限り同じ圧縮結果になるので、ETag ごとに覚えておく
+_GZIP_CACHE = {}
+_GZIP_LOCK = threading.Lock()
+_GZIP_CACHE_MAX = 200
+
+
+def gzip_bytes(body, etag=None):
+    if etag:
+        with _GZIP_LOCK:
+            hit = _GZIP_CACHE.get(etag)
+        if hit is not None:
+            return hit
+    packed = gzip.compress(body, compresslevel=5, mtime=0)
+    if etag:
+        with _GZIP_LOCK:
+            if len(_GZIP_CACHE) >= _GZIP_CACHE_MAX:
+                _GZIP_CACHE.clear()
+            _GZIP_CACHE[etag] = packed
+    return packed
 
 
 class Context:
@@ -64,10 +91,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, response: Response):
         body = response.body if isinstance(response.body, bytes) else str(response.body).encode()
+        header_names = {key.lower() for key, _v in response.headers}
+        compress = (
+            response.status == 200 and len(body) >= COMPRESS_MIN_BYTES
+            and "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+            and response.content_type.split(";")[0].strip() in COMPRESSIBLE
+            and "content-encoding" not in header_names
+            and "content-disposition" not in header_names)     # 添付のダウンロードはそのまま
+        if compress:
+            etag = next((v for k, v in response.headers if k.lower() == "etag"), None)
+            body = gzip_bytes(body, etag)
         self.send_response(response.status)
         if response.status != 304:          # 304 は本文を持たない
             self.send_header("Content-Type", response.content_type)
             self.send_header("Content-Length", str(len(body)))
+        if compress:
+            self.send_header("Content-Encoding", "gzip")
+        if response.status in (200, 304) and response.content_type.split(";")[0].strip() in COMPRESSIBLE:
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "same-origin")
         # API の応答など、明示していないものは保存させない（古い内容を掴ませないため）

@@ -280,7 +280,7 @@ export async function render(container, route) {
             el('button', { class: 'btn btn-primary', onClick: () => addTask(null) }, '最初のタスクを追加'))
           : null));
     } else {
-      rows.forEach((row) => rowsHost.append(row.heading ? headingRow(row) : taskRow(row)));
+      drawRows(rows);
     }
     drawAlerts();
     drawBulkBar();
@@ -295,6 +295,31 @@ export async function render(container, route) {
       overdue ? el('span', { class: 'badge overdue', style: { marginLeft: '8px' }, text: `期限超過 ${overdue}` }) : null,
       el('span', { style: { marginLeft: '8px' }, text: `表示 ${shownWork} 件` }));
     drawFilterNotice(hidden);
+  }
+
+  /**
+   * 行を描く。数千件あるプロジェクトでは一度に全部作ると画面が固まるので、
+   * 画面に見える分を先に出し、残りは少しずつ後ろに足す。描き直しが入ったら古い続きは捨てる。
+   */
+  let drawGeneration = 0;
+  function drawRows(rows) {
+    const generation = ++drawGeneration;
+    const make = (row) => (row.heading ? headingRow(row) : taskRow(row));
+    const FIRST = 150;
+    const CHUNK = 200;
+    const first = document.createDocumentFragment();
+    rows.slice(0, FIRST).forEach((row) => first.append(make(row)));
+    rowsHost.append(first);
+    let next = FIRST;
+    const more = () => {
+      if (generation !== drawGeneration || next >= rows.length) return;
+      const part = document.createDocumentFragment();
+      rows.slice(next, next + CHUNK).forEach((row) => part.append(make(row)));
+      rowsHost.append(part);
+      next += CHUNK;
+      setTimeout(more, 0);
+    };
+    if (next < rows.length) setTimeout(more, 0);
   }
 
   /** 絞り込みで隠れている件数を知らせる。「作ったのに出てこない」を防ぐため。 */

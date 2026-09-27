@@ -447,7 +447,8 @@ async function renderRoute() {
   }
 
   // 社外ユーザーに見せていない画面（課題・チケット・全体ガント）を URL で開いたら、今日の確認へ
-  if (!route.projectId && store.navOff?.has(route.view)) {
+  if (!route.projectId && (store.navOff?.has(route.view)
+      || (store.isGuest() && GUEST_HIDDEN.has(route.view)))) {
     location.replace('#/daily');
     return;
   }

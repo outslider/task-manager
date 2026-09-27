@@ -11,7 +11,8 @@ export async function render(container) {
   let projects = await store.refreshProjects();
   const state = { showArchived: false };
 
-  setHeader('プロジェクト', [
+  // 社外ユーザーはプロジェクトを作れない（サーバーでも閉じている）ので、作る入口を出さない
+  setHeader('プロジェクト', store.isGuest() ? [] : [
     el('button', {
       class: 'btn', title: '取っておいた一式から、プロジェクトごと起こします',
       onClick: async () => {

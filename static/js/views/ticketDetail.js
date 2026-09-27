@@ -228,16 +228,19 @@ async function renderDetail(instance, ticketId, onChange) {
   }));
 
   /* ---- タスクへ渡す ---- */
+  // タスク・課題にできるのは、書き込めるプロジェクトがある人だけ（閲覧・コメントだけの人には出さない）
+  const canHandOff = !guest && writableProjects().length > 0;
   body.append(sectionTitle(`関連タスク (${tasks.length})`, guest ? null :
     el('span', { style: { display: 'flex', gap: '6px' } },
-      el('button', { class: 'btn btn-sm btn-primary',
-        onClick: () => makeTask(ticket, reload) }, '＋ タスクにする'),
+      canHandOff ? el('button', { class: 'btn btn-sm btn-primary',
+        onClick: () => makeTask(ticket, reload) }, '＋ タスクにする') : null,
       el('button', { class: 'btn btn-sm',
         onClick: () => editTaskLinks(ticket, tasks, reload) }, '既存に紐づけ'))));
   if (!tasks.length) {
     body.append(el('div', { class: 'hint',
       text: guest ? '対応のためのタスクができると、ここに出ます'
-        : '作業が要るものは「タスクにする」でプロジェクトへ渡せます' }));
+        : canHandOff ? '作業が要るものは「タスクにする」でプロジェクトへ渡せます'
+          : 'タスクにするには、プロジェクトの編集者以上の権限が要ります' }));
   } else {
     body.append(...tasks.map((task) => el('div', {
       class: 'att-item', style: { cursor: 'pointer' },
@@ -260,7 +263,7 @@ async function renderDetail(instance, ticketId, onChange) {
   }
 
   /* ---- 課題へ渡す ---- */
-  body.append(sectionTitle(`関連課題 (${issues.length})`, guest ? null :
+  body.append(sectionTitle(`関連課題 (${issues.length})`, !canHandOff ? null :
     el('button', { class: 'btn btn-sm',
       onClick: () => makeIssue(ticket, reload) }, '＋ 課題にする')));
   if (issues.length) {

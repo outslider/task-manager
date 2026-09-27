@@ -1,5 +1,7 @@
 """Small HTTP helpers: JSON bodies, multipart uploads, cookies, responses."""
 import json
+from datetime import date, datetime
+from decimal import Decimal
 import re
 from http import cookies as http_cookies
 
@@ -58,8 +60,24 @@ def redirect(location, status=302):
     return Response(status, b"", "text/plain; charset=utf-8", [("Location", location)])
 
 
+def _json_default(value):
+    """JSON にない型（日時・Decimal・bytes）だけを変換する。db.jsonable と同じ結果になる。
+
+    以前は書き出す前に全体をたどって変換していたが、数千件の一覧では数十万回の呼び出しになり、
+    応答の半分近くをそこで使っていた。json に任せて、必要な値だけをここで変える。"""
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
 def json_response(data, status=200):
-    payload = json.dumps(db.jsonable(data), ensure_ascii=False, default=str)
+    payload = json.dumps(data, ensure_ascii=False, default=_json_default)
     return Response(status, payload.encode("utf-8"))
 
 

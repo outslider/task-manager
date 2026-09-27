@@ -513,3 +513,20 @@ class TestGuestNavigation(ApiTestCase):
     def test_insiders_keep_every_menu(self):
         self.tabs("tasks")
         self.assertEqual(self.admin.get("/api/auth/me")[1]["nav_off"], [])
+
+    def test_insiders_without_projects_lose_empty_menus(self):
+        loner, email = self.make_user("どこにも入っていない人")
+        client = self.client_for(email)
+        off = client.get("/api/auth/me")[1]["nav_off"]
+        self.assertIn("issues", off)
+        self.assertIn("gantt", off)
+
+    def test_insiders_lose_a_menu_only_when_every_project_stops_using_it(self):
+        member, email = self.make_user("社内の人")
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {"members": [
+            {"principal_type": "user", "principal_id": self.guest["id"], "role": "commenter"},
+            {"principal_type": "user", "principal_id": member["id"], "role": "editor"}]})
+        client = self.client_for(email)
+        self.assertEqual(client.get("/api/auth/me")[1]["nav_off"], [])
+        self.admin.patch("/api/projects/{}".format(self.project["id"]), {"tabs_hidden": ["issues"]})
+        self.assertEqual(client.get("/api/auth/me")[1]["nav_off"], ["issues"])
