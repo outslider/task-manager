@@ -205,9 +205,23 @@ def is_admin(user) -> bool:
     return bool(user) and user.get("role") == "admin"
 
 
+def is_manager(user) -> bool:
+    """運用管理者。グループ・ユーザー（管理者以外）・状態とカテゴリ・休業日・窓口を設定できる。
+    プロジェクトは、ふつうの社内ユーザーと同じく参加しているものだけ。"""
+    return bool(user) and user.get("role") == "manager"
+
+
+def is_staff(user) -> bool:
+    """管理者か運用管理者（運用の設定ができる人）。"""
+    return is_admin(user) or is_manager(user)
+
+
 # アカウントの種類。社外ユーザーは、参加しているプロジェクトの中だけを扱う。
-ACCOUNT_ROLES = ("admin", "member", "guest")
-ACCOUNT_LABEL = {"admin": "管理者", "member": "社内ユーザー", "guest": "社外ユーザー"}
+ACCOUNT_ROLES = ("admin", "manager", "member", "guest")
+ACCOUNT_LABEL = {"admin": "管理者", "manager": "運用管理者", "member": "社内ユーザー",
+                 "guest": "社外ユーザー"}
+# 運用管理者が作れる・変えられるアカウントの種類（管理者と運用管理者は、管理者だけが扱う）
+MANAGER_EDITABLE_ROLES = ("member", "guest")
 # 社外ユーザーがプロジェクトで持てるいちばん強い役割。タスクの追加・編集はさせず、
 # 起票は（第 2 段階で開ける）チケットから。担当タスクの進捗更新は別に許す。
 GUEST_MAX_ROLE = "commenter"

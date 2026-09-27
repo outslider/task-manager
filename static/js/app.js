@@ -178,6 +178,8 @@ function navItem(item, active) {
  * あとから増えた項目は末尾に回す（設定を消さずに新機能を足せるように）。
  */
 // 社外ユーザーには出さないメニュー（サーバー側でも閉じている）
+// 運用管理者に出す管理メニュー（ログイン履歴とシステム設定は管理者だけ）
+const MANAGER_NAV = new Set(['users', 'groups', 'taxonomy', 'queues']);
 const GUEST_HIDDEN = new Set(['trash']);
 const ACTING_HIDDEN = new Set(['todos', 'trash']);
 // 代理表示中に開かない画面（本人だけのもの・設定を変える画面）
@@ -239,10 +241,11 @@ function renderSidebar() {
           onClick: () => toggleSidebar(false),
         }, el('span', { class: 'ico' }, icon('list')), `ほか ${more} 件`)
         : null),
-    store.isAdmin()
+    store.isAdmin() || store.isManager()
       ? el('div', { class: 'sidebar-section' },
         el('div', { class: 'sidebar-title', text: '管理' }),
-        ...ADMIN_NAV.map((item) => navItem(item, active.startsWith(item.hash))))
+        ...ADMIN_NAV.filter((item) => store.isAdmin() || MANAGER_NAV.has(item.id))
+          .map((item) => navItem(item, active.startsWith(item.hash))))
       : null,
     el('div', { class: 'sidebar-foot' },
       el('a', { class: 'nav-item', href: '#/profile', onClick: () => toggleSidebar(false) },

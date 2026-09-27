@@ -91,6 +91,11 @@ export const store = {
     return this.user?.role === 'admin';
   },
 
+  /** 運用管理者（グループ・ユーザー・状態とカテゴリ・休業日・窓口の設定ができる）。 */
+  isManager() {
+    return this.user?.role === 'manager';
+  },
+
   /** 社外ユーザー（参加プロジェクトの中だけを扱う）。 */
   isGuest() {
     return this.user?.role === 'guest';

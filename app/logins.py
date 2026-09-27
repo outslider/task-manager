@@ -30,11 +30,13 @@ EVENT_LABEL = {
     "created": "アカウント作成",
     "act_start": "代理表示の開始",
     "act_end": "代理表示の終了",
+    "account": "アカウントの変更",
+    "group": "グループの変更",
 }
 # ログイン以外の、アカウントの守りに関わる出来事（履歴の「セキュリティ」の絞り込み）
 SECURITY_EVENTS = ("password", "reset", "recovery", "recovered",
                    "mfa_on", "mfa_off", "mfa_reset", "mfa_codes", "created",
-                   "act_start", "act_end")
+                   "act_start", "act_end", "account", "group")
 REASON_LABEL = {
     "bad_password": "パスワード違い",
     "inactive": "停止中のアカウント",

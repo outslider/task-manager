@@ -7,14 +7,17 @@ import { ACCENT_PRESETS, applyAccent } from '../theme.js';
 import { icon as lineIcon } from '../icons.js';
 import { iconPicker } from './pickers.js';
 
+// 運用管理者が開ける画面（ログイン履歴とシステム設定は管理者だけ）
+export const MANAGER_TABS = ['users', 'groups', 'taxonomy', 'queues'];
+
 export async function render(container, route) {
-  if (!store.isAdmin()) {
+  const tab = route.tab || 'users';
+  if (!store.isAdmin() && !(store.isManager() && MANAGER_TABS.includes(tab))) {
     fill(container, el('div', { class: 'card' },
       el('div', { class: 'empty' }, el('div', { class: 'big' }, lineIcon('lock')),
         'このページは管理者のみ利用できます')));
     return;
   }
-  const tab = route.tab || 'users';
   const titles = {
     users: 'ユーザー管理', logins: 'ログイン履歴', groups: 'グループ管理', settings: 'システム設定',
     taxonomy: '状態とカテゴリ',
@@ -50,15 +53,19 @@ async function renderUsers(container) {
     el('div', { class: 'page-head' },
       el('div', { class: 'grow' },
         el('div', { class: 'page-sub',
-          text: '社内メンバーのアカウントを管理します。管理者はすべてのプロジェクトにアクセスできます。' })),
+          text: store.isAdmin()
+            ? '社内メンバーのアカウントを管理します。管理者はすべてのプロジェクトにアクセスできます。'
+            : '社内ユーザーと社外ユーザーのアカウントを追加・編集できます。'
+              + '管理者・運用管理者のアカウント、停止・削除・パスワードの再発行は管理者に依頼してください。' })),
       el('button', { class: 'btn btn-primary', onClick: () => editUser(null) }, '＋ ユーザー追加')),
     el('div', { class: 'card' }, el('div', { class: 'table-wrap' },
       el('table', { class: 'table' },
         el('thead', {}, el('tr', {},
           el('th', { text: '名前' }), el('th', { text: 'メールアドレス' }),
           el('th', { text: '種類' }), el('th', { text: 'メール通知' }),
-          el('th', { text: '状態' }), el('th', { text: '最終ログイン' }),
-          el('th', { text: '2FA', title: '多要素認証' }), el('th', {}))),
+          el('th', { text: '状態' }),
+          store.isAdmin() ? el('th', { text: '最終ログイン' }) : null,
+          store.isAdmin() ? el('th', { text: '2FA', title: '多要素認証' }) : null, el('th', {}))),
         body))));
 
   let organizations = [];
@@ -74,8 +81,8 @@ async function renderUsers(container) {
         el('td', { text: user.email }),
         el('td', {},
           el('span', {
-            class: `badge ${{ admin: 'doing', guest: 'guest' }[user.role] || ''}`.trim(),
-            text: { admin: '管理者', guest: '社外ユーザー' }[user.role] || '社内ユーザー',
+            class: `badge ${{ admin: 'doing', manager: 'review', guest: 'guest' }[user.role] || ''}`.trim(),
+            text: { admin: '管理者', manager: '運用管理者', guest: '社外ユーザー' }[user.role] || '社内ユーザー',
           }),
           user.role === 'guest'
             ? el('div', { class: 'hint', text: user.organization_name || '会社未設定' })
@@ -88,7 +95,7 @@ async function renderUsers(container) {
         el('td', {}, user.is_active
           ? el('span', { class: 'badge done', text: '有効' })
           : el('span', { class: 'badge blocked', text: '停止中' })),
-        el('td', { class: 'nowrap' },
+        !store.isAdmin() ? null : el('td', { class: 'nowrap' },
           el('span', {
             class: user.last_login_at ? '' : 'cell-mut',
             title: user.last_login_at || 'ログイン履歴を残し始める前のログインは記録にありません',
@@ -99,10 +106,14 @@ async function renderUsers(container) {
             ? el('span', { class: 'login-fail-badge', title: 'この 7 日に失敗したログイン',
               text: `失敗 ${user.failed_7d}` })
             : null),
-        el('td', {}, user.mfa_enabled
+        !store.isAdmin() ? null : el('td', {}, user.mfa_enabled
           ? el('span', { class: 'badge done', title: '多要素認証を使っています', text: '設定済み' })
           : el('span', { class: 'cell-mut', text: '—' })),
-        el('td', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
+        !store.isAdmin() ? el('td', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
+          ['member', 'guest'].includes(user.role)
+            ? el('button', { class: 'btn btn-sm', onClick: () => editUser(user) }, '編集')
+            : el('span', { class: 'cell-mut', title: '管理者・運用管理者のアカウントは管理者が扱います', text: '—' }))
+        : el('td', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
           el('button', {
             class: 'btn btn-sm', title: 'この人のログイン履歴',
             onClick: async () => {
@@ -132,10 +143,24 @@ async function renderUsers(container) {
     const email = el('input', { class: 'input', type: 'email' });
     email.value = user?.email || '';
     const current = user?.role || 'member';
+    // 運用管理者が選べるのは社内・社外ユーザーだけ（管理者・運用管理者にできるのは管理者）
     const role = el('select', { class: 'select' },
       el('option', { value: 'member', selected: current === 'member' ? true : null }, '社内ユーザー'),
       el('option', { value: 'guest', selected: current === 'guest' ? true : null }, '社外ユーザー'),
-      el('option', { value: 'admin', selected: current === 'admin' ? true : null }, '管理者'));
+      store.isAdmin()
+        ? el('option', { value: 'manager', selected: current === 'manager' ? true : null }, '運用管理者') : null,
+      store.isAdmin()
+        ? el('option', { value: 'admin', selected: current === 'admin' ? true : null }, '管理者') : null);
+    const roleHint = el('div', { class: 'hint' });
+    const syncRoleHint = () => {
+      roleHint.textContent = {
+        manager: 'グループ・ユーザー（管理者以外）・状態とカテゴリ・休業日・チケット窓口を設定できます。'
+          + 'プロジェクトは参加しているものだけです。',
+        admin: 'すべてのプロジェクトと、すべての設定を扱えます。',
+      }[role.value] || '';
+    };
+    role.addEventListener('change', syncRoleHint);
+    syncRoleHint();
     const orgList = el('datalist', { id: 'org-names' },
       ...organizations.map((name) => el('option', { value: name })));
     const organization = el('input', {
@@ -166,8 +191,8 @@ async function renderUsers(container) {
         el('div', { class: 'field' }, el('label', { text: '氏名 *' }), name),
         el('div', { class: 'field' }, el('label', { text: 'メールアドレス *' }), email),
         el('div', { class: 'row' },
-          el('div', { class: 'field' }, el('label', { text: '種類' }), role),
-          user
+          el('div', { class: 'field' }, el('label', { text: '種類' }), role, roleHint),
+          user && store.isAdmin()
             ? el('div', { class: 'field' }, el('label', { text: 'アカウント' }),
               el('label', { class: 'check' }, active, el('span', { text: '有効にする' })))
             : null),
@@ -190,7 +215,7 @@ async function renderUsers(container) {
               payload.organization = '';
               payload.expires_on = null;
             }
-            if (user) payload.is_active = active.checked;
+            if (user && store.isAdmin()) payload.is_active = active.checked;
             else if (password.value) payload.password = password.value;
             try {
               if (user) {
@@ -380,57 +405,6 @@ async function renderSettings(container) {
     return el('div', { class: 'field' }, el('label', { text: label }), node,
       options.hint ? el('div', { class: 'hint', text: options.hint }) : null);
   };
-  /** 会社独自の休業日（年末年始や夏季休暇）を足し引きする小さな一覧。 */
-  const holidayEditor = () => {
-    const host = el('div', { class: 'holiday-list' });
-    const dayInput = el('input', { class: 'input', type: 'date', style: { maxWidth: '160px' } });
-    const nameInput = el('input', { class: 'input', placeholder: '例）年末年始休業' });
-    const year = new Date().getFullYear();
-
-    const load = async () => {
-      try {
-        const result = await api.holidays({ from: `${year}-01-01`, to: `${year + 1}-12-31` });
-        const company = (result.holidays || []).filter((h) => h.company);
-        fill(host, ...(company.length
-          ? company.map((h) => el('div', { class: 'holiday-row' },
-            el('span', { text: `${h.day}　${h.name}` }),
-            el('button', {
-              class: 'icon-btn', title: '削除',
-              onClick: async () => {
-                await api.del(`/api/holidays/${h.day}`);
-                load();
-              },
-            }, '×')))
-          : [el('div', { class: 'hint', text: '会社独自の休業日はまだありません' })]));
-      } catch (error) { toast(error.message, 'error'); }
-    };
-
-    load();
-    return el('div', { class: 'field' },
-      el('label', { text: '会社の休業日（祝日以外）' }),
-      host,
-      el('div', { style: { display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' } },
-        dayInput, nameInput,
-        el('button', {
-          class: 'btn btn-sm',
-          onClick: async (event) => {
-            if (!dayInput.value) { toast('日付を選んでください', 'error'); return; }
-            const button = event.currentTarget;
-            button.disabled = true;
-            try {
-              await api.post('/api/holidays', {
-                day: dayInput.value, name: nameInput.value.trim() || '休業日',
-              });
-              dayInput.value = ''; nameInput.value = '';
-              load();
-            } catch (error) { toast(error.message, 'error'); }
-            button.disabled = false;
-          },
-        }, '＋ 追加')),
-      el('div', { class: 'hint',
-        text: `${year}年と${year + 1}年ぶんを表示しています。祝日は自動で入るので、ここには追加不要です。` }));
-  };
-
   const eventPicker = (key, label, catalog, hint) => {
     const selected = new Set(String(s[key] || '').split(',').filter(Boolean));
     const boxes = (catalog || []).map((event) => {
@@ -570,7 +544,7 @@ async function renderSettings(container) {
           toggle('use_holidays', '日本の祝日を休みとして扱う',
             'ガントで網掛けし、負荷計算ではその週に使える時間を減らします。'
             + '春分・秋分、振替休日、国民の休日も自動で計算します。'),
-          holidayEditor()))),
+          el('div', { class: 'hint', text: '会社独自の休業日（年末年始・夏季休暇など）は「状態とカテゴリ」の画面で設定します。' })))),
     el('div', { class: 'card', style: { marginTop: '14px' } },
       el('div', { class: 'card-head' }, el('h2', {}, 'ログインとセキュリティ')),
       el('div', { class: 'card-body' },
@@ -875,8 +849,64 @@ async function renderTaxonomy(container) {
             + '削除したカテゴリを使っていたタスクは「未分類」に戻ります。' }),
         categoryHost)),
     el('div', { style: { marginTop: '14px' } },
-      el('button', { class: 'btn btn-primary', onClick: save }, '保存')));
+      el('button', { class: 'btn btn-primary', onClick: save }, '保存')),
+    // 休業日は追加・削除のたびに保存される（上の「保存」とは別）
+    el('div', { class: 'card', style: { marginTop: '14px' } },
+      el('div', { class: 'card-head' }, el('h2', {}, '会社の休業日')),
+      el('div', { class: 'card-body' }, holidayEditor())));
 }
+
+/** 会社独自の休業日（年末年始や夏季休暇）を足し引きする小さな一覧。 */
+function holidayEditor() {
+  const host = el('div', { class: 'holiday-list' });
+  const dayInput = el('input', { class: 'input', type: 'date', style: { maxWidth: '160px' } });
+  const nameInput = el('input', { class: 'input', placeholder: '例）年末年始休業' });
+  const year = new Date().getFullYear();
+
+  const load = async () => {
+    try {
+      const result = await api.holidays({ from: `${year}-01-01`, to: `${year + 1}-12-31` });
+      const company = (result.holidays || []).filter((h) => h.company);
+      fill(host, ...(company.length
+        ? company.map((h) => el('div', { class: 'holiday-row' },
+          el('span', { text: `${h.day}　${h.name}` }),
+          el('button', {
+            class: 'icon-btn', title: '削除',
+            onClick: async () => {
+              await api.del(`/api/holidays/${h.day}`);
+              load();
+            },
+          }, '×')))
+        : [el('div', { class: 'hint', text: '会社独自の休業日はまだありません' })]));
+    } catch (error) { toast(error.message, 'error'); }
+  };
+
+  load();
+  return el('div', { class: 'field' },
+    el('label', { text: '会社の休業日（祝日以外）' }),
+    host,
+    el('div', { style: { display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' } },
+      dayInput, nameInput,
+      el('button', {
+        class: 'btn btn-sm',
+        onClick: async (event) => {
+          if (!dayInput.value) { toast('日付を選んでください', 'error'); return; }
+          const button = event.currentTarget;
+          button.disabled = true;
+          try {
+            await api.post('/api/holidays', {
+              day: dayInput.value, name: nameInput.value.trim() || '休業日',
+            });
+            dayInput.value = ''; nameInput.value = '';
+            load();
+          } catch (error) { toast(error.message, 'error'); }
+          button.disabled = false;
+        },
+      }, '＋ 追加')),
+    el('div', { class: 'hint',
+      text: `${year}年と${year + 1}年ぶんを表示しています。祝日は自動で入るので、ここには追加不要です。` }));
+}
+
 
 
 /* --------------------------------------------------------------- 窓口 */

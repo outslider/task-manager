@@ -215,6 +215,14 @@ def admin_only(ctx):
     return user
 
 
+def staff_only(ctx):
+    """管理者か運用管理者だけ（グループ・ユーザー・状態とカテゴリ・休業日・窓口の設定）。"""
+    user = me(ctx)
+    if not auth.is_staff(user):
+        raise forbidden("管理者か運用管理者のみ実行できます")
+    return user
+
+
 def public_user(row):
     if not row:
         return None
@@ -934,7 +942,7 @@ def update_profile(ctx):
 @route("GET", r"/api/users")
 def list_users(ctx):
     viewer = me(ctx)
-    include_inactive = as_bool(ctx.query.get("include_inactive")) and auth.is_admin(viewer)
+    include_inactive = as_bool(ctx.query.get("include_inactive")) and auth.is_staff(viewer)
     where, params = [], []
     if not include_inactive:
         where.append("is_active=1")
@@ -966,7 +974,7 @@ def list_users(ctx):
             user["failed_7d"] = int(failed.get(user["id"], 0))
             user["mfa_enabled"] = user["id"] in with_mfa
     result = {"users": users}
-    if auth.is_admin(viewer):
+    if auth.is_staff(viewer):
         result["organizations"] = sorted(orgs.values())
     return json_response(result)
 
@@ -1071,8 +1079,11 @@ def list_login_events(ctx):
 
 @route("POST", r"/api/users")
 def create_user(ctx):
-    admin_only(ctx)
-    row, password = _insert_account(ctx, account_fields(ctx.body))
+    actor = staff_only(ctx)
+    account = account_fields(ctx.body)
+    if auth.is_manager(actor) and account["role"] not in auth.MANAGER_EDITABLE_ROLES:
+        raise forbidden("管理者・運用管理者のアカウントは、管理者だけが作れます")
+    row, password = _insert_account(ctx, account)
     return json_response({"user": public_user(row), "initial_password": password}, 201)
 
 
@@ -1145,42 +1156,67 @@ def create_project_account(ctx, project_id):
 @route("PATCH", r"/api/users/(\d+)")
 def update_user(ctx, user_id):
     actor = me(ctx)
-    if not auth.is_admin(actor) and actor["id"] != user_id:
-        raise forbidden()
     target = db.query_one("SELECT * FROM users WHERE id=%s", (user_id,))
+    if not auth.is_staff(actor) and actor["id"] != user_id:
+        raise forbidden()
     if not target:
         raise not_found("ユーザーが見つかりません")
-    fields, params = [], []
+    # 運用管理者は、社内ユーザーと社外ユーザーだけを変えられる（管理者・運用管理者は管理者が扱う）
+    manages = auth.is_admin(actor) or (
+        auth.is_manager(actor) and target["role"] in auth.MANAGER_EDITABLE_ROLES)
+    if auth.is_manager(actor) and actor["id"] != user_id and not manages:
+        raise forbidden("管理者・運用管理者のアカウントは、管理者だけが変えられます")
+    fields, params, changes = [], [], []
     if "name" in ctx.body:
+        name = require(ctx.body, "name", "氏名")
         fields.append("name=%s")
-        params.append(require(ctx.body, "name", "氏名"))
+        params.append(name)
+        if name != target["name"]:
+            changes.append("氏名 {} → {}".format(target["name"], name))
     if "avatar_color" in ctx.body:
         fields.append("avatar_color=%s")
         params.append(str(ctx.body["avatar_color"])[:20])
     if "email_notify" in ctx.body:
         fields.append("email_notify=%s")
         params.append(1 if as_bool(ctx.body["email_notify"]) else 0)
-    if auth.is_admin(actor):
+    if manages:
         if "email" in ctx.body:
+            email = require(ctx.body, "email", "メールアドレス")
             fields.append("email=%s")
-            params.append(require(ctx.body, "email", "メールアドレス"))
+            params.append(email)
+            if email != target["email"]:
+                changes.append("メールアドレスを変更")
         if {"role", "organization", "expires_on"} & set(ctx.body):
             account = account_fields(ctx.body, target)
+            if auth.is_manager(actor) and account["role"] not in auth.MANAGER_EDITABLE_ROLES:
+                raise forbidden("管理者・運用管理者にできるのは、管理者だけです")
             if target["role"] == "admin" and account["role"] != "admin" and _last_admin(user_id):
                 raise bad_request("管理者が 0 人になる操作はできません")
             fields += ["role=%s", "organization_id=%s", "expires_on=%s"]
             params += [account["role"], account["organization_id"], account["expires_on"]]
+            if account["role"] != target["role"]:
+                changes.append("種類 {} → {}".format(auth.ACCOUNT_LABEL.get(target["role"], target["role"]),
+                                                  auth.ACCOUNT_LABEL.get(account["role"], account["role"])))
+            if account["organization_id"] != target.get("organization_id"):
+                changes.append("会社を変更")
+            old_exp = target["expires_on"].isoformat() if target.get("expires_on") else None
+            if account["expires_on"] != old_exp:
+                changes.append("有効期限 {} → {}".format(old_exp or "なし", account["expires_on"] or "なし"))
             if account["role"] == "guest" and target["role"] != "guest":
                 # 社外ユーザーに変えたら、今までのプロジェクトの役割も上限まで下げる
                 db.execute("UPDATE project_members SET role=%s WHERE principal_type='user' "
                            "AND principal_id=%s AND role IN ('owner','editor')",
                            (auth.GUEST_MAX_ROLE, user_id))
         if "is_active" in ctx.body:
+            if not auth.is_admin(actor):
+                raise forbidden("アカウントの停止・再開は管理者だけができます")
             active = as_bool(ctx.body["is_active"])
             if not active and target["role"] == "admin" and _last_admin(user_id):
                 raise bad_request("管理者が 0 人になる操作はできません")
             fields.append("is_active=%s")
             params.append(1 if active else 0)
+            if bool(active) != bool(target["is_active"]):
+                changes.append("再開" if active else "停止")
             if not active:
                 db.execute("DELETE FROM sessions WHERE user_id=%s", (user_id,))
     if not fields:
@@ -1190,6 +1226,10 @@ def update_user(ctx, user_id):
         db.execute("UPDATE users SET {} WHERE id=%s".format(", ".join(fields)), params)
     except pymysql.err.IntegrityError:
         raise bad_request("このメールアドレスは既に使用されています")
+    if changes and actor["id"] != user_id:
+        # 管理者・運用管理者が他人のアカウントを変えたときは、その人の履歴に残す
+        logins.record("account", target, "", ctx.ip, ctx.user_agent,
+                      label="{}：{}（{} が変更）".format(target["name"], "・".join(changes), actor["name"]))
     return json_response({"user": public_user(db.query_one(
         "SELECT * FROM users WHERE id=%s", (user_id,)))})
 
@@ -1276,7 +1316,7 @@ def list_groups(ctx):
 
 @route("POST", r"/api/groups")
 def create_group(ctx):
-    admin_only(ctx)
+    staff_only(ctx)
     name = require(ctx.body, "name", "グループ名")
     try:
         group_id = db.insert(
@@ -1284,15 +1324,17 @@ def create_group(ctx):
             (name, ctx.body.get("description", "")[:500], db.now()))
     except pymysql.err.IntegrityError:
         raise bad_request("同名のグループが既に存在します")
-    _set_group_members(group_id, ctx.body.get("user_ids"))
+    added, _removed = _set_group_members(group_id, ctx.body.get("user_ids"))
+    _record_group(ctx, name, "作成", added, [])
     return json_response({"group": db.query_one(
         "SELECT * FROM user_groups WHERE id=%s", (group_id,))}, 201)
 
 
 @route("PATCH", r"/api/groups/(\d+)")
 def update_group(ctx, group_id):
-    admin_only(ctx)
-    if not db.query_one("SELECT 1 FROM user_groups WHERE id=%s", (group_id,)):
+    staff_only(ctx)
+    group = db.query_one("SELECT * FROM user_groups WHERE id=%s", (group_id,))
+    if not group:
         raise not_found("グループが見つかりません")
     if "name" in ctx.body or "description" in ctx.body:
         fields, params = [], []
@@ -1307,26 +1349,55 @@ def update_group(ctx, group_id):
             db.execute("UPDATE user_groups SET {} WHERE id=%s".format(", ".join(fields)), params)
         except pymysql.err.IntegrityError:
             raise bad_request("同名のグループが既に存在します")
+    added, removed = [], []
     if "user_ids" in ctx.body:
-        _set_group_members(group_id, ctx.body["user_ids"])
+        added, removed = _set_group_members(group_id, ctx.body["user_ids"])
+    renamed = "name" in ctx.body and str(ctx.body["name"]).strip() != group["name"]
+    if added or removed or renamed:
+        name = str(ctx.body.get("name") or group["name"]).strip()
+        _record_group(ctx, name, "名前を「{}」から変更".format(group["name"]) if renamed else "",
+                      added, removed)
     return json_response({"ok": True})
 
 
 def _set_group_members(group_id, user_ids):
+    """メンバーを入れ替える。(加えた人の id, 外した人の id) を返す。"""
     if user_ids is None:
-        return
+        return [], []
     if not isinstance(user_ids, list):
         raise bad_request("user_ids は配列で指定してください")
+    wanted = {int(u) for u in user_ids}
     with db.transaction():
+        before = {r["user_id"] for r in db.query(
+            "SELECT user_id FROM group_members WHERE group_id=%s", (group_id,))}
         db.execute("DELETE FROM group_members WHERE group_id=%s", (group_id,))
         db.executemany(
             "INSERT IGNORE INTO group_members(group_id, user_id) VALUES(%s,%s)",
-            [(group_id, int(u)) for u in user_ids])
+            [(group_id, u) for u in sorted(wanted)])
+    return sorted(wanted - before), sorted(before - wanted)
+
+
+def _record_group(ctx, group_name, what, added, removed):
+    """グループの変更を履歴（ログイン履歴の「セキュリティ」）に残す。グループはプロジェクトの権限に
+    使われるので、だれが・だれを出し入れしたかを追えるようにする。記録の主は操作した人。"""
+    names = {r["id"]: r["name"] for r in db.query(
+        "SELECT id, name FROM users WHERE id IN %s", (tuple(added + removed),))} if added or removed else {}
+    parts = [p for p in (
+        what,
+        "{} を追加".format("、".join(names.get(u, "?") for u in added)) if added else "",
+        "{} を外した".format("、".join(names.get(u, "?") for u in removed)) if removed else "",
+    ) if p]
+    logins.record("group", ctx.user, "", ctx.ip, ctx.user_agent,
+                  label="「{}」{}（{} が操作）".format(group_name, "：" + "・".join(parts) if parts else "",
+                                                   ctx.user["name"]))
 
 
 @route("DELETE", r"/api/groups/(\d+)")
 def delete_group(ctx, group_id):
-    admin_only(ctx)
+    staff_only(ctx)
+    group = db.query_one("SELECT name FROM user_groups WHERE id=%s", (group_id,))
+    if group:
+        _record_group(ctx, group["name"], "削除", [], [])
     db.execute("DELETE FROM project_members WHERE principal_type='group' AND principal_id=%s",
                (group_id,))
     db.execute("DELETE FROM user_groups WHERE id=%s", (group_id,))
@@ -2785,7 +2856,7 @@ def search(ctx):
 
 @route("GET", r"/api/admin/taxonomy")
 def get_taxonomy(ctx):
-    admin_only(ctx)
+    staff_only(ctx)
     used = {r["category"]: r["c"] for r in db.query(
         "SELECT category, COUNT(*) AS c FROM tasks WHERE category <> '' AND is_heading=0 "
         "GROUP BY category")}
@@ -2801,7 +2872,7 @@ def get_taxonomy(ctx):
 
 @route("PUT", r"/api/admin/taxonomy")
 def put_taxonomy(ctx):
-    admin_only(ctx)
+    staff_only(ctx)
     result = {}
     if "statuses" in ctx.body:
         result["statuses"] = taxonomy.save_statuses(ctx.body["statuses"])
@@ -3002,7 +3073,7 @@ def list_holidays(ctx):
 @route("POST", r"/api/holidays")
 def add_company_holiday(ctx):
     """会社独自の休業日（年末年始・夏季休暇など）を足す。"""
-    admin_only(ctx)
+    staff_only(ctx)
     day = as_date(ctx.body.get("day"))
     if not day:
         raise bad_request("日付を指定してください")
@@ -3015,7 +3086,7 @@ def add_company_holiday(ctx):
 
 @route("DELETE", r"/api/holidays/(\d{4}-\d{2}-\d{2})")
 def delete_company_holiday(ctx, day):
-    admin_only(ctx)
+    staff_only(ctx)
     db.execute("DELETE FROM company_holidays WHERE day=%s", (day,))
     return json_response({"ok": True})
 
@@ -5543,7 +5614,7 @@ def list_queues(ctx):
 
 @route("POST", r"/api/ticket-queues")
 def create_queue(ctx):
-    user = admin_only(ctx)
+    user = staff_only(ctx)
     name = require(ctx.body, "name", "窓口名")
     order = as_int(ctx.body.get("sort_order"))
     if order is None:
@@ -5569,7 +5640,7 @@ def create_queue(ctx):
 
 @route("PATCH", r"/api/ticket-queues/(\d+)")
 def update_queue(ctx, queue_id):
-    user = admin_only(ctx)
+    user = staff_only(ctx)
     current = queue_or_404(user, queue_id)
     fields, params = [], []
     if "project_id" in ctx.body:
@@ -5609,7 +5680,7 @@ def update_queue(ctx, queue_id):
 
 @route("DELETE", r"/api/ticket-queues/(\d+)")
 def delete_queue(ctx, queue_id):
-    user = admin_only(ctx)
+    user = staff_only(ctx)
     queue_or_404(user, queue_id)
     left = db.scalar("SELECT COUNT(*) AS c FROM tickets WHERE queue_id=%s",
                      (queue_id,), default=0)
