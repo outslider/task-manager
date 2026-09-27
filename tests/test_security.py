@@ -55,6 +55,31 @@ class SecurityCase(ApiTestCase):
             (user_id or self.user["id"],))]
 
 
+class TestMfaQr(SecurityCase):
+    """認証アプリで読み取る QR。以前は枠に合わせて縮まず、左上だけが見えて読み取れなかった。"""
+
+    def test_qr_scales_to_its_box(self):
+        status, setup = self.client.post("/api/auth/mfa/setup")
+        self.assertEqual(status, 200, setup)
+        head = setup["qr_svg"].split(">", 1)[0]
+        self.assertIn("viewBox=", head)          # これが無いと CSS の大きさに縮まない
+        self.assertNotIn("width=", head)
+        self.assertNotIn("height=", head)
+
+    def test_uri_is_short_and_complete(self):
+        from urllib.parse import parse_qs, urlparse
+        status, setup = self.client.post("/api/auth/mfa/setup")
+        uri = urlparse(setup["uri"])
+        query = parse_qs(uri.query)
+        self.assertEqual(uri.scheme, "otpauth")
+        self.assertEqual(query["secret"], [setup["secret"]])
+        self.assertEqual(query["issuer"], ["タスク管理"])
+        self.assertIn(self.email, setup["uri"])
+        # 既定値（SHA1・6 桁・30 秒）は書かず、アプリ名も 1 回だけ。QR の模様を細かくしすぎない
+        self.assertNotIn("algorithm", query)
+        self.assertLess(len(setup["uri"]), 150)
+
+
 class TestMfaLogin(SecurityCase):
     def test_setup_needs_a_right_code_and_gives_recovery_codes(self):
         status, setup = self.client.post("/api/auth/mfa/setup")

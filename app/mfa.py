@@ -69,9 +69,12 @@ def match_step(secret, code, after_step=0, now=None):
 
 
 def otpauth_uri(secret, account, issuer):
-    label = quote("{}:{}".format(issuer, account))
-    return "otpauth://totp/{}?secret={}&issuer={}&algorithm=SHA1&digits={}&period={}".format(
-        label, secret, quote(issuer), DIGITS, STEP)
+    """認証アプリに渡す URI。QR の模様が細かくなりすぎないよう、短く保つ。
+
+    発行者（アプリ名）は issuer に 1 回だけ入れ、既定値（SHA1・6 桁・30 秒）は書かない。
+    日本語のアプリ名は URL 用に 3 倍の長さになるので、2 回入れると QR が一回り細かくなる。"""
+    assert DIGITS == 6 and STEP == 30, "既定値と違うなら digits / period を URI に書く"
+    return "otpauth://totp/{}?secret={}&issuer={}".format(quote(account, safe="@"), secret, quote(issuer))
 
 
 def qr_svg(text):
@@ -81,8 +84,10 @@ def qr_svg(text):
     except ImportError:
         return ""
     out = io.BytesIO()
-    segno.make(text, error="m").save(out, kind="svg", scale=5, border=2, xmldecl=False,
-                                     svgns=True, dark="#111111", light="#ffffff")
+    # omitsize で width/height を外し viewBox を付ける。付けないと、画面の枠に合わせて縮まずに
+    # 左上だけが切り取られて表示され、読み取れなかった。余白（クワイエットゾーン）は規格どおり 4 マス
+    segno.make(text, error="m").save(out, kind="svg", border=4, omitsize=True, xmldecl=False,
+                                     svgns=True, dark="#000000", light="#ffffff")
     return out.getvalue().decode("utf-8")
 
 
