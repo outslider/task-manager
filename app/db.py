@@ -681,6 +681,7 @@ DDL = [
         url        VARCHAR(2000) NOT NULL,
         note       VARCHAR(500)  NOT NULL DEFAULT '',
         category   VARCHAR(40)   NOT NULL DEFAULT '',   -- 手順書・共有フォルダ など
+        guest_visible TINYINT(1) NOT NULL DEFAULT 0,    -- プロジェクトのリンクを社外ユーザーにも見せる
         sort_order INT           NOT NULL DEFAULT 0,
         created_by INT NULL,
         created_at DATETIME      NOT NULL,
@@ -872,6 +873,8 @@ def set_setting(key, value):
 
 # Columns added after the first release.  Applied on every start-up.
 MIGRATIONS = [
+    ("shared_links", "guest_visible",
+     "ALTER TABLE shared_links ADD COLUMN guest_visible TINYINT(1) NOT NULL DEFAULT 0"),
     ("sessions", "acting_as", "ALTER TABLE sessions ADD COLUMN acting_as INT NULL"),
     ("decisions", "people_extra", "ALTER TABLE decisions ADD COLUMN people_extra TEXT"),
     ("decisions", "meeting_id", "ALTER TABLE decisions ADD COLUMN meeting_id INT NULL"),

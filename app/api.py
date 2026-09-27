@@ -778,6 +778,12 @@ def guest_nav_off(user):
                         (ids,)) if ids else []
         off = [key for key in ("issues", "gantt")
                if not any(key not in auth.parse_tabs(r["tabs_hidden"]) for r in rows)]
+    if auth.is_guest(user):
+        ids = auth.visible_project_ids(user)
+        if not ids or not db.scalar(
+                "SELECT COUNT(*) AS c FROM shared_links WHERE project_id IN %s AND guest_visible=1",
+                (tuple(ids),), default=0):
+            off.append("links")
     seen, params = visible_queue_clause(user)
     if seen == "1=0" or not db.scalar(
             "SELECT COUNT(*) AS c FROM ticket_queues q WHERE q.is_active=1"
@@ -2837,7 +2843,11 @@ def link_or_404(user, link_id, write=False):
     if not link:
         raise not_found("リンクが見つかりません")
     if link["project_id"]:
+        if auth.is_guest(user) and not link["guest_visible"]:
+            raise not_found("リンクが見つかりません")      # 社外に見せていないものは、あることも伏せる
         project_or_404(user, link["project_id"], "editor" if write else "viewer")
+    elif auth.is_guest(user):
+        raise not_found("リンクが見つかりません")
     elif write and not can_edit_shared_link(user, link):
         raise forbidden("全体のリンクを直せるのは、置いた本人と管理者だけです")
     return link
@@ -2858,17 +2868,19 @@ def list_links(ctx):
     user = me(ctx)
     ids = auth.visible_project_ids(user)
     guest = auth.is_guest(user)
-    # 社外ユーザーには「全体で共有」を見せない（社内の共有フォルダなどが入っているため）
+    # 社外ユーザーには「全体で共有」を見せない（社内の共有フォルダなどが入っているため）。
+    # プロジェクトのリンクも、「社外ユーザーにも見せる」を付けたものだけ
     sql = LINK_SELECT + (" WHERE 1=0" if guest else " WHERE l.project_id IS NULL")
     params = []
     if ids:
-        sql += " OR l.project_id IN %s"
+        sql += " OR (l.project_id IN %s{})".format(" AND l.guest_visible=1" if guest else "")
         params.append(tuple(ids))
     sql += (" ORDER BY (l.project_id IS NOT NULL), p.name, (l.category = ''), "
             "l.category, l.sort_order, l.id")
     rows = db.query(sql, params)
     roles = auth.project_roles(user, {r["project_id"] for r in rows if r["project_id"]})
     for row in rows:
+        row["guest_visible"] = bool(row["guest_visible"])
         row["can_edit"] = bool(
             can_edit_shared_link(user, row) if row["project_id"] is None
             else roles.get(row["project_id"]) in ("owner", "editor"))
@@ -2906,10 +2918,13 @@ def create_link(ctx):
         + ("project_id=%s" if project_id else "project_id IS NULL"),
         (project_id,) if project_id else (), default=0) or 0) + 10
     link_id = db.insert(
-        "INSERT INTO shared_links(project_id, title, url, note, category, sort_order, "
-        "created_by, created_at, updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "INSERT INTO shared_links(project_id, title, url, note, category, guest_visible, sort_order, "
+        "created_by, created_at, updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (project_id, title[:200], url, str(ctx.body.get("note") or "")[:500],
-         str(ctx.body.get("category") or "").strip()[:40], order, user["id"], now, now))
+         str(ctx.body.get("category") or "").strip()[:40],
+         # 全体で共有するリンクは社外ユーザーには見せないので、印も付けない
+         1 if project_id and as_bool(ctx.body.get("guest_visible")) else 0,
+         order, user["id"], now, now))
     return json_response({"link": db.query_one(LINK_SELECT + " WHERE l.id=%s", (link_id,))}, 201)
 
 
@@ -2933,6 +2948,7 @@ def update_link(ctx, link_id):
     if "sort_order" in ctx.body:
         fields.append("sort_order=%s")
         params.append(as_int(ctx.body["sort_order"], 0))
+    target = current["project_id"]
     if "project_id" in ctx.body:
         target = as_int(ctx.body["project_id"])
         if target:
@@ -2940,6 +2956,10 @@ def update_link(ctx, link_id):
         # 全体へ移すのは、そのリンクを直せる人なら誰でもよい（上の link_or_404 で確かめ済み）
         fields.append("project_id=%s")
         params.append(target)
+    if "guest_visible" in ctx.body or not target:
+        # 全体へ移したリンクは社外ユーザーに見せない（印も外す）
+        fields.append("guest_visible=%s")
+        params.append(1 if target and as_bool(ctx.body.get("guest_visible")) else 0)
     if not fields:
         raise bad_request("更新する項目がありません")
     fields.append("updated_at=%s")

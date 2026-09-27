@@ -140,12 +140,18 @@ class TestGuestSees(GuestTestCase):
     def test_shared_links_are_hidden(self):
         self.admin.post("/api/links", {"title": "全社の共有フォルダ", "url": "https://intra.example/share"})
         self.admin.post("/api/links", {"title": "PJの資料", "url": "https://example.com/pj",
+                                       "project_id": self.project["id"], "guest_visible": True})
+        self.admin.post("/api/links", {"title": "PJの社内フォルダ", "url": "https://intra.example/pj",
                                        "project_id": self.project["id"]})
         data = self.g.get("/api/links")[1]
         titles = [l["title"] for l in data["links"]]
         self.assertEqual(titles, ["PJの資料"])
         self.assertFalse(data["can_add_shared"])
         self.assertEqual(data["projects"], [])
+        # 社内の人には、社外に見せていないものも含めて全部見える
+        mine = sorted(l["title"] for l in self.admin.get("/api/links")[1]["links"])
+        self.assertIn("PJの社内フォルダ", mine)
+        self.assertIn("全社の共有フォルダ", mine)
 
     def test_tickets_do_not_leak_through_search_or_daily(self):
         status, queue = self.admin.post("/api/ticket-queues", {"name": "全員の窓口{}".format(
@@ -499,15 +505,18 @@ class TestGuestNavigation(ApiTestCase):
 
     def test_only_tasks_shown_hides_the_rest(self):
         self.tabs("tasks")
-        self.assertEqual(self.off(), ["gantt", "issues", "tickets"])
+        self.assertEqual(self.off(), ["gantt", "issues", "links", "tickets"])
 
     def test_opening_tabs_brings_the_menu_back(self):
         self.tabs("tasks", "issues", "gantt")
-        self.assertEqual(self.off(), ["tickets"])   # 窓口がまだ無い
+        self.assertEqual(self.off(), ["links", "tickets"])   # 窓口がまだ無い・見せるリンクが無い
         self.admin.post("/api/ticket-queues", {"name": "窓口N{}".format(self.project["id"]),
                                                "project_id": self.project["id"]})
-        self.assertEqual(self.off(), ["tickets"])   # チケットのタブを見せていない
+        self.assertEqual(self.off(), ["links", "tickets"])   # チケットのタブを見せていない
         self.tabs("tasks", "issues", "gantt", "tickets")
+        self.assertEqual(self.off(), ["links"])
+        self.admin.post("/api/links", {"title": "共有の資料", "url": "https://example.com/n",
+                                       "project_id": self.project["id"], "guest_visible": True})
         self.assertEqual(self.off(), [])
 
     def test_insiders_keep_every_menu(self):
@@ -530,3 +539,87 @@ class TestGuestNavigation(ApiTestCase):
         self.assertEqual(client.get("/api/auth/me")[1]["nav_off"], [])
         self.admin.patch("/api/projects/{}".format(self.project["id"]), {"tabs_hidden": ["issues"]})
         self.assertEqual(client.get("/api/auth/me")[1]["nav_off"], ["issues"])
+
+
+class TestGuestLinks(ApiTestCase):
+    """リンク集：プロジェクトのリンクは「社外ユーザーにも見せる」を付けたものだけ社外ユーザーに見せる。"""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project("リンクを見せるPJ")
+        status, data = self.admin.post("/api/users", {
+            "name": "社外の人", "email": "links-{}@test.local".format(self.project["id"]), "role": "guest",
+            "organization": "協力会社L", "password": "userpassword"})
+        self.guest = data["user"]
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {"members": [
+            {"principal_type": "user", "principal_id": self.guest["id"], "role": "commenter"}]})
+        self.client = self.client_for(self.guest["email"])
+
+    def add(self, title, **extra):
+        body = {"title": title, "url": "https://example.com/" + uuid.uuid4().hex[:6]}
+        body.update(extra)
+        status, data = self.admin.post("/api/links", body)
+        self.assertEqual(status, 201, data)
+        return data["link"]
+
+    def guest_titles(self):
+        return [l["title"] for l in self.client.get("/api/links")[1]["links"]]
+
+    def test_new_project_links_are_internal_by_default(self):
+        link = self.add("社内の手順書", project_id=self.project["id"])
+        self.assertFalse(link["guest_visible"])
+        self.assertEqual(self.guest_titles(), [])
+
+    def test_toggle_shows_and_hides(self):
+        link = self.add("仕様書", project_id=self.project["id"])
+        self.admin.patch("/api/links/{}".format(link["id"]), {"guest_visible": True})
+        self.assertEqual(self.guest_titles(), ["仕様書"])
+        listed = self.admin.get("/api/links")[1]["links"]
+        self.assertTrue(next(l for l in listed if l["id"] == link["id"])["guest_visible"])
+        # 他の項目だけ直しても、印はそのまま
+        self.admin.patch("/api/links/{}".format(link["id"]), {"note": "最新版"})
+        self.assertEqual(self.guest_titles(), ["仕様書"])
+        self.admin.patch("/api/links/{}".format(link["id"]), {"guest_visible": False})
+        self.assertEqual(self.guest_titles(), [])
+
+    def test_shared_links_never_carry_the_mark(self):
+        link = self.add("全社のフォルダ", guest_visible=True)
+        self.assertFalse(link["guest_visible"])
+        # プロジェクトから全体へ移したら、印は外れる
+        moved = self.add("移すリンク", project_id=self.project["id"], guest_visible=True)
+        self.assertEqual(self.guest_titles(), ["移すリンク"])
+        status, data = self.admin.patch("/api/links/{}".format(moved["id"]), {"project_id": None})
+        self.assertEqual(status, 200, data)
+        self.assertFalse(data["link"]["guest_visible"])
+        self.assertEqual(self.guest_titles(), [])
+
+    def test_other_projects_links_stay_hidden(self):
+        other = self.make_project("社外の人がいないPJ")
+        self.add("ほかのPJの資料", project_id=other["id"], guest_visible=True)
+        self.assertEqual(self.guest_titles(), [])
+        self.assertIn("links", self.client.get("/api/auth/me")[1]["nav_off"])
+
+    def test_guest_cannot_touch_hidden_links(self):
+        hidden = self.add("社内だけ", project_id=self.project["id"])
+        shown = self.add("見せる", project_id=self.project["id"], guest_visible=True)
+        # 社外ユーザーはリンクを直せない。応答は、無い番号・見せているものと同じ（あるかどうかも分からない）
+        missing = self.client.patch("/api/links/999999", {"title": "x"})
+        self.assertIn(missing[0], (403, 404))
+        self.assertEqual(self.client.patch("/api/links/{}".format(hidden["id"]), {"title": "x"}), missing)
+        self.assertEqual(self.client.patch("/api/links/{}".format(shown["id"]), {"title": "x"}), missing)
+        self.assertEqual(self.client.delete("/api/links/{}".format(hidden["id"]))[0], missing[0])
+        self.assertEqual(db.scalar("SELECT title AS t FROM shared_links WHERE id=%s", (hidden["id"],)), "社内だけ")
+
+    def test_preview_shows_only_marked_links(self):
+        self.add("見せる資料", project_id=self.project["id"], guest_visible=True)
+        self.add("見せない資料", project_id=self.project["id"])
+        owner, email = self.make_user("PJ管理者")
+        self.admin.put("/api/projects/{}/members".format(self.project["id"]), {"members": [
+            {"principal_type": "user", "principal_id": owner["id"], "role": "owner"},
+            {"principal_type": "user", "principal_id": self.guest["id"], "role": "commenter"}]})
+        client = self.client_for(email)
+        status, data = client.post("/api/projects/{}/preview".format(self.project["id"]), {})
+        self.assertEqual(status, 200, data)
+        self.assertEqual([l["title"] for l in client.get("/api/links")[1]["links"]], ["見せる資料"])
+        self.assertNotIn("links", client.get("/api/auth/me")[1]["nav_off"])
+

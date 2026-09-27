@@ -66,7 +66,9 @@ export async function render(container) {
     el('div', { class: 'link-page' },
       el('div', { class: 'link-toolbar' },
         el('div', { class: 'page-sub grow', style: { margin: '0' },
-          text: '社内の手順書や共有フォルダなど、よく開くものを置いておく場所です。' }),
+          text: store.isGuest()
+            ? '参加しているプロジェクトで共有されているリンクです。'
+            : '社内の手順書や共有フォルダなど、よく開くものを置いておく場所です。' }),
         viewSeg, search, addButton),
       chipsHost,
       listHost));
@@ -204,6 +206,9 @@ export async function render(container) {
           ? el('span', { class: 'link-scope', title: `${link.project_name} のメンバーだけに見えます` },
             el('i', { style: { background: link.project_color } }), link.project_name)
           : null,
+        link.guest_visible && !store.isGuest()
+          ? el('span', { class: 'link-guest', title: 'このプロジェクトの社外ユーザーにも見えます', text: '社外にも公開' })
+          : null,
         el('span', { class: link.note ? 'link-note' : 'link-url',
           text: link.note || shortUrl(link.url) }))),
       el('div', { class: 'link-actions' },
@@ -255,6 +260,15 @@ export async function render(container) {
       ...data.projects.map((p) => el('option', {
         value: String(p.id), selected: String(link?.project_id || '') === String(p.id) ? true : null,
       }, p.name)));
+    // 社外ユーザーに見せるのはプロジェクトのリンクだけ（全体で共有するものは社内向け）
+    const guestVisible = el('input', { type: 'checkbox', checked: link?.guest_visible ? true : null });
+    const guestField = el('div', { class: 'field' },
+      el('label', { class: 'check' }, guestVisible, el('span', { text: '社外ユーザーにも見せる' })),
+      el('div', { class: 'hint',
+        text: 'このプロジェクトに参加している社外ユーザーにも見えるようにします。社内の共有フォルダなどは付けないでください。' }));
+    const syncGuest = () => { guestField.hidden = !scope.value; };
+    scope.addEventListener('change', syncGuest);
+    syncGuest();
 
     const saved = await openModal({
       title: link ? 'リンクを編集' : 'リンクを追加',
@@ -270,7 +284,8 @@ export async function render(container) {
         el('div', { class: 'field' }, el('label', { text: '公開範囲' }), scope,
           el('div', { class: 'hint',
             text: '全体で共有すると全員に見えます（直せるのは置いた人と管理者です）。'
-              + 'プロジェクトを選ぶと、そのメンバーだけに見えます。' }))),
+              + 'プロジェクトを選ぶと、そのメンバーだけに見えます。' })),
+        guestField),
       footer: (close) => [
         el('button', { class: 'btn', onClick: () => close(null) }, 'キャンセル'),
         el('button', {
@@ -283,6 +298,7 @@ export async function render(container) {
               note: note.value.trim(),
               category: category.value.trim(),
               project_id: scope.value ? Number(scope.value) : null,
+              guest_visible: Boolean(scope.value) && guestVisible.checked,
             };
             if (!payload.title) { toast('タイトルを入力してください', 'error'); return; }
             if (!payload.url) { toast('URL を入力してください', 'error'); return; }

@@ -1449,6 +1449,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border-radius: 999px; padding: 0 7px; line-height: 18px;
 }
 .link-scope i { width: 7px; height: 7px; border-radius: 50%; }
+.link-guest {
+  flex: none; font-size: 11px; font-weight: 600; border-radius: 999px; padding: 0 7px; line-height: 18px;
+  background: #fff1e0; color: #b25e09;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .link-guest { background: #3a2a17; color: #f0b56b; } }
+:root[data-theme="dark"] .link-guest { background: #3a2a17; color: #f0b56b; }
 /* 操作はマウスを乗せたときだけ。触って操作する端末では常に出す */
 .link-actions { display: flex; gap: 2px; flex: 0 0 auto; opacity: 0; transition: opacity .12s; }
 .link-item:hover .link-actions, .link-item:focus-within .link-actions { opacity: 1; }
