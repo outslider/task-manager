@@ -135,6 +135,62 @@ function saveLabels(labels) {
   try { localStorage.setItem('tm.gantt.labels', JSON.stringify(labels)); } catch { /* private */ }
 }
 
+/* ロードマップの粒度（何を 1 行にするか）とマイルストーンの置き場所。 */
+const ROADMAP_GRAINS = [
+  { key: 'h1', label: '大見出し', hint: '見出しをフェーズとして、いちばん上の段の見出しごとに 1 本の帯にします' },
+  { key: 'h2', label: '中見出しまで', hint: 'フェーズの帯の下に、1 段下の見出しごとの帯も並べます' },
+  { key: 'tasks', label: '見出し＋タスク', hint: '見出しは区切りにして、トップレベルのタスクを 1 本ずつ並べます' },
+];
+const roadmapKey = (projectId) => `tm.roadmap.${projectId || 'all'}`;
+
+/** 見る人ごと・プロジェクトごとにブラウザへ保存する（既定は大見出し・上の帯）。 */
+function loadRoadmapPrefs(projectId) {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(roadmapKey(projectId)) || '{}') || {}; } catch { /* 無ければ既定 */ }
+  return {
+    grain: ROADMAP_GRAINS.some((g) => g.key === saved.grain) ? saved.grain : 'h1',
+    marksAt: saved.marks === 'rows' ? 'rows' : 'lane',
+  };
+}
+
+function saveRoadmapPrefs(projectId, state) {
+  try {
+    localStorage.setItem(roadmapKey(projectId), JSON.stringify({ grain: state.grain, marks: state.marksAt }));
+  } catch { /* 保存できなくても表示は変わる */ }
+}
+
+/**
+ * 見出し 1 つを、ロードマップのフェーズ（1 本の帯）にする。期間はその範囲のタスク全体、
+ * 進捗は末端のタスクの数で重みを付けた平均。タスクが 1 件も無ければ null（帯にしない）。
+ */
+function phaseTask(heading, tasks, kidsOf) {
+  if (!tasks.length) return null;
+  let start = null;
+  let due = null;
+  let weight = 0;
+  let sum = 0;
+  for (const t of tasks) {
+    const s = t.rollup_start || t.start_date || t.rollup_due || t.due_date;
+    const d = t.rollup_due || t.due_date || t.rollup_start || t.start_date;
+    if (s && (!start || s < start)) start = s;
+    if (d && (!due || d > due)) due = d;
+    const w = kidsOf(t.id).length ? Math.max(1, Number(t.leaf_total) || 1) : 1;
+    const p = kidsOf(t.id).length ? (t.rollup_progress ?? t.progress ?? 0)
+      : (t.status === 'done' ? 100 : (t.progress || 0));
+    weight += w;
+    sum += w * p;
+  }
+  const progress = weight ? Math.round(sum / weight) : 0;
+  const allDone = tasks.every((t) => t.status === 'done');
+  const started = tasks.some((t) => t.status !== 'todo' || (t.progress || 0) > 0);
+  return {
+    id: `phase:${heading.id}`, phaseOf: heading.id, phase: true, title: heading.title,
+    project_id: heading.project_id, start_date: start, due_date: due, progress,
+    status: allDone ? 'done' : (started ? 'doing' : 'todo'),
+    category: '', assignee_id: null, child_count: 0, count: tasks.length,
+  };
+}
+
 const GROUPINGS = [
   { key: 'none', label: 'なし', hint: '階層のまま並べます' },
   { key: 'project', label: 'プロジェクト', hint: 'プロジェクトごとに区切ります',
@@ -245,6 +301,8 @@ export async function render(container, route) {
     nameWidth: compact ? 140 : NAME_W_DEFAULT,
     fromISO: null,
     toISO: null,
+    // ロードマップの粒度とマイルストーンの置き場所。見る人ごと・プロジェクトごとにブラウザへ保存
+    ...loadRoadmapPrefs(projectId),
   };
 
   const syncHeader = () => setHeader(
@@ -343,6 +401,8 @@ export async function render(container, route) {
    * ただし親タスクが行として出ない表示（担当者別の区切り、ロードマップで
    * フェーズより下のタスクなど）では置き場所が無いので、先頭の「定例」に回す。 */
   let meetingsUnder = new Map();
+  /** ロードマップで見出しの行に置いた節目（上の帯には重ねて出さない）。 */
+  let placedMarks = new Set();
 
   /** いまの表示で、行として出うるタスク（たたまれて隠れているものも含む）。 */
   function nestTargets(tasks) {
@@ -376,6 +436,7 @@ export async function render(container, route) {
 
   /** タスクの直下に並べる定例の行。 */
   function meetingRowsUnder(taskId, depth, outline = 0) {
+    if (state.mode === 'roadmap') return [];
     return (meetingsUnder.get(taskId) || []).map((meeting) => ({
       meeting, depth, outline, inGroup: true, color: MEETING_COLOR, projectName: '',
     }));
@@ -408,7 +469,7 @@ export async function render(container, route) {
   const modeSeg = el('div', { class: 'seg' },
     ...[
       { key: 'gantt', label: 'ガント', hint: '1タスク1行の詳細表示' },
-      { key: 'roadmap', label: 'ロードマップ', hint: 'フェーズ単位でまとめ、節目を上に並べます' },
+      { key: 'roadmap', label: 'ロードマップ', hint: '見出し（フェーズ）ごとにまとめて、全体の流れを見せます' },
     ].map((mode) => el('button', {
       class: state.mode === mode.key ? 'active' : '',
       title: mode.hint,
@@ -422,6 +483,31 @@ export async function render(container, route) {
         draw();
       },
     }, mode.label)));
+
+  // ロードマップの粒度とマイルストーンの置き場所（ロードマップを表示しているときだけ出す）
+  const grainSelect = el('select', {
+    class: 'select', style: { maxWidth: '170px', minWidth: '150px' }, title: 'ロードマップで 1 行にするもの',
+    onChange: (event) => {
+      state.grain = event.target.value;
+      saveRoadmapPrefs(projectId, state);
+      draw();
+    },
+  }, ...ROADMAP_GRAINS.map((g) => el('option', {
+    value: g.key, title: g.hint, selected: state.grain === g.key ? true : null,
+  }, g.label)));
+  const marksSelect = el('select', {
+    class: 'select', style: { maxWidth: '170px', minWidth: '150px' }, title: 'マイルストーンを並べる場所',
+    onChange: (event) => {
+      state.marksAt = event.target.value;
+      saveRoadmapPrefs(projectId, state);
+      draw();
+    },
+  }, el('option', { value: 'lane', selected: state.marksAt === 'lane' ? true : null },
+    overview ? 'プロジェクトの行' : '上の帯'),
+  el('option', { value: 'rows', selected: state.marksAt === 'rows' ? true : null }, '見出しの行'));
+  const roadmapControls = el('span', { class: 'roadmap-controls' },
+    el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '粒度' }), grainSelect,
+    el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: 'マイルストーン' }), marksSelect);
 
   const scaleSeg = el('div', { class: 'seg' },
     ...Object.values(SCALES).map((scale) => el('button', {
@@ -567,12 +653,14 @@ export async function render(container, route) {
       }, 'すべて並べる'));
   };
 
+  const groupWrap = el('span', { class: 'roadmap-controls' },
+    el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '区切り' }), groupSelect);
   const toolbar = el('div', { class: 'toolbar' },
     pickerButton,
-    el('span', { class: 'label', style: { margin: 0 }, text: '表示' }), modeSeg,
+    el('span', { class: 'label', style: { margin: 0 }, text: '表示' }), modeSeg, roadmapControls,
     el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '表示単位' }), scaleSeg,
     el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '色分け' }), colorSelect,
-    el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '区切り' }), groupSelect,
+    groupWrap,
     el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '期間' }), fromInput, '〜', toInput,
     el('label', { class: 'check' },
       el('input', {
@@ -647,7 +735,7 @@ export async function render(container, route) {
     const hint = document.getElementById('gantt-hint');
     if (hint) {
       hint.textContent = state.mode === 'roadmap'
-        ? 'フェーズ（トップレベルのタスク）と節目だけを並べています'
+        ? '見出しをフェーズとしてまとめています（見出しが無いときはトップレベルのタスク）。定例会議は出しません'
         : (canEdit
           ? 'バーをドラッグで移動、端をドラッグで期間変更。▼ で折りたたみ'
           : '▼ をクリックすると折りたためます');
@@ -746,7 +834,9 @@ export async function render(container, route) {
   const pinnedHeadings = () => new Set(meetingsUnder.keys());
 
   function visibleRows() {
-    const meetingsPart = meetingRows(placeMeetings(filteredTasks()));
+    // ロードマップは全体の流れを見せる図なので、定例会議は出さない（ガントの方だけ）
+    if (state.mode === 'roadmap') meetingsUnder = new Map();
+    const meetingsPart = state.mode === 'roadmap' ? [] : meetingRows(placeMeetings(filteredTasks()));
     const tasksPart = taskRows();
     if (meetingsPart.length && tasksPart.length) {
       tasksPart[0] = { ...tasksPart[0], separator: true };
@@ -761,14 +851,9 @@ export async function render(container, route) {
       // 複数プロジェクトを 1 枚にすると、節目を上に 1 本にまとめても
       // どれがどの案件のものか分からない。案件ごとに区切って、
       // その見出しの行に自分の節目を並べる。
+      placedMarks = new Set();
       if (overview) return roadmapByProject(tasks);
-      // フェーズ＝トップレベルのタスク。節目は上のレーンにまとめるので行にはしない
-      return sectionize((children.get(null) || []).filter((task) => !task.is_milestone),
-        collapsed, sectionKeep(tasks), pinnedHeadings(), filled())
-        .flatMap((entry) => (entry.heading ? headingRows(entry, 0) : [{
-          task: entry.task, depth: 0, outline: entry.outline,
-          hasChildren: (children.get(entry.task.id) || []).some((k) => !k.is_heading),
-        }, ...meetingRowsUnder(entry.task.id, 1, entry.outline)]));
+      return roadmapRows(tasks).rows;
     }
     if (['assignee', 'category', 'project'].includes(state.group)) {
       return groupedRows(tasks);
@@ -831,33 +916,113 @@ export async function render(container, route) {
     for (const pid of order) {
       const items = buckets.get(pid);
       const { children } = buildTree(items);
-      const phases = (children.get(null) || [])
-        .filter((task) => !task.is_milestone)
-        .sort((a, b) => (a.sort_order - b.sort_order) || (a.id - b.id));
-      const marks = items.filter((task) => task.is_milestone && task.due_date);
+      const built = roadmapRows(items, { inGroup: true });
       const groupId = `roadmap:${pid}`;
       const folded = collapsedGroups.has(groupId);
       rows.push({
         group: true, groupId, label: projects.get(pid)?.name || '（不明なプロジェクト）',
         color: projects.get(pid)?.color || '#98a2b3',
-        count: phases.filter((t) => !t.is_heading).length, collapsed: folded,
-        separator: rows.length > 0, milestones: marks,
+        count: (children.get(null) || []).filter((t) => !t.is_heading && !t.is_milestone).length,
+        collapsed: folded, separator: rows.length > 0,
+        // 見出しの行に置かなかった節目は、プロジェクトの行に並べる
+        milestones: built.unplaced,
       });
-      if (folded) continue;
-      for (const entry of sectionize(phases, collapsed, sectionKeep(items), pinnedHeadings(),
-        filled())) {
-        if (entry.heading) {
-          rows.push(...headingRows(entry, 0, { inGroup: true }));
-          continue;
-        }
-        const { task } = entry;
-        rows.push({
-          task, depth: 0, inGroup: true, outline: entry.outline,
-          hasChildren: (children.get(task.id) || []).some((k) => !k.is_heading),
-        }, ...meetingRowsUnder(task.id, 1, entry.outline));
-      }
+      if (!folded) rows.push(...built.rows);
     }
     return rows;
+  }
+
+  /**
+   * ロードマップの行。見出しをフェーズとして 1 本の帯にまとめる。
+   *   粒度 h1    … いちばん上の段の見出しごとに 1 本
+   *   粒度 h2    … その下に、1 段下の見出しごとの帯も出す
+   *   粒度 tasks … 見出しは区切りの帯にして、トップレベルのタスクを 1 本ずつ
+   * 見出しの外にあるトップレベルのタスクは、どの粒度でも 1 本ずつ出す（見出しを使っていない
+   * プロジェクトは、これまでどおりトップレベルのタスクが並ぶ）。
+   * マイルストーンを「見出しの行」に置くときは、入っているフェーズの下に並べ、置けなかったもの
+   * （見出しの外にあるもの）を unplaced で返す。
+   */
+  function roadmapRows(items, { inGroup = false } = {}) {
+    const { children } = buildTree(items);
+    const roots = (children.get(null) || []).slice()
+      .sort((a, b) => (a.sort_order - b.sort_order) || (a.id - b.id));
+    const kidsOf = (id) => (children.get(id) || []).filter((k) => !k.is_heading);
+    const marksInside = (task) => {
+      const out = task.is_milestone && task.due_date ? [task] : [];
+      for (const kid of kidsOf(task.id)) out.push(...marksInside(kid));
+      return out;
+    };
+    // 見出しの入れ子（outline.js の sectionize と同じ決まり：次の同じ段かそれより上の見出しまで）
+    const top = { children: [] };
+    const stack = [{ level: 0, node: top }];
+    for (const task of roots) {
+      if (task.is_heading) {
+        const level = Math.min(3, Math.max(1, Number(task.heading_level) || 1));
+        while (stack.length > 1 && stack[stack.length - 1].level >= level) stack.pop();
+        const node = { heading: task, level, children: [] };
+        stack[stack.length - 1].node.children.push(node);
+        stack.push({ level, node });
+      } else {
+        stack[stack.length - 1].node.children.push({ task });
+      }
+    }
+    const tasksIn = (node) => node.children.flatMap((c) => (c.heading ? tasksIn(c) : [c.task]));
+    const marksOf = (node, direct = false) => node.children.flatMap((c) => {
+      if (c.heading) return direct ? [] : marksOf(c);
+      return marksInside(c.task);
+    });
+    const byRows = state.marksAt === 'rows';
+    const rows = [];
+    const plainRow = (task, depth, outline = 0) => ({
+      task, depth, inGroup, outline, hasChildren: kidsOf(task.id).length > 0,
+    });
+    const markRow = (list, depth) => {
+      if (!byRows || !list.length) return [];
+      list.forEach((m) => placedMarks.add(m.id));
+      return [{ marksRow: true, milestones: list, depth, inGroup }];
+    };
+    const phaseRow = (node, depth, extra = {}) => {
+      const task = phaseTask(node.heading, tasksIn(node).filter((t) => !t.is_milestone), kidsOf);
+      return task ? { task, depth, inGroup, outline: 0, hasChildren: false, phase: true, ...extra } : null;
+    };
+
+    for (const child of top.children) {
+      if (!child.heading) {
+        // 見出しの外のトップレベル。節目そのものは帯（上の帯かプロジェクトの行）に回す
+        if (!child.task.is_milestone) rows.push(plainRow(child.task, 0));
+        continue;
+      }
+      if (state.grain === 'tasks') {
+        const folded = collapsed.has(child.heading.id);
+        const inside = tasksIn(child);
+        const marks = byRows ? marksOf(child) : [];
+        marks.forEach((m) => placedMarks.add(m.id));
+        rows.push({
+          heading: true, task: child.heading, depth: 0, inGroup, level: 1, outline: 0,
+          count: inside.filter((t) => !t.is_milestone).length, collapsed: folded,
+          separator: rows.length > 0, milestones: marks,
+        });
+        if (!folded) {
+          rows.push(...inside.filter((t) => !t.is_milestone).map((t) => plainRow(t, 0, 1)));
+        }
+        continue;
+      }
+      const main = phaseRow(child, 0, { separator: state.grain === 'h2' && rows.length > 0 });
+      if (!main) continue;
+      rows.push(main);
+      if (state.grain === 'h2') {
+        rows.push(...markRow(marksOf(child, true), 1));
+        for (const sub of child.children.filter((c) => c.heading)) {
+          const row = phaseRow(sub, 1);
+          if (!row) continue;
+          rows.push(row, ...markRow(marksOf(sub), 2));
+        }
+      } else {
+        rows.push(...markRow(marksOf(child), 1));
+      }
+    }
+    const all = items.filter((t) => t.is_milestone && t.due_date);
+    return { rows, unplaced: all.filter((m) => !placedMarks.has(m.id)) };
   }
 
   function groupedRows(tasks) {
@@ -1007,7 +1172,8 @@ export async function render(container, route) {
    *  全体ガントでは案件ごとの見出し行に並べるので、上のレーンは使わない。 */
   function milestoneRows() {
     if (state.mode !== 'roadmap' || overview) return [];
-    return filteredTasks().filter((task) => task.is_milestone && task.due_date);
+    // 見出しの行に置いたものは除く（置く場所の無かったものだけ上の帯に残る）
+    return filteredTasks().filter((task) => task.is_milestone && task.due_date && !placedMarks.has(task.id));
   }
 
   /** 期間の計算には、どこに並べる節目でも含める。 */
@@ -1131,6 +1297,9 @@ export async function render(container, route) {
 
   function draw() {
     syncPickNotice();
+    roadmapControls.hidden = state.mode !== 'roadmap';
+    // 区切り（フェーズ・担当者など）はガントの並べ方。ロードマップでは使わないので隠す
+    groupWrap.hidden = state.mode === 'roadmap';
     const all = visibleRows();
     const rows = all.length > MAX_ROWS ? all.slice(0, MAX_ROWS) : all;
     drawRowNotice(all.length);
@@ -1225,8 +1394,8 @@ export async function render(container, route) {
             text: '期間の長さに合わせて目盛りの幅を自動調整し、余白の少ない図にします。' })),
         el('div', { class: 'hint',
           text: state.mode === 'roadmap'
-            ? `ロードマップ表示: フェーズ ${rows.filter((r) => r.task && !r.heading).length} 件`
-              + ` / 節目 ${milestones.length} 件`
+            ? `ロードマップ表示: ${rows.filter((r) => r.task && !r.heading).length} 行`
+              + ` / 節目 ${allMilestones().length} 件`
               + ` / 期間 ${formatSpan(toISO(range.from), toISO(range.to), { sep: ' 〜 ' })}`
             : `対象タスク ${rows.filter((r) => r.task && !r.heading).length} 件`
               + ` / 期間 ${formatSpan(toISO(range.from), toISO(range.to), { sep: ' 〜 ' })}` })),
@@ -1604,6 +1773,13 @@ export function buildGanttSvg({
     }));
   });
 
+  /** 節目の名前の置き方。左右の端では中央揃えだと切れるので、内側へ寄せる。 */
+  function labelAnchor(cx, half = 38) {
+    if (cx - originX < half) return { x: Math.max(originX + 2, cx - 6), anchor: 'start' };
+    if (originX + chartW - cx < half) return { x: Math.min(originX + chartW - 2, cx + 6), anchor: 'end' };
+    return { x: cx, anchor: 'middle' };
+  }
+
   /**
    * 節目の菱形を 1 行のなかに並べる。案件ごとのロードマップで使う。
    * 上部の一本レーンと違い、行の高さに収めるため札は 1 段だけ。
@@ -1630,8 +1806,9 @@ export function buildGanttSvg({
       const node = svgEl('g', {}, pin);
       // 隣と近すぎるときは札を出さない。菱形は残るので、詳しくは吹き出しで見る
       if (cx - lastX >= 74) {
+        const at = labelAnchor(cx);
         node.appendChild(svgEl('text', {
-          x: cx, y: rowTop + height - 7, 'font-size': 9.5, 'text-anchor': 'middle',
+          x: at.x, y: rowTop + height - 7, 'font-size': 9.5, 'text-anchor': at.anchor,
           fill: done ? colors.muted : colors.text, 'font-weight': done ? 400 : 600,
           text: truncate(task.title, 12),
         }));
@@ -1782,6 +1959,24 @@ export function buildGanttSvg({
       x1: originX, y1: y + rowH, x2: PAD + nameWidth + chartW, y2: y + rowH,
       stroke: colors.grid, 'stroke-width': 1,
     }));
+    // ロードマップ（見出し＋タスク）で、この見出しに入っている節目をこの行に並べる
+    if (row.milestones?.length && !row.collapsed) {
+      rowsG.appendChild(milestoneMarks(row.milestones, y, rowH));
+    }
+  }
+
+  /** ロードマップで、フェーズの帯のすぐ下に置く節目の行。 */
+  function drawMarksRow(row, y) {
+    const x0 = PAD + 10 + (row.depth || 0) * 12;
+    namesG.appendChild(svgEl('text', {
+      x: x0, y: y + rowH / 2 + 4, 'font-size': 10.5, fill: colors.muted,
+      text: `◆ マイルストーン ${row.milestones.length} 件`,
+    }));
+    rowsG.appendChild(svgEl('line', {
+      x1: originX, y1: y + rowH, x2: PAD + nameWidth + chartW, y2: y + rowH,
+      stroke: colors.grid, 'stroke-width': 1,
+    }));
+    rowsG.appendChild(milestoneMarks(row.milestones, y, rowH));
   }
 
   rows.forEach((row, index) => {
@@ -1835,6 +2030,10 @@ export function buildGanttSvg({
       drawMeetingRow(row, y);
       return;
     }
+    if (row.marksRow) {
+      drawMarksRow(row, y);
+      return;
+    }
     if (row.heading) {
       drawHeadingRow(row, y);
       return;
@@ -1867,18 +2066,21 @@ export function buildGanttSvg({
 
     const nameNode = svgEl('text', {
       x: indent, y: y + rowH / 2 + 4, 'font-size': 11.5,
-      'font-weight': hasChildren || row.lead ? 650 : 400,
+      'font-weight': hasChildren || row.lead || task.phase ? 650 : 400,
       fill: task.status === 'done' ? colors.muted : colors.text,
       text: (task.is_milestone ? `${markerChar(task)} ` : '')
         + label
         + (row.collapsed && task.child_count ? ` (${task.child_count})` : ''),
     });
-    if (interactive) {
+    // フェーズの帯は見出しから作った行なので、押してもタスクの詳細は開かない
+    if (interactive && !task.phase) {
       nameNode.style.cursor = 'pointer';
       nameNode.appendChild(svgEl('title', {
         text: task.title + (task.blocks_open && task.status !== 'done' ? '（後続が待機）' : ''),
       }));
       nameNode.addEventListener('click', () => openTask(task.id));
+    } else if (task.phase) {
+      nameNode.appendChild(svgEl('title', { text: `${task.title}（見出し・タスク ${task.count} 件）` }));
     }
     namesG.appendChild(nameNode);
 
@@ -2012,12 +2214,12 @@ export function buildGanttSvg({
     if (fillRect) group.appendChild(fillRect);
     group.appendChild(outlineRect);
     group.appendChild(svgEl('title', {
-      text: `${task.title}\n${formatSpan(startISO, dueISO, { sep: ' 〜 ' })}  進捗 ${progress}%`
+      text: `${task.title}${task.phase ? `（タスク ${task.count} 件）` : ''}\n${formatSpan(startISO, dueISO, { sep: ' 〜 ' })}  進捗 ${progress}%`
         + (assigneeName(task) ? `\n担当: ${assigneeName(task)}` : '')
         + (task.blocks_open ? `\n後続 ${task.blocks_open} 件が待機` : '')
         + (critical ? '\nクリティカルパス上' : ''),
     }));
-    if (interactive) {
+    if (interactive && !task.phase) {
       group.style.cursor = 'pointer';
       group.addEventListener('click', () => openTask(task.id));
     }
@@ -2213,13 +2415,13 @@ export function buildGanttSvg({
           'stroke-width': 1, 'stroke-dasharray': '3 3', opacity: 0.45,
         }),
         svgEl('text', {
-          x: cx, y: cy + (level ? 30 : 19), 'font-size': 10, 'text-anchor': 'middle',
+          x: labelAnchor(cx).x, y: cy + (level ? 30 : 19), 'font-size': 10, 'text-anchor': labelAnchor(cx).anchor,
           fill: done ? colors.muted : colors.text,
           'font-weight': done ? 400 : 600,
           text: truncate(task.title, 14),
         }),
         svgEl('text', {
-          x: cx, y: cy + (level ? 39 : 28), 'font-size': 8.5, 'text-anchor': 'middle',
+          x: labelAnchor(cx).x, y: cy + (level ? 39 : 28), 'font-size': 8.5, 'text-anchor': labelAnchor(cx).anchor,
           fill: colors.muted, text: `${due.getMonth() + 1}/${due.getDate()}`,
         }));
       if (interactive) {

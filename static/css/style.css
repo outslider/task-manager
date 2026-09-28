@@ -2517,3 +2517,6 @@ h1, h2, h3, h4 { font-weight: 700; letter-spacing: -.01em; }
 .chip-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 650; }
 .decision-place { display: grid; gap: 6px; }
 .place-note { display: grid; gap: 3px; }
+.roadmap-controls { display: inline-flex; align-items: center; gap: 6px; }
+.roadmap-controls[hidden] { display: none; }
+.roadmap-controls .label { white-space: nowrap; }
