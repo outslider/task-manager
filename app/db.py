@@ -384,6 +384,7 @@ DDL = [
         people_extra  TEXT,                                -- メンバー以外の決めた人（役員など）。JSON の配列
         meeting_id    INT NULL,                            -- 決めた場の定例会議
         meeting_on    DATE NULL,                           -- その会議の回の日付
+        place         VARCHAR(200) NOT NULL DEFAULT '',   -- 会議以外の決めた場（経営会議、お客さまとの打ち合わせ など）
         version       INT NOT NULL DEFAULT 1,
         created_by    INT NULL,
         updated_by    INT NULL,
@@ -879,6 +880,7 @@ MIGRATIONS = [
     ("decisions", "people_extra", "ALTER TABLE decisions ADD COLUMN people_extra TEXT"),
     ("decisions", "meeting_id", "ALTER TABLE decisions ADD COLUMN meeting_id INT NULL"),
     ("decisions", "meeting_on", "ALTER TABLE decisions ADD COLUMN meeting_on DATE NULL"),
+    ("decisions", "place", "ALTER TABLE decisions ADD COLUMN place VARCHAR(200) NOT NULL DEFAULT ''"),
     ("notifications", "decision_id", "ALTER TABLE notifications ADD COLUMN decision_id INT NULL"),
     ("sessions", "acting_until", "ALTER TABLE sessions ADD COLUMN acting_until DATETIME NULL"),
     ("sessions", "preview_project", "ALTER TABLE sessions ADD COLUMN preview_project INT NULL"),

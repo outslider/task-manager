@@ -88,10 +88,18 @@ async function draw(instance, decisionId, onChange) {
         ...d.people_extra.map((name) => el('span', { class: 'decision-person extra', title: 'プロジェクトのメンバー以外' },
           el('span', { class: 'avatar sm', style: { background: '#98a2b3' }, text: name.slice(0, 1) }), name)))
       : muted('（未記入）')),
-    d.meeting ? section('決めた場', el('button', {
-      type: 'button', class: 'decision-link',
-      onClick: () => { instance.close(); location.hash = `#/p/${d.project_id}/gantt`; },
-    }, icon('calendar', { size: 13, class: 'ico-inline' }), d.meeting.title, d.meeting.on ? el('span', { class: 'cell-mut', text: `　${formatDate(d.meeting.on)} の回` }) : null)) : null,
+    d.meeting || d.place || canEdit ? section('決めた場', el('div', { class: 'decision-place' },
+      d.meeting ? el('button', {
+        type: 'button', class: 'decision-link',
+        onClick: () => { instance.close(); location.hash = `#/p/${d.project_id}/gantt`; },
+      }, icon('calendar', { size: 13, class: 'ico-inline' }), d.meeting.title, d.meeting.on ? el('span', { class: 'cell-mut', text: `　${formatDate(d.meeting.on)} の回` }) : null) : null,
+      d.place ? el('div', { class: 'decision-text', text: d.place }) : null,
+      !d.meeting && !d.place ? muted('（未記入）') : null,
+      // 決めた場は後からでも入れられる（記録の補足なので、決めたあとでも理由は要らない）
+      canEdit ? el('button', {
+        type: 'button', class: 'btn btn-sm', style: { justifySelf: 'start' },
+        onClick: () => editPlace(d, reload),
+      }, icon('pencil', { size: 13 }), d.meeting || d.place ? '決めた場を直す' : '決めた場を入れる') : null)) : null,
     section(`検討した案（${d.options.length}）`, d.options.length
       ? el('div', { class: 'decision-options' }, ...d.options.map((o) => el('div', { class: `decision-option ${o.adopted ? 'adopted' : 'rejected'}` },
         el('div', { class: 'decision-option-head' },
@@ -149,12 +157,46 @@ async function showVersion(d, version) {
       section('何を決めたか', el('div', { class: 'decision-text', text: s.what || '（未記入）' })),
       section('なぜ', el('div', { class: 'decision-text', text: s.why || '（未記入）' })),
       section('決めた人', el('div', { text: (s.people || []).map((p) => p.name).join('、') || '（未記入）' })),
-      s.meeting ? section('決めた場', el('div', { text: `${s.meeting.title}${s.meeting.on ? `（${formatDate(s.meeting.on)} の回）` : ''}` })) : null,
+      s.meeting || s.place ? section('決めた場', el('div', {
+        text: [s.meeting ? `${s.meeting.title}${s.meeting.on ? `（${formatDate(s.meeting.on)} の回）` : ''}` : '', s.place || '']
+          .filter(Boolean).join(' ／ '),
+      })) : null,
       section('検討した案', el('ul', {}, ...(s.options || []).map((o) => el('li', {},
         `${o.adopted ? '【採用】' : '【却下】'}${o.title}${o.reason ? `　— ${o.reason}` : ''}`)))),
       section('前提条件', el('ul', {}, ...(s.premises || []).map((p) => el('li', {},
         `${p.broken ? '【崩れた】' : ''}${p.text}${p.review_on ? `（見直し ${formatDate(p.review_on)}）` : ''}`))))),
     footer: (close) => [el('button', { class: 'btn', onClick: () => close() }, '閉じる')],
+  });
+}
+
+/** 決めた場だけを直す小さな画面。会議（と回）を選ぶか、会議以外の場を書く。 */
+async function editPlace(d, reload) {
+  const { placeEditor } = await import('./decisionForm.js');
+  const place = await placeEditor(d.project_id, d, () => d.decided_on || '');
+  const error = el('div', { class: 'login-error', hidden: true });
+  await openModal({
+    title: `D-${d.seq} の決めた場`,
+    build: () => el('div', {}, error, place.node,
+      el('div', { class: 'hint', style: { marginTop: '8px' },
+        text: '決めた場は記録の補足なので、決めたあとでも理由なしで直せます（変更の履歴には残ります）。' })),
+    footer: (close) => [
+      el('button', { class: 'btn', onClick: () => close(false) }, 'キャンセル'),
+      el('button', {
+        class: 'btn btn-primary',
+        onClick: async () => {
+          error.hidden = true;
+          try {
+            await api.patch(`/api/decisions/${d.id}`, place.value());
+            toast('決めた場を保存しました', 'ok');
+            close(true);
+            reload();
+          } catch (err) {
+            error.textContent = err.message;
+            error.hidden = false;
+          }
+        },
+      }, '保存'),
+    ],
   });
 }
 

@@ -8,6 +8,7 @@ import { store } from '../store.js';
 import { confirmDialog, dueClass, el, fill, formatDate, toast } from '../util.js';
 import { openTodoRecurrences } from './todoRecurrence.js';
 import { icon, iconLabel } from '../icons.js';
+import { linkifyLine } from './mention.js';
 
 export async function render(container) {
   setHeader('マイ ToDo');
@@ -95,10 +96,11 @@ export async function render(container) {
       type: 'checkbox', checked: todo.is_done ? true : null,
       onChange: (event) => patch(todo, { is_done: event.target.checked }),
     });
-    const title = el('span', {
-      class: 'todo-title', text: todo.title, title: 'クリックで編集', tabindex: '0',
+    // 件名に書いた URL はリンクになる（リンクを押したときは編集に入らない）
+    const title = linkifyLine(todo.title, el('span', {
+      class: 'todo-title', title: 'クリックで編集', tabindex: '0',
       onClick: () => startEdit(),
-    });
+    }));
     const due = el('span', {
       class: `todo-due ${todo.is_done ? '' : dueClass(todo.due_date, 'todo')}`,
       text: todo.due_date ? formatDate(todo.due_date) : '',

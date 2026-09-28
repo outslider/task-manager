@@ -2504,3 +2504,16 @@ h1, h2, h3, h4 { font-weight: 700; letter-spacing: -.01em; }
 .help-tip b { font-size: 13.5px; }
 .help-tip-ico { width: 32px; height: 32px; border-radius: 8px; flex: none; display: grid; place-items: center;
   background: var(--accent-soft); color: var(--accent); }
+
+/* 決定の「決めた場」 */
+.place-editor { display: grid; gap: 8px; }
+.place-meeting { display: flex; align-items: center; gap: 6px; color: var(--text-muted); }
+.place-meeting .select { max-width: 320px; }
+.place-day { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.place-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chip-btn { border: 1px solid var(--border-strong); background: var(--surface); border-radius: 6px; padding: 2px 8px;
+  font: inherit; font-size: 12px; cursor: pointer; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.chip-btn:hover { border-color: var(--accent); color: var(--accent); }
+.chip-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 650; }
+.decision-place { display: grid; gap: 6px; }
+.place-note { display: grid; gap: 3px; }

@@ -4476,6 +4476,7 @@ def _decision_input(ctx, project_id, current=None):
             cur["meeting_on"].isoformat() if cur.get("meeting_on") else None)
     else:
         out["meeting_id"], out["meeting_on"] = None, None
+    out["place"] = str(body.get("place", cur.get("place") or "") or "").strip()[:200]
     if "options" in body:
         options = body.get("options") or []
         if not isinstance(options, list) or len(options) > 30:
@@ -4514,12 +4515,12 @@ def _decision_input(ctx, project_id, current=None):
 def _write_decision(decision_id, data, user_id):
     db.execute(
         "UPDATE decisions SET title=%s, status=%s, what=%s, why=%s, decided_on=%s, category=%s, "
-        "guest_visible=%s, supersedes_id=%s, people_extra=%s, meeting_id=%s, meeting_on=%s, "
+        "guest_visible=%s, supersedes_id=%s, people_extra=%s, meeting_id=%s, meeting_on=%s, place=%s, "
         "updated_by=%s, updated_at=%s WHERE id=%s",
         (data["title"], data["status"], data["what"], data["why"], data["decided_on"], data["category"],
          1 if data["guest_visible"] else 0, data["supersedes_id"],
          json.dumps(data["people_extra"], ensure_ascii=False), data["meeting_id"], data["meeting_on"],
-         user_id, db.now(), decision_id))
+         data["place"], user_id, db.now(), decision_id))
     db.execute("DELETE FROM decision_people WHERE decision_id=%s", (decision_id,))
     if data["people"]:
         db.executemany("INSERT INTO decision_people(decision_id, user_id) VALUES(%s,%s)",
@@ -4620,7 +4621,9 @@ def update_decision(ctx, decision_id):
         changes = decisions.changed_fields(before, after)
         if not changes:
             raise bad_request("変更がありません")
-        if current["status"] in decisions.SETTLED and not reason:
+        # 決めた場の追記など、記録の補足だけなら理由は要らない（版としては残る）
+        if current["status"] in decisions.SETTLED and not reason \
+                and not set(changes) <= decisions.NO_REASON_LABELS:
             raise bad_request("決めたあとに変えるときは、変えた理由を書いてください")
         version = current["version"] + 1
         db.execute("UPDATE decisions SET version=%s WHERE id=%s", (version, decision_id))

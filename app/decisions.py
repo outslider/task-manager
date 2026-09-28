@@ -24,8 +24,10 @@ FIELD_LABEL = {
     "title": "件名", "status": "状態", "what": "決定内容", "why": "理由", "decided_on": "決めた日",
     "category": "分類", "guest_visible": "社外への公開", "supersedes_id": "置き換えた決定",
     "people": "決めた人", "options": "検討した案", "premises": "前提条件", "links": "関連",
-    "meeting": "決めた場",
+    "meeting": "決めた場", "place": "決めた場",
 }
+# 決めたあとでも、理由なしで直せる項目（決定の中身ではなく、記録の補足にあたるもの）
+NO_REASON_LABELS = frozenset({"決めた場"})
 
 
 def parse_extra(value):
@@ -84,6 +86,7 @@ def snapshot(row):
         "people": [{"id": p["id"], "name": p["name"]} for p in row["people"]]
         + [{"id": None, "name": name} for name in row.get("people_extra") or []],
         "meeting": row.get("meeting"),
+        "place": row.get("place") or "",
         "options": [{k: o[k] for k in ("title", "detail", "adopted", "reason")} for o in row["options"]],
         "premises": [{k: p[k] for k in ("text", "review_on", "broken")} for p in row["premises"]],
         "links": row["links"],
@@ -98,7 +101,7 @@ def changed_fields(before, after):
         if key == "people":
             a = sorted(str(p["id"] or p["name"]) for p in a or [])
             b = sorted(str(p["id"] or p["name"]) for p in b or [])
-        if a != b:
+        if a != b and label not in labels:
             labels.append(label)
     return labels
 

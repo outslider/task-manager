@@ -122,6 +122,16 @@ export function attachMentions(input, getPeople) {
 const URL_PATTERN = /https?:\/\/[^\s　<>"'）］｝】]+/g;
 const TRAILING_JUNK = /[.,;:!?。、）)\]］}｝】”"'…]+$/;
 
+/**
+ * 1 行の文字（ToDo の件名など）の URL をリンクにする。行そのものが押すと編集などになる場所で使うので、
+ * リンクを押したときは周りの操作を動かさず、リンク先だけを開く。
+ */
+export function linkifyLine(text, into) {
+  const node = linkify(text, into);
+  for (const a of node.querySelectorAll('a')) a.addEventListener('click', (event) => event.stopPropagation());
+  return node;
+}
+
 /** 本文の中の URL を、実際に開けるリンクにして返す。 */
 export function linkify(text, into) {
   const node = into || el('span', {});

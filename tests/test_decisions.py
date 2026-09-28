@@ -385,3 +385,53 @@ class TestTasksTabCanBeHidden(DecisionCase):
                          {"tabs_hidden": ["tasks"], "guest_tabs": ["tasks", "gantt"]})
         self.assertEqual(self.tabs(client), ["gantt"])
 
+
+class TestPlaceLater(DecisionCase):
+    """決めた場（定例会議の回、または会議以外の場のメモ）は、後から理由なしで入れられる。"""
+
+    def meeting(self, project_id=None):
+        status, data = self.admin.post("/api/projects/{}/meetings".format(project_id or self.pid), {
+            "title": "週次定例", "freq": "weekly", "weekdays": [1], "start_on": "2026-09-01",
+            "holiday_rule": "skip"})
+        self.assertEqual(status, 201, data)
+        return data["meeting"]
+
+    def test_place_can_be_added_after_the_decision_without_a_reason(self):
+        d = self.create()
+        status, data = self.admin.patch("/api/decisions/{}".format(d["id"]), {"place": "経営会議"})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["decision"]["place"], "経営会議")
+        m = self.meeting()
+        status, data = self.admin.patch("/api/decisions/{}".format(d["id"]),
+                                        {"meeting_id": m["id"], "meeting_on": "2026-09-14"})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["decision"]["meeting"], {"id": m["id"], "title": "週次定例", "on": "2026-09-14"})
+        self.assertEqual(data["decision"]["place"], "経営会議")      # 送らなかった項目はそのまま
+        self.assertEqual(data["decision"]["what"], "ログインは社内 SSO（SAML）を使う")
+        # 版には残る
+        versions = self.detail(d["id"])[1]["versions"]
+        self.assertEqual([v["changes"] for v in versions[:2]], ["決めた場", "決めた場"])
+
+    def test_other_changes_still_need_a_reason(self):
+        d = self.create()
+        status, data = self.admin.patch("/api/decisions/{}".format(d["id"]),
+                                        {"place": "経営会議", "what": "やはり独自のパスワード"})
+        self.assertEqual(status, 400)
+        self.assertIn("理由", data["error"])
+
+    def test_meeting_must_belong_to_the_project(self):
+        d = self.create()
+        other = self.make_project("別PJ")
+        m = self.meeting(other["id"])
+        status, data = self.admin.patch("/api/decisions/{}".format(d["id"]), {"meeting_id": m["id"]})
+        self.assertEqual(status, 400)
+        self.assertIn("このプロジェクト", data["error"])
+
+    def test_place_is_kept_in_versions(self):
+        d = self.create(place="お客さまとの打ち合わせ")
+        self.assertEqual(d["place"], "お客さまとの打ち合わせ")
+        self.admin.patch("/api/decisions/{}".format(d["id"]), {"place": ""})
+        status, data = self.admin.get("/api/decisions/{}/versions/1".format(d["id"]))
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["snapshot"]["place"], "お客さまとの打ち合わせ")
+

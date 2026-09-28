@@ -9,6 +9,7 @@ import { openTaskDetail } from './taskDetail.js';
 import { openIssueDetail } from './issueDetail.js';
 import { openTicketDetail } from './ticketDetail.js';
 import { icon } from '../icons.js';
+import { linkifyLine } from './mention.js';
 
 const BUCKETS = [
   { key: 'overdue', label: '期限超過', tone: 'overdue', icon: 'flame' },
@@ -364,7 +365,7 @@ export async function render(container) {
                   }
                 },
               }),
-              el('span', { text: todo.title })),
+              linkifyLine(todo.title, el('span', {}))),
             todo.recurrence_id
               ? el('span', { class: 'todo-repeat', title: '繰り返しから出た ToDo' },
                 icon('repeat', { size: 13 }))

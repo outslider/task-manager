@@ -1,7 +1,7 @@
 /* 決定を記録する・直す画面。決めたあとに直すときは、変えた理由を書いてもらう。 */
 import { api } from '../api.js';
 import { store } from '../store.js';
-import { el, fill, openModal, toast } from '../util.js';
+import { el, fill, formatDate, openModal, toast } from '../util.js';
 import { icon } from '../icons.js';
 import { chipPicker } from './pickers.js';
 
@@ -43,18 +43,7 @@ export async function openDecisionForm({ projectId, decision = null, decisions =
     class: 'input', placeholder: 'メンバー以外（役員・お客さまなど）：例）山田社長、佐々木取締役',
     value: (decision?.people_extra || []).join('、'),
   });
-  let meeting = decision?.meeting_id
-    ? { id: decision.meeting_id, on: decision.meeting_on, title: decision.meeting_title || decision.meeting?.title || '定例会議' }
-    : (decision?.meeting ? { id: decision.meeting.id, on: decision.meeting.on, title: decision.meeting.title } : null);
-  const meetingHost = el('div', {});
-  const drawMeeting = () => fill(meetingHost, meeting
-    ? el('div', { class: 'decision-meeting-pick' },
-      el('span', {},
-        icon('calendar', { size: 13, class: 'ico-inline' }),
-        `${meeting.title}${meeting.on ? `（${meeting.on.replace(/-/g, '/')} の回）` : ''}`),
-      el('button', { type: 'button', class: 'btn btn-sm', onClick: () => { meeting = null; drawMeeting(); } }, '外す'))
-    : el('span', { class: 'hint', text: '（なし）定例会議の回の画面から「決定として記録」で書き始めると入ります' }));
-  drawMeeting();
+  const place = await placeEditor(projectId, decision, () => decidedOn.value);
   const tasks = chipPicker((taskData.tasks || []).filter((t) => !t.is_heading),
     decision?.links?.tasks || [], { placeholder: '関連するタスクを選ぶ…', emptyText: '（なし）' });
   const issues = chipPicker((issueData.issues || []).map((i) => ({ id: i.id, title: `#${i.seq} ${i.title}` })),
@@ -110,7 +99,7 @@ export async function openDecisionForm({ projectId, decision = null, decisions =
   drawPremises();
 
   const reasonField = el('div', { class: 'field decision-reason-field' },
-    el('label', { text: '変えた理由 *（決めたあとに変えるときは必須）' }), reason,
+    el('label', { text: '変えた理由 *（決めたあとに変えるときは必須。決めた場だけを直すときは不要）' }), reason,
     el('div', { class: 'hint', text: '変更の履歴に残ります。あとから「なぜ変わったのか」を追えるように書いてください。' }));
   reasonField.hidden = !(editing && SETTLED.includes(decision.status));
 
@@ -130,7 +119,7 @@ export async function openDecisionForm({ projectId, decision = null, decisions =
       el('div', { class: 'field' }, el('label', { text: '決めた人' }), people.node,
         el('div', { style: { marginTop: '6px' } }, extra),
         el('div', { class: 'hint', text: 'メンバー以外の人は名前を「、」で区切って入れます。' })),
-      el('div', { class: 'field' }, el('label', { text: '決めた場' }), meetingHost),
+      el('div', { class: 'field' }, el('label', { text: '決めた場' }), place.node),
       el('div', { class: 'field' }, el('label', { text: '検討した案（採用・却下）' }), optionHost),
       el('div', { class: 'field' }, el('label', { text: '前提条件' }), premiseHost,
         el('div', { class: 'hint', text: 'この決定が成り立つための前提。崩れたら印を付け、状態を「見直し中」にします。' })),
@@ -157,7 +146,7 @@ export async function openDecisionForm({ projectId, decision = null, decisions =
             category: category.value.trim(), what: what.value, why: why.value,
             people: people.ids(), guest_visible: guestVisible.checked,
             people_extra: extra.value.split(/[、,，\n]/).map((n) => n.trim()).filter(Boolean),
-            meeting_id: meeting ? meeting.id : null, meeting_on: meeting ? meeting.on : null,
+            ...place.value(),
             supersedes_id: supersedes.value ? Number(supersedes.value) : null,
             options: options.filter((o) => o.title.trim()),
             premises: premises.filter((p) => p.text.trim()),
@@ -179,4 +168,73 @@ export async function openDecisionForm({ projectId, decision = null, decisions =
       }, editing ? '保存' : '記録する'),
     ],
   });
+}
+
+/**
+ * 決めた場：プロジェクトの定例会議とその回、または会議以外の場のメモ。
+ * 決定の編集画面と、詳細画面の「決めた場を入れる」で使う。
+ * @param {number} projectId
+ * @param {object|null} decision 今の決定（meeting・place を持つ）
+ * @param {() => string} [baseDate] 回の候補を近い順に並べる基準の日（決めた日）
+ * @returns {Promise<{node: HTMLElement, value: () => object}>}
+ */
+export async function placeEditor(projectId, decision, baseDate = () => '') {
+  const toISO = (d) => d.toISOString().slice(0, 10);
+  const now = new Date();
+  const from = toISO(new Date(now.getTime() - 360 * 86400000));
+  const to = toISO(new Date(now.getTime() + 60 * 86400000));
+  let meetings = [];
+  try {
+    meetings = (await api.get(`/api/meetings?project_ids=${projectId}&from=${from}&to=${to}`)).meetings || [];
+  } catch { /* 会議が読めなくても、メモは書ける */ }
+  // 定例会議の回から書き始めたときは meeting_id / meeting_on / meeting_title で渡ってくる
+  const current = decision?.meeting || (decision?.meeting_id
+    ? { id: decision.meeting_id, on: decision.meeting_on, title: decision.meeting_title || '定例会議' } : null);
+  // 今は無い（消された）会議を指していても、外さない限りそのまま残す
+  if (current && !meetings.some((m) => m.id === current.id)) {
+    meetings = [{ id: current.id, title: current.title, occurrences: [] }, ...meetings];
+  }
+  const select = el('select', { class: 'select' },
+    el('option', { value: '' }, '（定例会議ではない）'),
+    ...meetings.map((m) => el('option', { value: m.id, selected: current?.id === m.id ? true : null }, m.title)));
+  const day = el('input', { class: 'input', type: 'date', value: current?.on || '', style: { maxWidth: '170px' } });
+  const chips = el('div', { class: 'place-chips' });
+  const dayRow = el('div', { class: 'place-day' }, el('span', { class: 'hint', text: '回の日付' }), day, chips);
+  const note = el('input', {
+    class: 'input', maxlength: 200, value: decision?.place || '',
+    placeholder: '例）経営会議、お客さまとの打ち合わせ、Slack で合意',
+  });
+  const drawChips = () => {
+    const m = meetings.find((x) => String(x.id) === select.value);
+    dayRow.hidden = !m;
+    if (!m) { fill(chips); return; }
+    // 決めた日（なければ今日）に近い開催日を、前後あわせて数回ぶん出す
+    const base = baseDate() || toISO(now);
+    const days = (m.occurrences || []).filter((o) => o.status !== 'canceled').map((o) => o.date)
+      .sort((a, b) => Math.abs(Date.parse(a) - Date.parse(base)) - Math.abs(Date.parse(b) - Date.parse(base)))
+      .slice(0, 5).sort();
+    if (!day.value && days.length) {
+      day.value = days.filter((d) => d <= base).pop() || days[0];
+    }
+    fill(chips, ...days.map((d) => el('button', {
+      type: 'button', class: `chip-btn${d === day.value ? ' active' : ''}`,
+      onClick: () => { day.value = d; drawChips(); },
+    }, formatDate(d))));
+  };
+  select.addEventListener('change', () => { day.value = ''; drawChips(); });
+  day.addEventListener('change', drawChips);
+  drawChips();
+  const node = el('div', { class: 'place-editor' },
+    meetings.length
+      ? el('div', { class: 'place-meeting' }, icon('calendar', { size: 15, class: 'ico-inline' }), select)
+      : el('div', { class: 'hint', text: 'このプロジェクトには定例会議がありません（ガントの「定例を追加」で作れます）。' }),
+    dayRow, el('div', { class: 'place-note' }, el('span', { class: 'hint', text: '会議以外の場・補足' }), note));
+  return {
+    node,
+    value: () => ({
+      meeting_id: select.value ? Number(select.value) : null,
+      meeting_on: select.value ? (day.value || null) : null,
+      place: note.value.trim(),
+    }),
+  };
 }
