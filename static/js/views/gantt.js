@@ -143,19 +143,36 @@ const ROADMAP_GRAINS = [
 ];
 const roadmapKey = (projectId) => `tm.roadmap.${projectId || 'all'}`;
 
-/** 見る人ごと・プロジェクトごとにブラウザへ保存する（既定は大見出し・上の帯）。 */
-function loadRoadmapPrefs(projectId) {
+/* 「見出し＋タスク」で、タスクをどの深さまで並べるか。 */
+const ROADMAP_DEPTHS = [
+  { key: '1', label: 'トップレベルだけ' },
+  { key: '2', label: '2 段目まで' },
+  { key: 'all', label: 'すべて' },
+];
+// これ以下のタスク数なら小さなプロジェクトとして、既定で細かいタスクまで並べる
+const SMALL_PROJECT_TASKS = 40;
+
+/**
+ * 見る人ごと・プロジェクトごとにブラウザへ保存する。まだ選んでいなければ、規模で既定を決める
+ * （小さなプロジェクトは「見出し＋タスク（すべて）」、大きなプロジェクトは「大見出し」）。
+ */
+function loadRoadmapPrefs(projectId, tasks = []) {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(roadmapKey(projectId)) || '{}') || {}; } catch { /* 無ければ既定 */ }
+  const small = projectId
+    && tasks.filter((t) => !t.is_heading && !t.is_milestone).length <= SMALL_PROJECT_TASKS;
   return {
-    grain: ROADMAP_GRAINS.some((g) => g.key === saved.grain) ? saved.grain : 'h1',
+    grain: ROADMAP_GRAINS.some((g) => g.key === saved.grain) ? saved.grain : (small ? 'tasks' : 'h1'),
+    taskDepth: ROADMAP_DEPTHS.some((d) => d.key === saved.depth) ? saved.depth : (small ? 'all' : '1'),
     marksAt: saved.marks === 'rows' ? 'rows' : 'lane',
   };
 }
 
 function saveRoadmapPrefs(projectId, state) {
   try {
-    localStorage.setItem(roadmapKey(projectId), JSON.stringify({ grain: state.grain, marks: state.marksAt }));
+    localStorage.setItem(roadmapKey(projectId), JSON.stringify({
+      grain: state.grain, depth: state.taskDepth, marks: state.marksAt,
+    }));
   } catch { /* 保存できなくても表示は変わる */ }
 }
 
@@ -302,7 +319,7 @@ export async function render(container, route) {
     fromISO: null,
     toISO: null,
     // ロードマップの粒度とマイルストーンの置き場所。見る人ごと・プロジェクトごとにブラウザへ保存
-    ...loadRoadmapPrefs(projectId),
+    ...loadRoadmapPrefs(projectId, data.tasks || []),
   };
 
   const syncHeader = () => setHeader(
@@ -505,8 +522,20 @@ export async function render(container, route) {
   }, el('option', { value: 'lane', selected: state.marksAt === 'lane' ? true : null },
     overview ? 'プロジェクトの行' : '上の帯'),
   el('option', { value: 'rows', selected: state.marksAt === 'rows' ? true : null }, '見出しの行'));
+  const depthSelect = el('select', {
+    class: 'select', style: { maxWidth: '150px', minWidth: '130px' }, title: '「見出し＋タスク」で並べるタスクの深さ',
+    onChange: (event) => {
+      state.taskDepth = event.target.value;
+      saveRoadmapPrefs(projectId, state);
+      draw();
+    },
+  }, ...ROADMAP_DEPTHS.map((d) => el('option', {
+    value: d.key, selected: state.taskDepth === d.key ? true : null,
+  }, d.label)));
+  const depthWrap = el('span', { class: 'roadmap-controls' },
+    el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: 'タスクの深さ' }), depthSelect);
   const roadmapControls = el('span', { class: 'roadmap-controls' },
-    el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '粒度' }), grainSelect,
+    el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: '粒度' }), grainSelect, depthWrap,
     el('span', { class: 'label', style: { margin: '0 0 0 6px' }, text: 'マイルストーン' }), marksSelect);
 
   const scaleSeg = el('div', { class: 'seg' },
@@ -976,6 +1005,12 @@ export async function render(container, route) {
     const plainRow = (task, depth, outline = 0) => ({
       task, depth, inGroup, outline, hasChildren: kidsOf(task.id).length > 0,
     });
+    // 「見出し＋タスク」では、選んだ深さまで子タスクも字下げして並べる（節目は行にしない）
+    const limit = state.grain !== 'tasks' ? 1 : (state.taskDepth === 'all' ? Infinity : Number(state.taskDepth) || 1);
+    const treeRows = (task, depth, outline = 0) => [plainRow(task, depth, outline),
+      ...(depth + 1 < limit
+        ? kidsOf(task.id).filter((k) => !k.is_milestone).flatMap((k) => treeRows(k, depth + 1, outline))
+        : [])];
     const markRow = (list, depth) => {
       if (!byRows || !list.length) return [];
       list.forEach((m) => placedMarks.add(m.id));
@@ -989,22 +1024,19 @@ export async function render(container, route) {
     for (const child of top.children) {
       if (!child.heading) {
         // 見出しの外のトップレベル。節目そのものは帯（上の帯かプロジェクトの行）に回す
-        if (!child.task.is_milestone) rows.push(plainRow(child.task, 0));
+        if (!child.task.is_milestone) rows.push(...treeRows(child.task, 0));
         continue;
       }
       if (state.grain === 'tasks') {
         const folded = collapsed.has(child.heading.id);
-        const inside = tasksIn(child);
+        const inside = tasksIn(child).filter((t) => !t.is_milestone).flatMap((t) => treeRows(t, 0, 1));
         const marks = byRows ? marksOf(child) : [];
         marks.forEach((m) => placedMarks.add(m.id));
         rows.push({
           heading: true, task: child.heading, depth: 0, inGroup, level: 1, outline: 0,
-          count: inside.filter((t) => !t.is_milestone).length, collapsed: folded,
-          separator: rows.length > 0, milestones: marks,
+          count: inside.length, collapsed: folded, separator: rows.length > 0, milestones: marks,
         });
-        if (!folded) {
-          rows.push(...inside.filter((t) => !t.is_milestone).map((t) => plainRow(t, 0, 1)));
-        }
+        if (!folded) rows.push(...inside);
         continue;
       }
       const main = phaseRow(child, 0, { separator: state.grain === 'h2' && rows.length > 0 });
@@ -1295,9 +1327,11 @@ export async function render(container, route) {
     openTaskDetail(taskId, { onChange: refresh });
   }
 
+  let waitingForWidth = false;
   function draw() {
     syncPickNotice();
     roadmapControls.hidden = state.mode !== 'roadmap';
+    depthWrap.hidden = state.grain !== 'tasks';
     // 区切り（フェーズ・担当者など）はガントの並べ方。ロードマップでは使わないので隠す
     groupWrap.hidden = state.mode === 'roadmap';
     const all = visibleRows();
@@ -1327,6 +1361,16 @@ export async function render(container, route) {
     // 描き直すと横位置が先頭に戻ってしまうので、見ていた位置を持ち越す。
     const keepLeft = scroll.scrollLeft;
     fill(scroll, svg);
+    // ロードマップは画面の幅に合わせて描く。開いた直後はまだ画面に付いておらず幅が測れないので、
+    // 付いたところでもう一度描く（仮の幅のまま、右側が空いた図になっていた）
+    if (roadmap && !scroll.clientWidth && !waitingForWidth) {
+      waitingForWidth = true;
+      const retry = (tries) => requestAnimationFrame(() => {
+        if (scroll.clientWidth) { waitingForWidth = false; draw(); } else if (tries > 0) retry(tries - 1);
+        else waitingForWidth = false;
+      });
+      retry(30);
+    }
     const mark = svg.querySelector('.gantt-today');
     if (!scrolledToToday && mark && scroll.clientWidth > 0) {
       // 最初に開いたときは今日が見える位置から。過去も少し見せたいので左寄りに置く。
