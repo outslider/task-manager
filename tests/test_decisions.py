@@ -359,7 +359,7 @@ class TestTasksTabCanBeHidden(DecisionCase):
 
     def test_tasks_can_be_hidden(self):
         status, data = self.admin.patch("/api/projects/{}".format(self.pid), {
-            "tabs_hidden": ["tasks", "gantt", "workload", "bottlenecks", "issues", "tickets"]})
+            "tabs_hidden": ["tasks", "gantt", "workload", "bottlenecks", "issues", "links", "tickets"]})
         self.assertEqual(status, 200, data)
         self.assertEqual(self.tabs(), ["decisions"])
         # 画面から隠れるだけで、タスクのデータは閉じない
@@ -368,7 +368,7 @@ class TestTasksTabCanBeHidden(DecisionCase):
     def test_one_tab_must_remain(self):
         status, data = self.admin.patch("/api/projects/{}".format(self.pid),
                                         {"tabs_hidden": ["tasks", "gantt", "workload", "bottlenecks",
-                                                         "issues", "decisions", "tickets"]})
+                                                         "issues", "decisions", "links", "tickets"]})
         self.assertEqual(status, 400)
         self.assertIn("1 つは", data["error"])
 

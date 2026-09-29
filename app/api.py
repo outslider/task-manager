@@ -268,6 +268,11 @@ def project_tabs_out(project, user):
     if auth.is_guest(user):
         project["tabs"] = [t for t in auth.PROJECT_TABS
                            if auth.tab_open_for(user, t, hidden, guest_tabs) and t not in hidden]
+        # リンクのタブは、社外に見せるリンクが 1 件も無ければ出さない（開いても空になるだけなので）
+        if "links" in project["tabs"] and not db.scalar(
+                "SELECT COUNT(*) AS c FROM shared_links WHERE project_id=%s AND guest_visible=1",
+                (project["id"],), default=0):
+            project["tabs"].remove("links")
     else:
         project["tabs"] = [t for t in auth.PROJECT_TABS if t not in hidden]
     if project.get("my_role") == "owner":

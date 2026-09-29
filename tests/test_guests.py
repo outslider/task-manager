@@ -392,11 +392,28 @@ class TestProjectTabs(GuestTestCase):
         self.assertEqual(self.my_tabs(self.g), ["tasks", "gantt", "issues", "tickets"])
         # 「決定」は社内には出るが、社外ユーザーには見せると決めるまで出ない
         self.assertEqual(self.my_tabs(self.admin),
-                         ["tasks", "gantt", "workload", "bottlenecks", "issues", "decisions", "tickets"])
+                         ["tasks", "gantt", "workload", "bottlenecks", "issues", "decisions", "links", "tickets"])
         project = self.admin.get("/api/projects/{}".format(self.project["id"]))[1]["project"]
         self.assertEqual(project["guest_tabs"], ["tasks", "gantt", "issues", "tickets"])
         # 設定そのものはプロジェクト管理者にだけ
         self.assertNotIn("guest_tabs", self.g.get("/api/projects/{}".format(self.project["id"]))[1]["project"])
+
+    def test_links_tab_follows_each_links_setting(self):
+        """リンクのタブは、社外に見せるリンクがあるときだけ社外ユーザーに出す（タブの「社外にも見せる」は使わない）。"""
+        self.assertNotIn("links", self.my_tabs(self.g))
+        status, data = self.admin.post("/api/links", {"title": "社内だけ", "url": "https://intra.example/a",
+                                                      "project_id": self.project["id"]})
+        self.assertEqual(status, 201, data)
+        self.assertNotIn("links", self.my_tabs(self.g))
+        self.admin.post("/api/links", {"title": "共有資料", "url": "https://example.com/b",
+                                       "project_id": self.project["id"], "guest_visible": True})
+        self.assertIn("links", self.my_tabs(self.g))
+        # guest_tabs に入れなくても出る。「使う」を外せば、全員から隠れる
+        self.settle(guest_tabs=["tasks"])
+        self.assertIn("links", self.my_tabs(self.g))
+        self.settle(tabs_hidden=["links"])
+        self.assertNotIn("links", self.my_tabs(self.g))
+        self.assertNotIn("links", self.my_tabs(self.admin))
 
     def test_workload_never_goes_to_guests(self):
         self.settle(tabs_hidden=["workload"], guest_tabs=["workload", "gantt"])

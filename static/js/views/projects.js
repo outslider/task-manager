@@ -172,17 +172,19 @@ export async function render(container) {
     // タブの出し分け。「使う」は全員向け（画面をすっきりさせるため）、「社外にも見せる」は
     // 社外ユーザー向け（見せないものはサーバーでも閉じる）。タスクはいつも出す
     const TAB_CHOICES = [['tasks', 'タスク'], ['gantt', 'ガント'], ['workload', '負荷'], ['bottlenecks', 'ボトルネック'],
-      ['issues', '課題'], ['decisions', '決定'], ['tickets', 'チケット']];
+      ['issues', '課題'], ['decisions', '決定'], ['links', 'リンク'], ['tickets', 'チケット']];
     const hiddenNow = new Set(project?.tabs_hidden || []);
     const guestNow = new Set(project?.guest_tabs || ['tasks', 'gantt', 'issues', 'tickets']);
     const tabRows = TAB_CHOICES.map(([key, label]) => {
       const use = el('input', { type: 'checkbox', checked: hiddenNow.has(key) ? null : true });
-      // タスクは、使っている限り社外ユーザーにも出す（入口なので）
+      // タスクは、使っている限り社外ユーザーにも出す（入口なので）。リンクはリンクごとに選ぶ
+      const fixed = ['workload', 'tasks', 'links'];
       const guest = el('input', {
-        type: 'checkbox', checked: (guestNow.has(key) || key === 'tasks') && key !== 'workload' ? true : null,
-        disabled: ['workload', 'tasks'].includes(key) ? true : null,
+        type: 'checkbox',
+        checked: (guestNow.has(key) || key === 'tasks' || key === 'links') && key !== 'workload' ? true : null,
+        disabled: fixed.includes(key) ? true : null,
       });
-      const sync = () => { guest.disabled = ['workload', 'tasks'].includes(key) || !use.checked; };
+      const sync = () => { guest.disabled = fixed.includes(key) || !use.checked; };
       use.addEventListener('change', sync);
       sync();
       return { key, label, use, guest };
@@ -196,7 +198,8 @@ export async function render(container) {
           el('td', {}, row.use),
           el('td', {}, row.guest,
             row.key === 'workload' ? el('span', { class: 'hint', text: ' 担当者の工数が並ぶため見せません' }) : null,
-            row.key === 'tasks' ? el('span', { class: 'hint', text: ' 使うときは常に見せます' }) : null)))));
+            row.key === 'tasks' ? el('span', { class: 'hint', text: ' 使うときは常に見せます' }) : null,
+            row.key === 'links' ? el('span', { class: 'hint', text: ' リンクごとに「社外にも見せる」で選びます' }) : null)))));
 
     // プロジェクト管理者は社内の人だけ（社外ユーザーはコメント可まで）
     const ownerSelect = el('select', { class: 'select' },

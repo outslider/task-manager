@@ -12,6 +12,7 @@ const TABS = [
   { key: 'bottlenecks', label: 'ボトルネック', icon: 'block' },
   { key: 'issues', label: '課題', icon: 'pin' },
   { key: 'decisions', label: '決定', icon: 'scale' },
+  { key: 'links', label: 'リンク', icon: 'link' },
 ];
 
 export function projectTabs(projectId, active) {

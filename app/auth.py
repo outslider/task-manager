@@ -233,9 +233,9 @@ def is_guest(user) -> bool:
 
 # プロジェクトの中のタブ。どれも「使う」を外せる（決定だけを記録するプロジェクトなど）が、1 つは残す。
 # 「使う」を外すのは画面をすっきりさせるためで、タスクのデータ自体は閉じない（ガントなどが使う）。
-PROJECT_TABS = ("tasks", "gantt", "workload", "bottlenecks", "issues", "decisions", "tickets")
+PROJECT_TABS = ("tasks", "gantt", "workload", "bottlenecks", "issues", "decisions", "links", "tickets")
 TAB_LABEL = {"tasks": "タスク", "gantt": "ガント", "workload": "負荷",
-             "bottlenecks": "ボトルネック", "issues": "課題", "decisions": "決定",
+             "bottlenecks": "ボトルネック", "issues": "課題", "decisions": "決定", "links": "リンク",
              "tickets": "チケット"}
 # 社外ユーザーに見せるタブの初期値。「見せるものを並べる」形なので、あとからタブを
 # 足しても社外ユーザーには勝手に見えない。負荷（担当者ごとの工数）はどうしても見せない。
@@ -264,6 +264,9 @@ def tab_open_for(user, key, hidden, guest_tabs):
     社外ユーザーに対しては、ここで閉じたものはサーバーでも閉じる。"""
     if key == "tasks" or not is_guest(user):
         return True
+    if key == "links":
+        # リンクはリンクごとに「社外ユーザーにも見せる」で選ぶので、タブ自体は使っている限り見せる
+        return key not in hidden
     return key not in hidden and key in guest_tabs and key not in GUEST_TABS_NEVER
 
 

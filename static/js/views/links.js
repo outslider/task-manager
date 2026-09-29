@@ -4,6 +4,7 @@ import { setHeader } from '../app.js';
 import { store } from '../store.js';
 import { confirmDialog, el, fill, openModal, skeleton, toast } from '../util.js';
 import { icon, iconLabel } from '../icons.js';
+import { projectTabs } from './projectNav.js';
 
 const VIEW_KEY = 'tm.links.view';
 const UNCATEGORIZED = '';
@@ -30,9 +31,12 @@ function loadView() {
   try { return localStorage.getItem(VIEW_KEY) === 'scope' ? 'scope' : 'category'; } catch { return 'category'; }
 }
 
-export async function render(container) {
-  setHeader('リンク集');
-  const state = { data: null, query: '', view: loadView(), category: null };
+export async function render(container, route = {}) {
+  // プロジェクトの「リンク」タブから開いたときは、そのプロジェクトのリンクだけを扱う
+  const projectId = route.projectId || null;
+  const project = projectId ? store.project(projectId) : null;
+  setHeader(project ? `${project.name} — リンク` : 'リンク集');
+  const state = { data: null, query: '', view: projectId ? 'category' : loadView(), category: null };
 
   const search = el('input', {
     class: 'input', type: 'search', placeholder: 'タイトル・URL・補足で絞り込む',
@@ -62,14 +66,20 @@ export async function render(container) {
     },
   }, label)));
 
+  const lead = projectId
+    ? (store.isGuest() ? 'このプロジェクトで共有されているリンクです。'
+      : 'このプロジェクトの資料・手順書・共有フォルダなどです。プロジェクトのメンバーに見えます。')
+    : (store.isGuest()
+      ? '参加しているプロジェクトで共有されているリンクです。'
+      : '社内の手順書や共有フォルダなど、よく開くものを置いておく場所です。');
   fill(container,
+    projectId ? projectTabs(projectId, 'links') : null,
     el('div', { class: 'link-page' },
       el('div', { class: 'link-toolbar' },
-        el('div', { class: 'page-sub grow', style: { margin: '0' },
-          text: store.isGuest()
-            ? '参加しているプロジェクトで共有されているリンクです。'
-            : '社内の手順書や共有フォルダなど、よく開くものを置いておく場所です。' }),
-        viewSeg, search, addButton),
+        el('div', { class: 'page-sub grow', style: { margin: '0' }, text: lead }),
+        projectId ? el('a', { class: 'btn btn-sm', href: '#/links', title: '全体で共有しているものも含めて見る' },
+          ...iconLabel('link', 'リンク集をすべて見る', 14)) : viewSeg,
+        search, addButton),
       chipsHost,
       listHost));
 
@@ -113,10 +123,12 @@ export async function render(container) {
   function draw() {
     const data = state.data;
     if (!data) return;
-    addButton.hidden = !data.can_add_shared && !data.projects.length;
+    addButton.hidden = projectId
+      ? !data.projects.some((p) => p.id === projectId)
+      : !data.can_add_shared && !data.projects.length;
     const match = (link) => !state.query
       || `${link.title} ${link.url} ${link.note}`.toLowerCase().includes(state.query);
-    const found = data.links.filter(match);
+    const found = data.links.filter((link) => !projectId || link.project_id === projectId).filter(match);
     drawChips(found);
     const links = state.category === null
       ? found : found.filter((link) => (link.category || UNCATEGORIZED) === state.category);
@@ -145,7 +157,7 @@ export async function render(container) {
       groups.get(cat).push(link);
     }
     return [...groups.keys()].sort(byCategory).map((cat) => card({
-      title: categoryName(cat), muted: !cat, items: groups.get(cat), showScope: true,
+      title: categoryName(cat), muted: !cat, items: groups.get(cat), showScope: !projectId,
     }));
   }
 
@@ -255,10 +267,11 @@ export async function render(container) {
     const suggestions = el('datalist', { id: listId },
       ...(data.categories || []).map((c) => el('option', { value: c })));
     const scope = el('select', { class: 'select' },
-      el('option', { value: '', selected: link && !link.project_id ? true : null },
+      el('option', { value: '', selected: link ? (!link.project_id ? true : null) : (projectId ? null : true) },
         '全体で共有'),
       ...data.projects.map((p) => el('option', {
-        value: String(p.id), selected: String(link?.project_id || '') === String(p.id) ? true : null,
+        // プロジェクトの画面から足すときは、そのプロジェクトを置き場所にしておく
+        value: String(p.id), selected: String(link ? (link.project_id || '') : (projectId || '')) === String(p.id) ? true : null,
       }, p.name)));
     // 社外ユーザーに見せるのはプロジェクトのリンクだけ（全体で共有するものは社内向け）
     const guestVisible = el('input', { type: 'checkbox', checked: link?.guest_visible ? true : null });
